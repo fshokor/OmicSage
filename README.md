@@ -1,1 +1,1 @@
-# OmicsSage
+# OmicSage
