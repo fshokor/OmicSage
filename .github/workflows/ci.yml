@@ -16,13 +16,20 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install ruff==0.4.1 yamllint==1.35.1
-      - run: ruff check . || true
-      - run: yamllint -d relaxed config/ .github/ || true
+
+      - name: Install linting tools
+        run: pip install ruff==0.4.1 yamllint==1.35.1
+
+      - name: Ruff lint (Python)
+        run: ruff check . || true
+
+      - name: yamllint (YAML configs)
+        run: yamllint -d relaxed config/ .github/ || true
 
   test-python:
     name: Python Tests
@@ -30,12 +37,17 @@ jobs:
     needs: lint
     steps:
       - uses: actions/checkout@v4
+
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
           cache: pip
-      - run: pip install pytest pytest-cov pyyaml click
-      - run: pytest tests/ -v --tb=short
+
+      - name: Install dependencies
+        run: pip install pytest pytest-cov pyyaml click
+
+      - name: Run tests
+        run: pytest tests/ -v --tb=short
         env:
           OMICSAGE_CI: "true"
 
@@ -46,8 +58,11 @@ jobs:
     if: github.event_name == 'push'
     steps:
       - uses: actions/checkout@v4
+
       - uses: docker/setup-buildx-action@v3
-      - uses: docker/build-push-action@v5
+
+      - name: Build Python image (no push)
+        uses: docker/build-push-action@v5
         with:
           context: .
           file: docker/Dockerfile.python
