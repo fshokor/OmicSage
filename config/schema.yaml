@@ -1,0 +1,98 @@
+# OmicSage Master Configuration Schema
+
+project:
+  name: "my_project"
+  description: ""
+  author: ""
+  date: ""
+  output_dir: "results/"
+
+modality:
+  scrna: true
+  scatac: false
+  spatial: false
+  multiome: false
+
+input:
+  scrna_path: ""
+  scatac_fragments: ""
+  scatac_peaks: ""
+  spatial_path: ""
+  spatial_platform: "visium"
+  sample_metadata: ""
+
+qc:
+  scrna:
+    min_genes: 200
+    max_genes: 6000
+    max_mt_pct: 20
+    min_cells: 3
+    run_scrublet: true
+    scrublet_threshold: null
+    run_soupx: true
+    soupx_tfidf: false
+
+processing:
+  scrna:
+    normalization: "scran"
+    n_hvgs: 2000
+    n_pcs: 50
+    n_pcs_use: 30
+    batch_correction: "harmony"
+    batch_key: null
+    umap_neighbors: 15
+    umap_min_dist: 0.3
+
+clustering:
+  scrna:
+    algorithm: "leiden"
+    resolution: [0.3, 0.5, 0.8, 1.0]
+    default_resolution: 0.5
+
+annotation:
+  scrna:
+    run_singler: true
+    singler_reference: "HumanPrimaryCellAtlasData"
+    n_marker_genes: 20
+
+downstream:
+  scrna:
+    run_deg: true
+    deg_method: "wilcoxon"
+    run_gsea: true
+    gsea_databases: ["GO", "KEGG", "Reactome"]
+    run_trajectory: false
+    trajectory_method: "slingshot"
+    run_survival: false
+    run_drugtargets: false
+
+reports:
+  generate_html: true
+  generate_pdf: true
+  generate_pptx: true
+  include_methods: true
+  include_versions: true
+  figure_dpi: 300
+  color_palette: "tab20"
+
+ai:
+  enabled: true
+  provider: "claude"
+  model: "claude-opus-4-5"
+  api_key_env: "ANTHROPIC_API_KEY"
+  ollama_host: "http://localhost:11434"
+  ollama_model: "llama3.2"
+  suggest_qc_thresholds: true
+  interpret_clusters: true
+  generate_narrative: true
+  pubmed_rag: true
+  log_llm_calls: true
+  llm_log_dir: "logs/llm/"
+
+compute:
+  executor: "local"
+  max_cpus: 8
+  max_memory: "32.GB"
+  max_time: "24.h"
+  slurm_queue: "short"
+  slurm_account: ""

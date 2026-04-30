@@ -1,0 +1,71 @@
+version: "3.9"
+
+services:
+  python:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    image: omicsage/python:latest
+    container_name: omicsage-python
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./results:/app/results
+      - ./logs:/app/logs
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - PYTHONPATH=/app
+    networks:
+      - omicsage-net
+
+  streamlit:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.python
+    image: omicsage/python:latest
+    container_name: omicsage-ui
+    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+    ports:
+      - "8501:8501"
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./results:/app/results
+    environment:
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - PYTHONPATH=/app
+    networks:
+      - omicsage-net
+
+  r:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.r
+    image: omicsage/r:latest
+    container_name: omicsage-r
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./results:/app/results
+    networks:
+      - omicsage-net
+
+  nextflow:
+    image: nextflow/nextflow:23.10.1
+    container_name: omicsage-nextflow
+    working_dir: /app
+    volumes:
+      - .:/app
+      - ./data:/app/data
+      - ./results:/app/results
+      - /var/run/docker.sock:/var/run/docker.sock
+    environment:
+      - NXF_OPTS=-Xms512m -Xmx2g
+    networks:
+      - omicsage-net
+
+networks:
+  omicsage-net:
+    driver: bridge

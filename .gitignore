@@ -1,0 +1,83 @@
+# ─── OmicSage .gitignore ──────────────────────────────────
+
+# ── Data (never commit raw or processed data) ─────────────
+data/benchmark/
+data/references/
+*.h5ad
+*.h5
+*.loom
+*.mtx
+*.mtx.gz
+*.tsv.gz
+*.bw
+*.bam
+*.bai
+*.fastq
+*.fastq.gz
+*.fq.gz
+
+# ── Pipeline outputs ──────────────────────────────────────
+results/
+work/
+.nextflow/
+.nextflow.log*
+*.nextflow.log
+
+# ── Python ────────────────────────────────────────────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# ── Virtual environments ──────────────────────────────────
+.env
+.venv
+env/
+venv/
+ENV/
+.conda/
+
+# ── Testing ───────────────────────────────────────────────
+.pytest_cache/
+.coverage
+coverage.xml
+htmlcov/
+tests/results/
+
+# ── Secrets (NEVER commit) ────────────────────────────────
+.env.local
+*.key
+*_secret*
+*_credentials*
+anthropic_key*
+openai_key*
+
+# ── Logs ──────────────────────────────────────────────────
+logs/
+*.log
+
+# ── IDE ───────────────────────────────────────────────────
+.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db
+
+# ── Quarto ────────────────────────────────────────────────
+/_site/
+/.quarto/
+*_files/
+
+# ── R ─────────────────────────────────────────────────────
+.Rhistory
+.RData
+.Rproj.user/
+
+# ── Node ──────────────────────────────────────────────────
+node_modules/
