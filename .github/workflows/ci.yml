@@ -50,10 +50,11 @@ jobs:
           OMICSAGE_CI: "true"
 
   docker-build-python:
-    name: Docker Build — Python image only
+    name: Docker Build — Python image
     runs-on: ubuntu-latest
-    needs: lint
-    if: github.event_name == 'push'
+    needs: test-python
+    # Only build Docker on push to main, not every dev push
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     steps:
       - uses: actions/checkout@v4
 
