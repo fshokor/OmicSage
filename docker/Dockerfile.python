@@ -33,7 +33,7 @@ RUN mamba env update -n base -f /tmp/environment.yml \
     && mamba clean --all --yes
 
 RUN pip install --no-cache-dir \
-    biochatter==0.8.5 \
+    biochatter==0.14.2 \
     scrublet==0.2.3 \
     python-pptx==1.0.2 \
     gseapy==1.1.3 \
