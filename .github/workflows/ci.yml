@@ -20,15 +20,14 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Install linting tools
         run: pip install ruff==0.4.1 yamllint==1.35.1
 
-      - name: Ruff lint (Python)
+      - name: Ruff lint
         run: ruff check . || true
 
-      - name: yamllint (YAML configs)
+      - name: yamllint
         run: yamllint -d relaxed config/ .github/ || true
 
   test-python:
@@ -41,7 +40,6 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: pip
 
       - name: Install dependencies
         run: pip install pytest pytest-cov pyyaml click
