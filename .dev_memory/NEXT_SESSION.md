@@ -1,62 +1,60 @@
 ## Session Context
 Date: 2026-04-30
-Phase: 0 — Foundation (COMPLETE) → Phase 1 — Core scRNA Pipeline
-Last thing we completed: Full Phase 0 scaffold — repo structure, Docker images, CI/CD, .dev_memory system
-File we were working on last: tests/test_phase0_structure.py
+Phase: 1 — Core scRNA Pipeline
+Last thing completed: Phase 0 fully done — repo, Docker, CI/CD all green on GitHub
+File last worked on: .github/workflows/ci.yml
 
 ## Today's Goal
-[CHOOSE ONE]:
-A) Download benchmark dataset (GSE166635 HCC) and write the data ingestion module
-   → Start: `python cli/omicsage.py create-project hcc_benchmark --modality scrna`
-B) Implement the scRNA QC module (pipeline/modules/qc/scrna_qc.nf + Python script)
-   → Prerequisite: benchmark data must exist at data/benchmark/
+Download GSE166635 benchmark dataset and implement the data ingestion module.
+ONE goal only — do not start QC until ingestion is tested and working.
 
-Recommended: Start with A if GSE166635 is not yet downloaded. Otherwise B.
+## Step 1 — Download benchmark data
+```bash
+cd ~/OmicSage
+pip install GEOparse --break-system-packages
+python3 -c "
+import GEOparse
+gse = GEOparse.get_GEO('GSE166635', destdir='data/benchmark/', silent=False)
+print('Done:', list(gse.gsms.keys())[:5])
+"
+```
+Expected output: 10x MEX files (barcodes.tsv.gz, features.tsv.gz, matrix.mtx.gz)
+in data/benchmark/GSE166635/
+
+## Step 2 — Implement data ingestion
+File to create: pipeline/modules/qc/ingest.py
+Should auto-detect format and return AnnData:
+- 10x MEX directory → sc.read_10x_mtx()
+- .h5 file → sc.read_10x_h5()
+- .h5ad file → sc.read_h5ad()
 
 ## Known Issues From Last Session
-- Docker images are defined but NOT YET BUILT locally — run these first:
-  ```
-  docker build -f docker/Dockerfile.python -t omicsage/python:latest .
-  docker build -f docker/Dockerfile.r -t omicsage/r:latest .
-  ```
-  Note: R image takes 20-40 min. Start it and work on Python tasks while it builds.
-- GitHub Actions CI will fail on nextflow --help step until Nextflow is confirmed installed in CI runner — check ci.yml if first push fails
-- Nextflow not yet verified working locally — run: `nextflow run pipeline/main.nf --help`
+- Docker images still not built locally (intentional — too heavy, do manually when needed)
+- `python` must be called as `python3` in this WSL2 setup
+- CI Docker build only runs on push to main branch (not dev)
+- Dockerfile timezone fix (DEBIAN_FRONTEND=noninteractive) applied to both images
 
 ## Files Modified Last Session
-- config/schema.yaml           ← master config, all parameters documented
-- pipeline/main.nf             ← entry point with modality router
-- pipeline/workflows/scrna.nf  ← stub, imports pending Phase 1 modules
-- pipeline/workflows/scatac.nf ← stub
-- pipeline/workflows/spatial.nf← stub
-- pipeline/workflows/integration.nf ← stub
-- pipeline/modules/qc/scrna_qc.nf   ← stub process, ready for Phase 1
-- nextflow.config              ← profiles: local, docker, singularity, slurm, ci, test
-- docker/Dockerfile.python     ← mambaforge + scanpy + scvi + BioChatter + Quarto
-- docker/Dockerfile.r          ← Bioconductor + Seurat v5 + Signac + ArchR + SingleR
-- docker-compose.yml           ← python, streamlit, r, nextflow services
-- environment.yml              ← conda env for local dev without Docker
-- .github/workflows/ci.yml     ← lint + pytest + nextflow smoke + docker build
-- .github/workflows/docker-publish.yml ← push to GHCR on version tags
-- ai/biochatter_client.py      ← typed stub, Phase 3 implementation pending
-- cli/omicsage.py              ← Click CLI: create-project, run, list, compare
-- ui/app.py                    ← Streamlit landing page stub
-- tests/test_phase0_structure.py ← smoke tests: dir structure, config, memory files
-- pyproject.toml               ← pytest config
-- .dev_memory/ (all 5 files)   ← initialized today
+- docker/Dockerfile.python   ← added ENV DEBIAN_FRONTEND + tzdata fix
+- docker/Dockerfile.r        ← added ENV DEBIAN_FRONTEND + tzdata fix
+- .github/workflows/ci.yml   ← Docker build main-only, removed pip cache
+- .gitignore                 ← added !**/.gitkeep
+- reports/templates/.gitkeep ← added
+- reports/slides/.gitkeep    ← added
+- data/benchmark/.gitkeep    ← added (force-added, overrides .gitignore)
+- data/references/.gitkeep   ← added (force-added, overrides .gitignore)
+- docs/.gitkeep              ← added
 
 ## Verify Last Session Works
 ```bash
-# From repo root in WSL2:
-pip install pytest pyyaml
-pytest tests/test_phase0_structure.py -v
+cd ~/OmicSage
+python3 -m pytest tests/test_phase0_structure.py -v
+# Expected: 52 passed
 ```
-All tests should pass (structure tests check file existence).
 
 ## Relevant Context
-- GitHub: https://github.com/fshokor/OmicSage
-- Benchmark paper: Wang et al. 2025 HCC (DOI: 10.1038/s41698-025-00952-3)
-- Benchmark dataset: GSE166635 on GEO (scRNA-seq, hepatocellular carcinoma)
-- Expected Phase 1 milestone: reproduce key findings of Wang et al. from raw counts
-- Phase 1 Python stack: Scanpy, scran (via rpy2), Scrublet, SoupX, Harmony, scvi-tools
-- DO NOT start Phase 2 (reports) until Phase 1 milestone is confirmed working
+- Benchmark paper: Wang et al. 2025 HCC, DOI: 10.1038/s41698-025-00952-3
+- GEO accession: GSE166635 (scRNA-seq, hepatocellular carcinoma, multiple samples)
+- Phase 1 Python stack: scanpy, scrublet, harmonypy, scvi-tools, rpy2 (for scran/SoupX)
+- Start from count matrices — upstream alignment is out of scope
+- Do NOT start Phase 2 until Phase 1 milestone confirmed: reproduce Wang et al. findings
