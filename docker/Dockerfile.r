@@ -4,6 +4,9 @@ LABEL maintainer="OmicSage Contributors"
 LABEL description="OmicSage R analysis environment"
 LABEL version="0.1.0-dev"
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         libhdf5-dev \
         libxml2-dev \

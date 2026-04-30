@@ -4,6 +4,9 @@ LABEL maintainer="OmicSage Contributors"
 LABEL description="OmicSage Python analysis environment"
 LABEL version="0.1.0-dev"
 
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=UTC
+
 RUN apt-get update && apt-get install -y --no-install-recommends \
         build-essential \
         curl \
@@ -15,6 +18,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libgit2-dev \
         procps \
         wget \
+        tzdata \
+    && ln -fs /usr/share/zoneinfo/UTC /etc/localtime \
+    && dpkg-reconfigure -f noninteractive tzdata \
     && rm -rf /var/lib/apt/lists/*
 
 ARG QUARTO_VERSION=1.5.56
