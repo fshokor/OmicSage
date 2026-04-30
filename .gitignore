@@ -2,10 +2,12 @@
 
 # ── Data (never commit raw or processed data) ─────────────
 # ignore large data files but allow .gitkeep
-!data/benchmark/.gitkeep
-!data/references/.gitkeep
-
-
+# !data/benchmark/.gitkeep
+# !data/references/.gitkeep
+data/
+*.tar.gz
+*.tar
+*.h5ad.gz
 *.h5ad
 *.h5
 *.loom
