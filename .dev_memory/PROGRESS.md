@@ -1,112 +1,115 @@
-# OmicSage — Progress Checklist
-Tick items as they are completed. Do not remove items — mark [x] done.
+# OmicSage — Progress Tracker
+> Updated: 2026-04-30 (end of session 2)
+> Update this file at the end of every session.
 
 ---
 
-## Phase 0 — Foundation ✅ COMPLETE
+## Phase 0 — Foundation COMPLETE
+
 - [x] GitHub repo created (https://github.com/fshokor/OmicSage)
-- [x] Name: OmicSage
-- [x] Domain confirmed: omicsage.io
+- [x] Name confirmed: OmicSage
+- [x] Domain confirmed available: omicsage.io
 - [x] Full repo structure scaffolded
-- [x] Dockerfile.python defined + DEBIAN_FRONTEND fix applied
-- [x] Dockerfile.r defined + DEBIAN_FRONTEND fix applied
-- [x] CI/CD: ci.yml (lint + pytest + docker build main-only)
-- [x] CI/CD: docker-publish.yml (GHCR on version tags)
-- [x] config/schema.yaml complete
-- [x] .dev_memory/ all 5 files initialized
-- [x] README.md, LICENSE, .gitignore
-- [x] 52/52 tests passing locally
-- [x] Lint job green on GitHub Actions
-- [x] Python Tests job green on GitHub Actions
-- [x] Docker build fix: DEBIAN_FRONTEND=noninteractive in both images
-- [x] .gitkeep files added to all empty dirs
-- [ ] Docker images built locally (run manually — too heavy for CI)
-- [ ] GSE166635 benchmark data downloaded
-- [ ] DVC initialized
-
-## Phase 1 — Core scRNA Pipeline (Week 2-6) ← WE ARE HERE
-- [ ] Data ingestion module (10x MEX, H5, AnnData auto-detection)
-- [ ] QC module: MT%, genes/cell, Scrublet doublets, SoupX ambient RNA
-- [ ] Normalization + HVG selection (scran)
-- [ ] PCA + UMAP + t-SNE
-- [ ] Harmony + scVI batch correction
-- [ ] Leiden clustering with resolution sweep
-- [ ] SingleR cell type annotation
-- [ ] DEG: Wilcoxon
-- [ ] DEG: pseudobulk DESeq2
-- [ ] GSEA: GO/KEGG/Reactome
-- [ ] MILESTONE: Reproduce Wang et al. 2025 HCC key findings from raw counts
+- [x] Docker base images defined (Dockerfile.python + Dockerfile.r)
+- [x] CI/CD via GitHub Actions
+- [x] YAML config schema defined
+- [x] .dev_memory/ system initialized
+- [x] README with project description and badges
+- [x] .gitignore — entire data/ directory excluded
 
 ---
 
-## Phase 2 — Report Engine (Week 6-9)
+## Phase 1 — Core scRNA Pipeline IN PROGRESS
 
-- [ ] Quarto QC report template
-- [ ] Quarto analysis report template (clustering, DEG, pathway)
-- [ ] python-pptx slide deck generator
-- [ ] Auto-figure captioning from metadata
-- [ ] Auto-methods text from config + software versions
-- [ ] **MILESTONE**: Complete PDF + slides from one command, no coding
+### Environment
+- [x] Conda environment created (omicsage, Python 3.11.15)
+- [x] All Phase 1 packages installed and verified (scanpy 1.11.5)
+- [x] GEOparse installed
+- [x] Always use: conda activate omicsage && python -m pytest
+
+### Benchmark Dataset
+- [x] Dataset selected: GSE194122 NeurIPS 2021 BMMC (switched from GSE166635)
+- [x] CITE-seq file downloaded and unzipped (~2.5 GB)
+- [ ] Multiome file — downloading/unzipping (in progress)
+- [x] Data structure fully understood (see NEXT_SESSION.md)
+
+### Utility Scripts
+- [x] scripts/download_benchmark.py — downloads GSE194122 (CITE + multiome)
+- [x] scripts/download_test_data.py — downloads GSE166635 into data/test/
+- [x] scripts/__init__.py
+
+### Data Intake Report
+- [x] pipeline/modules/qc/data_report.py
+      - Works for any .h5ad (public or personal)
+      - Fetches GEO metadata via NCBI eutils API if --geo passed
+      - Static matplotlib QC plots embedded in HTML
+      - Inventories modalities, obs/var columns, embeddings, layers
+- [x] Report generated and verified for GSE194122 CITE file
+
+### Data Ingestion
+- [x] pipeline/modules/qc/ingest.py — COMPLETE, ALL TESTS PASSING
+      - Auto-detects .h5ad / .h5 / MTX directory formats
+      - Extracts raw counts from layers['counts'] for processed h5ad
+      - Falls back to adata.raw, then layer scan
+      - Populates adata.uns['omicsage_source'] provenance metadata
+      - Ensures sparse CSR output
+- [x] tests/test_ingest.py — 30/30 tests passing (98s)
+      - Unit tests: format detection, integer matrix check, layer detection
+      - Contract tests: shape, dtype, uns, sample column, normalized layer
+      - Real data: GSE166635 HCC1 MTX + GSE194122 CITE h5ad
+
+### QC Module — NEXT SESSION
+- [ ] pipeline/modules/qc/qc.py
+- [ ] tests/test_qc.py
+
+### Processing — NOT STARTED
+- [ ] Normalization (scran)
+- [ ] HVG selection
+- [ ] PCA + UMAP
+- [ ] Batch correction (Harmony + scVI)
+
+### Clustering — NOT STARTED
+- [ ] Leiden clustering
+
+### Annotation — NOT STARTED
+- [ ] SingleR annotation
+
+### DEG + Pathway — NOT STARTED
+
+### MILESTONE — Phase 1 Complete
+- [ ] Our clusters match GSE194122 cell_type labels (>80% agreement)
+- [ ] Our UMAP matches GEX_X_umap structure visually
 
 ---
 
-## Phase 3 — AI Layer (Week 9-13)
-
-- [ ] BioChatter integration (ai/biochatter_client.py implemented)
-- [ ] QC threshold suggestion via augmented prompts
-- [ ] Cluster interpretation (markers → LLM → cell type + evidence)
-- [ ] PubMed RAG tied to DEG results
-- [ ] Biological narrative generator for reports
-- [ ] AI audit log (all LLM calls logged)
-- [ ] Multi-LLM support (Claude, GPT-4o, local Ollama)
-- [ ] **MILESTONE**: AI report narrative groundedness score > 0.85
+## Phase 2 — Report Engine NOT STARTED
+## Phase 3 — AI Layer NOT STARTED
+## Phase 4 — scATAC Module NOT STARTED
+## Phase 5 — Spatial Module NOT STARTED
+## Phase 6 — Multiome Integration NOT STARTED
+## Phase 7 — User Interfaces NOT STARTED
+## Phase 8 — Benchmarking + Paper NOT STARTED
 
 ---
 
-## Phase 4 — scATAC Module (Week 13-16)
+## Dataset Registry
 
-- [ ] Fragment file ingestion and QC
-- [ ] Peak calling (MACS3)
-- [ ] LSI + ArchR/Signac clustering
-- [ ] Motif enrichment + chromVAR
-- [ ] Gene activity scores
-- [ ] scATAC report template
-
----
-
-## Phase 5 — Spatial Module (Week 16-19)
-
-- [ ] Visium data ingestion
-- [ ] Spatially variable genes
-- [ ] BayesSpace clustering
-- [ ] RCTD deconvolution
-- [ ] Spatial report template
+| File | Modality | Status | Use |
+|------|----------|--------|-----|
+| GSE194122 CITE BMMC processed.h5ad | RNA + ADT | Ready | Phase 1 dev + validation |
+| GSE194122 multiome BMMC processed.h5ad | RNA + ATAC | Downloading | Phase 1 + Phase 4 |
+| GSE166635 HCC1+HCC2 MTX | RNA | Ready (data/test/) | Test fixture for MTX ingestion |
+| PBMC 10k (10x Genomics) | RNA | Not downloaded | Validation |
+| 10x Visium human brain | Spatial | Not downloaded | Phase 5 |
 
 ---
 
-## Phase 6 — Multiome Integration (Week 19-22)
+## Key Decisions Log
 
-- [ ] WNN joint embedding
-- [ ] MOFA+ integration
-- [ ] SCENIC+ GRN inference
-- [ ] Joint report template
-
----
-
-## Phase 7 — User Interfaces (Week 22-25)
-
-- [ ] Streamlit web UI (drag-drop upload, guided config, progress)
-- [ ] Click CLI polished (create-project, run, list, compare)
-- [ ] Project dashboard
-- [ ] Shared protocol library
-
----
-
-## Phase 8 — Benchmarking + Paper (Week 25-30)
-
-- [ ] Benchmark on 5 published datasets
-- [ ] User study (biologists + bioinformaticians)
-- [ ] Paper written (target: Nature Methods or Bioinformatics)
-- [ ] bioRxiv preprint posted
-- [ ] v1.0 public release
-- [ ] omicsage.io website launched
+| Date | Decision | Reason |
+|------|----------|--------|
+| 2026-04-30 | Switched benchmark from GSE166635 to GSE194122 | Already analyzed GSE166635; GSE194122 is multi-modal and a standard benchmark |
+| 2026-04-30 | Exclude entire data/ from git | Simpler and safer than per-extension rules |
+| 2026-04-30 | data_report.py outputs static HTML | No Quarto dependency for intake report |
+| 2026-04-30 | GSE166635 kept as test fixture in data/test/ | Good real MTX data for testing ingestion MTX path |
+| 2026-04-30 | ingest.py checks layers then adata.raw for raw counts | GSE194122 uses layers['counts']; other datasets may use adata.raw |
