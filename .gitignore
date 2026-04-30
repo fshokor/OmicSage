@@ -1,8 +1,11 @@
 # ─── OmicSage .gitignore ──────────────────────────────────
 
 # ── Data (never commit raw or processed data) ─────────────
-data/benchmark/
-data/references/
+# ignore large data files but allow .gitkeep
+!data/benchmark/.gitkeep
+!data/references/.gitkeep
+
+
 *.h5ad
 *.h5
 *.loom
