@@ -49,8 +49,8 @@ jobs:
         env:
           OMICSAGE_CI: "true"
 
-  docker-build:
-    name: Docker Build Check
+  docker-build-python:
+    name: Docker Build — Python image only
     runs-on: ubuntu-latest
     needs: lint
     if: github.event_name == 'push'
