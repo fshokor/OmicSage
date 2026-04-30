@@ -47,6 +47,7 @@ RUN R -e " \
 "
 
 RUN R -e "install.packages('SoupX', repos='https://cloud.r-project.org')"
+RUN pip3 install rpy2==3.5.16
 
 WORKDIR /app
 COPY . /app/
