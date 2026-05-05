@@ -69,7 +69,7 @@ docker build -f docker/Dockerfile.python -t omicsage/python:latest .
 # Optional: R-based steps (Seurat, SingleR, DESeq2)
 docker build -f docker/Dockerfile.r -t omicsage/r:latest .
 ```
-
+conda env create -f environment.yml
 ### 3. Create your first project
 ```bash
 python cli/omicsage.py create-project my_analysis --modality scrna

@@ -13,14 +13,20 @@ Both datasets are skipped automatically if the file is not present.
 
 Run:
     python -m pytest tests/test_qc.py -v
+
+API contract (v2):
+    run_qc() returns (MuData, dict).
+    RNA QC metrics live on mdata["rna"].obs.
+    Multi-modal data additionally exposes mdata["adt"] or mdata["atac"].
 """
 
 import numpy as np
 import pytest
+import scipy.sparse as sp
 from pathlib import Path
 
 from pipeline.modules.qc.ingest import load_dataset
-from pipeline.modules.qc.qc import run_qc, _detect_mt_genes
+from pipeline.modules.qc.qc import run_qc, _detect_mt_genes, _detect_modality
 
 
 # ---------------------------------------------------------------------------
@@ -49,31 +55,35 @@ def cite_raw():
     """
     if not CITE_H5AD.exists():
         pytest.skip(f"CITE-seq file not found: {CITE_H5AD}")
-    import numpy as np
     import anndata
-    # Read only metadata first (backed mode) to get cell count cheaply
+
     adata_backed = anndata.read_h5ad(CITE_H5AD, backed="r")
     n_cells = adata_backed.n_obs
     rng = np.random.default_rng(42)
     idx = rng.choice(n_cells, size=min(5000, n_cells), replace=False)
     idx_sorted = np.sort(idx)
-    # Subset in backed mode, then load into memory
     adata_sub = adata_backed[idx_sorted].to_memory()
     adata_backed.file.close()
-    # Now run through ingest to ensure raw counts in X
+
     from pipeline.modules.qc.ingest import _extract_raw_counts
     adata_sub, _ = _extract_raw_counts(adata_sub)
-    import scipy.sparse as sp
+
     if not sp.issparse(adata_sub.X):
         adata_sub.X = sp.csr_matrix(adata_sub.X)
+
     adata_sub.obs["sample"] = "GSE194122_cite_sub5k"
     return adata_sub
 
 
 @pytest.fixture(scope="session")
 def cite_qc(cite_raw):
-    """Run QC on CITE-seq data once, reuse result across all tests."""
-    adata_f, metrics = run_qc(
+    """Run QC on CITE-seq data once, reuse result across all tests.
+
+    Returns (cite_raw, mdata, metrics).
+    mdata["rna"] is the filtered RNA AnnData.
+    mdata["adt"] is the filtered ADT AnnData (if present).
+    """
+    mdata, metrics = run_qc(
         cite_raw,
         min_genes=200,
         max_genes=6000,
@@ -81,7 +91,7 @@ def cite_qc(cite_raw):
         remove_doublets=True,
         generate_report=False,
     )
-    return cite_raw, adata_f, metrics
+    return cite_raw, mdata, metrics
 
 
 @pytest.fixture(scope="session")
@@ -104,15 +114,30 @@ class TestMtGeneDetection:
 
     def test_mt_genes_detected_in_cite(self, cite_raw):
         """CITE-seq file should have MT- genes in the RNA features."""
-        mt_mask = _detect_mt_genes(cite_raw)
+        # Subset to RNA features before calling _detect_mt_genes directly
+        if "feature_types" in cite_raw.var.columns:
+            rna_mask = cite_raw.var["feature_types"].astype(str).isin(
+                ["Gene Expression", "GEX"]
+            )
+            adata_rna = cite_raw[:, rna_mask]
+        else:
+            adata_rna = cite_raw
+        mt_mask = _detect_mt_genes(adata_rna)
         assert mt_mask.sum() > 0, (
-            "No MT- genes detected in CITE-seq data — check var_names or gene_ids"
+            "No MT- genes detected in CITE-seq RNA features — check var_names or gene_ids"
         )
 
     def test_mt_gene_count_realistic(self, cite_raw):
         """Human cells typically have 13 mt-encoded genes + rRNA/tRNA.
         Expect at least 10 and no more than 100 MT genes."""
-        mt_mask = _detect_mt_genes(cite_raw)
+        if "feature_types" in cite_raw.var.columns:
+            rna_mask = cite_raw.var["feature_types"].astype(str).isin(
+                ["Gene Expression", "GEX"]
+            )
+            adata_rna = cite_raw[:, rna_mask]
+        else:
+            adata_rna = cite_raw
+        mt_mask = _detect_mt_genes(adata_rna)
         n_mt = int(mt_mask.sum())
         assert 10 <= n_mt <= 100, (
             f"Detected {n_mt} MT genes — expected between 10 and 100"
@@ -125,10 +150,12 @@ class TestMtGeneDetection:
             "No MT- genes detected in HCC MTX data"
         )
 
-    def test_mt_mask_length_matches_n_vars(self, cite_raw):
-        """MT mask must have exactly one entry per gene."""
-        mt_mask = _detect_mt_genes(cite_raw)
-        assert len(mt_mask) == cite_raw.n_vars
+    def test_mt_mask_length_matches_rna_n_vars(self, cite_qc):
+        """MT mask length must match the RNA modality n_vars, not the full mixed object."""
+        _, mdata, _ = cite_qc
+        adata_rna = mdata["rna"]
+        mt_mask = _detect_mt_genes(adata_rna)
+        assert len(mt_mask) == adata_rna.n_vars
 
 
 # ---------------------------------------------------------------------------
@@ -138,33 +165,33 @@ class TestMtGeneDetection:
 class TestMetricsComputed:
 
     def test_n_genes_by_counts_in_obs(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        assert "n_genes_by_counts" in adata_f.obs.columns
+        _, mdata, _ = cite_qc
+        assert "n_genes_by_counts" in mdata["rna"].obs.columns
 
     def test_total_counts_in_obs(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        assert "total_counts" in adata_f.obs.columns
+        _, mdata, _ = cite_qc
+        assert "total_counts" in mdata["rna"].obs.columns
 
     def test_pct_counts_mt_in_obs(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        assert "pct_counts_mt" in adata_f.obs.columns
+        _, mdata, _ = cite_qc
+        assert "pct_counts_mt" in mdata["rna"].obs.columns
 
     def test_pct_counts_mt_between_0_and_100(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        mt = adata_f.obs["pct_counts_mt"]
+        _, mdata, _ = cite_qc
+        mt = mdata["rna"].obs["pct_counts_mt"]
         assert (mt >= 0).all() and (mt <= 100).all(), (
             f"MT% values out of range: min={mt.min():.2f}, max={mt.max():.2f}"
         )
 
     def test_total_counts_positive(self, cite_qc):
         """All cells that passed QC must have at least 1 UMI."""
-        _, adata_f, _ = cite_qc
-        assert (adata_f.obs["total_counts"] > 0).all()
+        _, mdata, _ = cite_qc
+        assert (mdata["rna"].obs["total_counts"] > 0).all()
 
     def test_n_genes_positive(self, cite_qc):
         """All cells that passed QC must have at least 1 gene detected."""
-        _, adata_f, _ = cite_qc
-        assert (adata_f.obs["n_genes_by_counts"] > 0).all()
+        _, mdata, _ = cite_qc
+        assert (mdata["rna"].obs["n_genes_by_counts"] > 0).all()
 
     def test_metrics_dict_has_required_keys(self, cite_qc):
         _, _, metrics = cite_qc
@@ -173,7 +200,7 @@ class TestMetricsComputed:
             "n_removed_low_genes", "n_removed_high_genes",
             "n_removed_high_mt", "n_removed_doublets",
             "median_genes_per_cell", "median_umi_per_cell",
-            "median_mt_pct", "n_mt_genes", "thresholds",
+            "median_mt_pct", "n_mt_genes", "thresholds", "modality",
         ]
         for key in required:
             assert key in metrics, f"Missing key in metrics dict: '{key}'"
@@ -205,8 +232,8 @@ class TestMetricsComputed:
 class TestFilterRemovesLowQualityCells:
 
     def test_output_fewer_cells_than_input(self, cite_qc):
-        cite_raw, adata_f, _ = cite_qc
-        assert adata_f.n_obs < cite_raw.n_obs, (
+        cite_raw, mdata, _ = cite_qc
+        assert mdata["rna"].n_obs < cite_raw.n_obs, (
             "No cells were removed — QC filters may not be working"
         )
 
@@ -222,27 +249,26 @@ class TestFilterRemovesLowQualityCells:
         _, _, metrics = cite_qc
         pass_rate = metrics["n_cells_output"] / metrics["n_cells_input"]
         assert 0.70 <= pass_rate <= 1.0, (
-            f"Pass rate {pass_rate:.2%} outside expected range [70%, 100%] — "
-            f"if 0% were removed check that filters are being applied"
+            f"Pass rate {pass_rate:.2%} outside expected range [70%, 100%]"
         )
 
     def test_min_genes_filter_respected(self, cite_qc):
         """No cell in filtered output should have fewer genes than min_genes."""
-        _, adata_f, metrics = cite_qc
+        _, mdata, metrics = cite_qc
         min_genes = metrics["thresholds"]["min_genes"]
-        assert (adata_f.obs["n_genes_by_counts"] >= min_genes).all()
+        assert (mdata["rna"].obs["n_genes_by_counts"] >= min_genes).all()
 
     def test_max_genes_filter_respected(self, cite_qc):
         """No cell in filtered output should have more genes than max_genes."""
-        _, adata_f, metrics = cite_qc
+        _, mdata, metrics = cite_qc
         max_genes = metrics["thresholds"]["max_genes"]
-        assert (adata_f.obs["n_genes_by_counts"] <= max_genes).all()
+        assert (mdata["rna"].obs["n_genes_by_counts"] <= max_genes).all()
 
     def test_max_mt_pct_filter_respected(self, cite_qc):
         """No cell in filtered output should exceed the MT% threshold."""
-        _, adata_f, metrics = cite_qc
+        _, mdata, metrics = cite_qc
         max_mt = metrics["thresholds"]["max_mt_pct"]
-        assert (adata_f.obs["pct_counts_mt"] <= max_mt).all()
+        assert (mdata["rna"].obs["pct_counts_mt"] <= max_mt).all()
 
     def test_original_adata_not_mutated(self, cite_raw):
         """run_qc must not modify the caller's AnnData."""
@@ -268,17 +294,17 @@ class TestFilterRemovesLowQualityCells:
 class TestDoubletScoresAdded:
 
     def test_doublet_score_column_present(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        assert "doublet_score" in adata_f.obs.columns
+        _, mdata, _ = cite_qc
+        assert "doublet_score" in mdata["rna"].obs.columns
 
     def test_predicted_doublet_column_present(self, cite_qc):
-        _, adata_f, _ = cite_qc
-        assert "predicted_doublet" in adata_f.obs.columns
+        _, mdata, _ = cite_qc
+        assert "predicted_doublet" in mdata["rna"].obs.columns
 
     def test_doublet_score_range(self, cite_qc):
         """Doublet scores must be in [0, 1] or NaN if Scrublet failed."""
-        _, adata_f, _ = cite_qc
-        scores = adata_f.obs["doublet_score"].dropna()
+        _, mdata, _ = cite_qc
+        scores = mdata["rna"].obs["doublet_score"].dropna()
         assert (scores >= 0).all() and (scores <= 1).all(), (
             f"Scores out of [0,1]: min={scores.min():.3f}, max={scores.max():.3f}"
         )
@@ -289,32 +315,50 @@ class TestDoubletScoresAdded:
 
 
 # ---------------------------------------------------------------------------
-# 5. Filtered AnnData shape
+# 5. Filtered MuData shape
 # ---------------------------------------------------------------------------
 
-class TestFilteredAdataShape:
+class TestFilteredMudataShape:
 
-    def test_filtered_n_vars_unchanged(self, cite_qc):
-        """QC filters cells only — gene count must not change."""
-        cite_raw, adata_f, _ = cite_qc
-        assert adata_f.n_vars == cite_raw.n_vars
+    def test_filtered_rna_n_vars_is_gex_only(self, cite_qc):
+        """mdata['rna'].n_vars must equal the number of GEX features in cite_raw,
+        not the total n_vars of the mixed object (RNA + ADT)."""
+        cite_raw, mdata, _ = cite_qc
+        if "feature_types" in cite_raw.var.columns:
+            gex_mask = cite_raw.var["feature_types"].astype(str).isin(
+                ["Gene Expression", "GEX"]
+            )
+            expected_n_vars = int(gex_mask.sum())
+        else:
+            expected_n_vars = cite_raw.n_vars
+        assert mdata["rna"].n_vars == expected_n_vars, (
+            f"mdata['rna'].n_vars={mdata['rna'].n_vars} != "
+            f"expected GEX n_vars={expected_n_vars}"
+        )
 
     def test_filtered_shape_matches_metrics(self, cite_qc):
-        _, adata_f, metrics = cite_qc
-        assert adata_f.n_obs == metrics["n_cells_output"]
+        _, mdata, metrics = cite_qc
+        assert mdata["rna"].n_obs == metrics["n_cells_output"]
 
     def test_obs_qc_columns_in_filtered_output(self, cite_qc):
-        _, adata_f, _ = cite_qc
+        _, mdata, _ = cite_qc
         for col in ["n_genes_by_counts", "total_counts", "pct_counts_mt"]:
-            assert col in adata_f.obs.columns
+            assert col in mdata["rna"].obs.columns
 
     def test_mtx_qc_runs_without_error(self, mtx_raw):
         """QC should complete without error on MTX-loaded HCC data."""
-        adata_f, metrics = run_qc(
+        mdata, metrics = run_qc(
             mtx_raw, remove_doublets=False, generate_report=False
         )
-        assert adata_f.n_obs > 0
+        assert mdata["rna"].n_obs > 0
         assert metrics["n_cells_input"] > 0
+
+    def test_mtx_returns_mudata_with_rna_key(self, mtx_raw):
+        """Plain RNA input must still return a MuData with a 'rna' key."""
+        from mudata import MuData
+        mdata, _ = run_qc(mtx_raw, remove_doublets=False, generate_report=False)
+        assert isinstance(mdata, MuData), "run_qc did not return a MuData object"
+        assert "rna" in mdata.mod, "MuData missing 'rna' key for plain RNA input"
 
 
 # ---------------------------------------------------------------------------
@@ -327,57 +371,33 @@ class TestQcMetricsMatchGroundTruth:
         """GSE194122 CITE-seq file must contain GEX_pct_counts_mt."""
         assert "GEX_pct_counts_mt" in cite_raw.obs.columns
 
-    def _run_rna_only_qc(self, cite_raw):
+    def _run_permissive_qc(self, cite_raw):
+        """Run permissive QC via the new modality-aware run_qc().
+
+        run_qc() now handles GEX subsetting internally — no manual
+        subsetting required here. Filters are set wide open so that
+        nearly all cells pass, allowing MT% comparison against ground truth.
         """
-        Helper: subset to RNA features only, then run permissive QC.
-
-        The CITE-seq file mixes RNA + ADT features with duplicate var_names.
-        var_names_make_unique() inside run_qc() renames genes (e.g. MT-ND1-1)
-        which breaks MT- prefix detection. Subsetting to Gene Expression
-        features first isolates the RNA matrix so MT genes are found correctly
-        and MT% matches the ground truth GEX_pct_counts_mt column.
-
-        We also remove zero-count cells before QC — after subsetting to RNA
-        features only, some cells may have zero RNA counts (ADT-only cells),
-        which causes Scrublet to divide by zero.
-        """
-        import scipy.sparse as sp
-        import numpy as np
-
-        # Subset to RNA features only if feature_types column is present
-        if "feature_types" in cite_raw.var.columns:
-            rna_mask = cite_raw.var["feature_types"].astype(str).isin(["Gene Expression", "GEX"])
-            adata_rna = cite_raw[:, rna_mask].copy()
-        else:
-            adata_rna = cite_raw.copy()
-
-        # Ensure sparse
-        if not sp.issparse(adata_rna.X):
-            adata_rna.X = sp.csr_matrix(adata_rna.X)
-
-        # Remove cells with zero total RNA counts to avoid Scrublet divide-by-zero
-        cell_totals = np.asarray(adata_rna.X.sum(axis=1)).flatten()
-        adata_rna = adata_rna[cell_totals > 0].copy()
-
-        adata_f, _ = run_qc(
-            adata_rna,
+        mdata, _ = run_qc(
+            cite_raw,
             min_genes=1,
             max_genes=999_999,
             max_mt_pct=100.0,
-            remove_doublets=False,   # skip Scrublet — not needed for MT% validation
+            remove_doublets=False,
             generate_report=False,
         )
-        return adata_f
+        return mdata["rna"]
 
     def test_mt_pct_correlation_above_threshold(self, cite_raw):
+        """OmicSage MT% must correlate with ground truth at r > 0.99.
+
+        Validates that:
+        - raw counts are in adata.X (not normalized)
+        - MT% is computed on RNA features only (not inflated by ADT counts)
         """
-        OmicSage MT% must correlate with ground truth at r > 0.99.
-        Validates that raw counts are in adata.X, not normalized values.
-        Subset to RNA features first to avoid ADT interference.
-        """
-        adata_f = self._run_rna_only_qc(cite_raw)
-        our_mt = adata_f.obs["pct_counts_mt"].values
-        gt_mt  = adata_f.obs["GEX_pct_counts_mt"].values
+        adata_rna = self._run_permissive_qc(cite_raw)
+        our_mt = adata_rna.obs["pct_counts_mt"].values
+        gt_mt  = adata_rna.obs["GEX_pct_counts_mt"].values
         valid  = np.isfinite(our_mt) & np.isfinite(gt_mt)
         assert valid.sum() > 100, f"Too few valid cells: {valid.sum()}"
         corr = float(np.corrcoef(our_mt[valid], gt_mt[valid])[0, 1])
@@ -387,13 +407,131 @@ class TestQcMetricsMatchGroundTruth:
         )
 
     def test_mt_pct_mean_absolute_error(self, cite_raw):
-        """Mean absolute error vs ground truth MT% must be < 0.5%.
-        Subset to RNA features first to avoid ADT interference."""
-        adata_f = self._run_rna_only_qc(cite_raw)
-        our_mt = adata_f.obs["pct_counts_mt"].values
-        gt_mt  = adata_f.obs["GEX_pct_counts_mt"].values
+        """Mean absolute error vs ground truth MT% must be < 0.5%."""
+        adata_rna = self._run_permissive_qc(cite_raw)
+        our_mt = adata_rna.obs["pct_counts_mt"].values
+        gt_mt  = adata_rna.obs["GEX_pct_counts_mt"].values
         valid  = np.isfinite(our_mt) & np.isfinite(gt_mt)
         mae    = float(np.mean(np.abs(our_mt[valid] - gt_mt[valid])))
         assert mae < 0.5, (
             f"Mean absolute error vs ground truth: {mae:.4f}% — expected < 0.5%"
+        )
+
+
+# ---------------------------------------------------------------------------
+# 7. Multi-modal QC — new tests (target: 37/37)
+# ---------------------------------------------------------------------------
+
+class TestMultiModalQC:
+
+    # --- _detect_modality() ---
+
+    def test_detect_modality_rna_no_feature_types(self, mtx_raw):
+        """Plain RNA AnnData with no feature_types column → 'rna'."""
+        adata = mtx_raw.copy()
+        if "feature_types" in adata.var.columns:
+            del adata.var["feature_types"]
+        result = _detect_modality(adata)
+        assert result == "rna", f"Expected 'rna', got '{result}'"
+
+    def test_detect_modality_cite(self, cite_raw):
+        """CITE-seq AnnData with ADT features → 'cite'."""
+        result = _detect_modality(cite_raw)
+        assert result == "cite", (
+            f"Expected 'cite' for CITE-seq data, got '{result}'. "
+            f"feature_types present: {'feature_types' in cite_raw.var.columns}"
+        )
+
+    def test_detect_modality_multiome_synthetic(self):
+        """Synthetic Multiome AnnData with 'Peaks' feature_types → 'multiome'."""
+        import anndata
+        import pandas as pd
+        n_cells, n_rna, n_atac = 100, 200, 500
+        X = sp.random(n_cells, n_rna + n_atac, density=0.1, format="csr")
+        var = pd.DataFrame(
+            {"feature_types": ["Gene Expression"] * n_rna + ["Peaks"] * n_atac},
+            index=[f"gene_{i}" for i in range(n_rna)]
+                  + [f"peak_{i}" for i in range(n_atac)],
+        )
+        adata = anndata.AnnData(X=X, var=var)
+        result = _detect_modality(adata)
+        assert result == "multiome", f"Expected 'multiome', got '{result}'"
+
+    # --- MuData structure after CITE-seq QC ---
+
+    def test_cite_qc_returns_mudata(self, cite_qc):
+        """run_qc on CITE-seq data must return a MuData object."""
+        from mudata import MuData
+        _, mdata, _ = cite_qc
+        assert isinstance(mdata, MuData), (
+            f"Expected MuData, got {type(mdata)}"
+        )
+
+    def test_cite_qc_mudata_has_rna_and_adt_keys(self, cite_qc):
+        """MuData from CITE-seq QC must have both 'rna' and 'adt' keys."""
+        _, mdata, _ = cite_qc
+        assert "rna" in mdata.mod, "MuData missing 'rna' key"
+        assert "adt" in mdata.mod, "MuData missing 'adt' key — ADT features were lost"
+
+    def test_cite_qc_adt_features_preserved(self, cite_raw, cite_qc):
+        """ADT feature count in mdata['adt'] must match the raw ADT feature count."""
+        _, mdata, _ = cite_qc
+        if "feature_types" not in cite_raw.var.columns:
+            pytest.skip("feature_types column not present — cannot count ADT features")
+        adt_mask = cite_raw.var["feature_types"].astype(str).isin(
+            ["ADT", "Antibody Capture"]
+        )
+        expected_n_adt = int(adt_mask.sum())
+        actual_n_adt   = mdata["adt"].n_vars
+        assert actual_n_adt == expected_n_adt, (
+            f"ADT features after QC: {actual_n_adt} != expected {expected_n_adt}. "
+            f"ADT features were dropped or incorrectly counted."
+        )
+
+    def test_cite_qc_total_counts_based_on_rna_only(self, cite_raw, cite_qc):
+        """total_counts in mdata['rna'].obs must reflect RNA UMIs only.
+
+        Computes the expected RNA-only total_counts directly from the raw
+        GEX submatrix and checks that the QC-computed values match.
+        """
+        _, mdata, _ = cite_qc
+
+        if "feature_types" not in cite_raw.var.columns:
+            pytest.skip("feature_types not present — cannot isolate RNA counts")
+
+        # Build expected RNA-only counts from raw data
+        gex_mask = cite_raw.var["feature_types"].astype(str).isin(
+            ["Gene Expression", "GEX"]
+        )
+        adata_rna_raw = cite_raw[:, gex_mask]
+        rna_totals = np.asarray(adata_rna_raw.X.sum(axis=1)).flatten()
+
+        # Look up the same cells in mdata["rna"]
+        filtered_barcodes = mdata["rna"].obs_names
+        raw_barcodes      = cite_raw.obs_names
+        shared_idx        = raw_barcodes.get_indexer(filtered_barcodes)
+        expected_totals   = rna_totals[shared_idx]
+
+        actual_totals = mdata["rna"].obs["total_counts"].values
+
+        # Allow floating-point rounding tolerance
+        np.testing.assert_allclose(
+            actual_totals, expected_totals, rtol=1e-5,
+            err_msg=(
+                "total_counts does not match RNA-only sum — "
+                "ADT counts may have been included in the metric."
+            ),
+        )
+
+    def test_cite_qc_all_modalities_have_same_cells(self, cite_qc):
+        """After QC, mdata['rna'] and mdata['adt'] must contain the same cell barcodes."""
+        _, mdata, _ = cite_qc
+        if "adt" not in mdata.mod:
+            pytest.skip("No ADT modality — CITE-seq detection may have failed")
+        rna_barcodes = set(mdata["rna"].obs_names)
+        adt_barcodes = set(mdata["adt"].obs_names)
+        assert rna_barcodes == adt_barcodes, (
+            f"Barcode mismatch: "
+            f"{len(rna_barcodes - adt_barcodes)} barcodes in RNA but not ADT, "
+            f"{len(adt_barcodes - rna_barcodes)} in ADT but not RNA."
         )
