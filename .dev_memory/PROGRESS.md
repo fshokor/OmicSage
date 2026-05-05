@@ -1,5 +1,5 @@
 # OmicSage — Progress Tracker
-> Updated: 2026-05-04 (end of session 3)
+> Updated: 2026-05-05 (end of session 4)
 > Update this file at the end of every session.
 
 ---
@@ -26,6 +26,7 @@
 - [x] All Phase 1 packages installed and verified (scanpy 1.11.5)
 - [x] GEOparse installed
 - [x] ipykernel + jupyter installed
+- [x] mudata installed
 - [x] Always use: conda activate omicsage && python -m pytest
 
 ### Benchmark Dataset
@@ -42,7 +43,7 @@
 ### Data Intake Report
 - [x] pipeline/modules/qc/data_report.py
       - Works for any .h5ad (public or personal)
-      - Uses backed='r' mode — works on files of any size (fixed this session)
+      - Uses backed='r' mode — works on files of any size (fixed session 3)
       - Fetches GEO metadata via NCBI eutils API if --geo passed
       - Static matplotlib QC plots embedded in HTML
       - Inventories modalities, obs/var columns, embeddings, layers
@@ -57,42 +58,55 @@
       - Ensures sparse CSR output
 - [x] tests/test_ingest.py — 30/30 tests passing
 
-### QC Module — COMPLETE
+### QC Module — COMPLETE (v2)
 - [x] pipeline/modules/qc/qc.py — COMPLETE, ALL TESTS PASSING
-      - MT gene auto-detection (MT- human / mt- mouse, gene_ids fallback)
-      - Per-cell metrics: n_genes_by_counts, total_counts, pct_counts_mt
-      - Scrublet doublet detection (graceful failure handling)
+      - Modality auto-detection: rna / cite / multiome via feature_types
+      - GEX subsetting handled internally — callers pass the full mixed AnnData
+      - MT gene detection, per-cell metrics, Scrublet doublet detection
       - Configurable filters: min_genes, max_genes, max_mt_pct, remove_doublets
+      - Returns MuData: mdata["rna"] always; mdata["adt"] for CITE; mdata["atac"] for Multiome
+      - QC obs columns (n_genes_by_counts, total_counts, pct_counts_mt, doublet_score)
+        live on mdata["rna"] only — other modalities start clean
       - generate_report=True triggers HTML report generation
       - Validated: MT% correlation vs GEX_pct_counts_mt r > 0.99 ✓
 - [x] pipeline/modules/qc/qc_report.py — COMPLETE
       - Self-contained HTML report, no external dependencies
       - Violin plots before/after, UMI vs genes scatter, doublet histogram
       - Summary cards, filter tables, ground-truth MT% correlation plot
-- [x] tests/test_qc.py — 33 passed, 2 skipped
-      - Real data only — no synthetic fixtures
+- [x] tests/test_qc.py — 42 passed, 2 skipped
+      - Real data only — no synthetic fixtures (except synthetic Multiome AnnData
+        in test_detect_modality_multiome_synthetic)
       - Session-scoped fixtures, CITE-seq subsampled to 5000 cells
       - Ground-truth MT% validation (r > 0.99, MAE < 0.5%)
+      - Multi-modal tests: modality detection, MuData structure, ADT preservation,
+        total_counts RNA-only validation, barcode alignment across modalities
 
 ### Documentation
 - [x] docs/MODULE_DOCS.md — documents all 4 QC module scripts
       (ingest.py, qc.py, qc_report.py, data_report.py)
+      Updated session 4: MuData API, modality parameter, new usage examples
 
 ### Notebook
-- [x] notebooks/phase1_qc.ipynb — CREATED
-      - Runs full QC pipeline on CITE-seq + HCC MTX
-      - Generates HTML reports to reports/
-      - Saves filtered AnnData to data/processed/
+- [x] notebooks/phase1_qc.ipynb — UPDATED (session 4)
+      - Passes full mixed AnnData to run_qc() — no manual GEX subsetting
+      - Accesses results via mdata["rna"], mdata["adt"], mdata["atac"]
+      - Saves separate .h5ad per modality
+      - MT% validation uses permissive run_qc() directly — no manual RNA subset
 
-### Processed Data (output of QC)
-- [x] data/processed/GSE194122_cite_qc.h5ad
-- [x] data/processed/GSE166635_HCC1_qc.h5ad
+### Processed Data (output of QC, input for normalization)
+- [x] data/processed/GSE194122_cite_rna_qc.h5ad     ← RNA only, ready for normalization
+- [x] data/processed/GSE194122_cite_adt_qc.h5ad     ← ADT only, ready for CLR (future)
+- [x] data/processed/GSE194122_multiome_rna_qc.h5ad ← RNA only, ready for normalization
+- [x] data/processed/GSE194122_multiome_atac_qc.h5ad← ATAC peaks, ready for Phase 4
+- [x] data/processed/GSE166635_HCC1_qc.h5ad         ← RNA only, ready for normalization
 
 ### Processing — NEXT SESSION
 - [ ] pipeline/modules/qc/normalize.py  ← NEXT
-      - scran normalization
+      - Input: mdata["rna"] from qc.py (raw counts in X)
+      - scran normalization (normalize_total as fallback)
       - log1p transform
       - HVG selection (top 2000, seurat_v3)
+      - Store params in adata.uns['omicsage_normalization']
 - [ ] tests/test_normalize.py
 - [ ] PCA + UMAP + t-SNE
 - [ ] Batch correction (Harmony + scVI)
@@ -145,6 +159,9 @@
 | 2026-05-04 | data_report.py uses backed='r' | Large h5ad files (2.9 GB) were killing the process |
 | 2026-05-04 | QC tests use real data only, no synthetic fixtures | Synthetic fixtures produced unrealistic data and failed; real data is more meaningful |
 | 2026-05-04 | CITE-seq tests subsample to 5000 cells | 90k cells × 14k genes exceeds 7.6 GB RAM when running Scrublet |
-| 2026-05-04 | Ground-truth MT% tests subset to feature_types='GEX' | CITE file mixes RNA+ADT; var_names_make_unique renames MT genes and breaks detection |
 | 2026-05-04 | QC report embedded in qc.py via generate_report=True | Every step should produce a readable output — core OmicSage design principle |
 | 2026-05-04 | Notebook-first workflow for running pipeline | Better visibility per step, good portfolio piece |
+| 2026-05-05 | run_qc() returns MuData instead of AnnData | Consistent API for all modalities; RNA/ADT/ATAC always accessible by key; no manual splitting in callers |
+| 2026-05-05 | QC metrics computed on RNA only, other modalities start clean | Biologically correct — ADT counts must not inflate total_counts; ATAC peaks must not inflate n_genes |
+| 2026-05-05 | ADT and ATAC QC deferred to separate functions | Each modality has its own QC criteria (CLR/isotype for ADT; TSS/FRiP for ATAC); adding them to run_qc() today would have been out of scope |
+| 2026-05-05 | Processed files renamed to *_rna_qc.h5ad and *_adt_qc.h5ad | Modality-explicit naming prevents confusion now that outputs are split per modality |

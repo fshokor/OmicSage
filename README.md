@@ -54,8 +54,9 @@ OmicSage is an open-source platform that covers the full single-cell multi-omics
 ## Quick Start
 
 ### Requirements
-- Docker Desktop + WSL2 (Windows) **or** Docker (Linux/macOS)
-- Nextflow ≥ 23.04
+- Conda (Miniconda or Anaconda)
+- Docker Desktop + WSL2 (Windows) **or** Docker (Linux/macOS) — for Nextflow runs
+- Nextflow ≥ 23.04 — for Nextflow runs
 
 ### 1. Clone the repo
 ```bash
@@ -63,33 +64,53 @@ git clone https://github.com/fshokor/OmicSage.git
 cd OmicSage
 ```
 
-### 2. Build the Docker images
+### 2. Create and activate the conda environment
+```bash
+conda env create -f environment.yml
+conda activate omicsage
+```
+
+### 3. (Optional) Build the Docker images
+Required only for Nextflow pipeline execution. Not needed for running Python modules directly.
 ```bash
 docker build -f docker/Dockerfile.python -t omicsage/python:latest .
 # Optional: R-based steps (Seurat, SingleR, DESeq2)
 docker build -f docker/Dockerfile.r -t omicsage/r:latest .
 ```
-conda env create -f environment.yml
-### 3. Create your first project
+
+### 4. Create your first project
 ```bash
+conda activate omicsage
 python cli/omicsage.py create-project my_analysis --modality scrna
 ```
 
-### 4. Edit the config
+### 5. Edit the config
 ```bash
 nano my_analysis/config.yaml   # set input.scrna_path to your data
 ```
 
-### 5. Run the pipeline
+### 6. Run the pipeline
 ```bash
 python cli/omicsage.py run my_analysis/ --profile docker
 ```
 
 ### Web UI (biologists)
 ```bash
+conda activate omicsage
 docker compose up streamlit
 # Open http://localhost:8501
 ```
+
+---
+
+## Running Tests
+
+```bash
+conda activate omicsage
+python -m pytest tests/ -v
+```
+
+> Always use `python -m pytest`, not bare `pytest`, to ensure the correct Python environment is used.
 
 ---
 

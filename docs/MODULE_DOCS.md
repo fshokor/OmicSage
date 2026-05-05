@@ -74,9 +74,10 @@ adata = load_dataset("data/benchmark/HCC1/")   # MTX directory
 
 **What it does**
 
-Performs quality control on a raw-count AnnData object. Computes per-cell
-metrics, detects doublets, applies configurable filters, and returns a clean
-filtered AnnData plus a summary metrics dictionary.
+Performs quality control on a raw-count AnnData object. Automatically detects
+whether the input is plain RNA, CITE-seq (RNA + ADT), or Multiome (RNA + ATAC).
+Computes all QC metrics on RNA features only, applies cell filters, and returns
+a MuData object containing one AnnData per modality with low-quality cells removed.
 
 **Why it exists**
 
@@ -84,40 +85,68 @@ Low-quality cells (dead cells, empty droplets, multiplets) distort clustering,
 differential expression, and every downstream analysis. This step removes them
 using standard and well-validated criteria before any biological analysis begins.
 
+For multi-modal data (CITE-seq, Multiome), running QC on the full mixed feature
+matrix produces biologically meaningless metrics — ADT protein counts inflate
+`total_counts`, and ATAC peaks inflate `n_genes_by_counts`. `qc.py` isolates
+the RNA layer for all metric computation and filtering, then propagates the
+resulting cell keep-mask to all other modalities so no features are lost.
+
 **Steps performed (in order)**
 
-1. `var_names_make_unique()` — handles CITE-seq files with mixed RNA + ADT features
-2. Mitochondrial gene detection — auto-detects `MT-` (human) or `mt-` (mouse) prefix; falls back to `adata.var['gene_ids']` if var_names don't contain symbols
-3. Per-cell QC metrics via `sc.pp.calculate_qc_metrics()`:
+1. Modality detection — inspects `adata.var['feature_types']`; returns `"rna"`, `"cite"`, or `"multiome"`
+2. Modality splitting — separates RNA from ADT/ATAC features internally; caller never needs to subset manually
+3. `var_names_make_unique()` on the RNA subset only
+4. Mitochondrial gene detection — auto-detects `MT-` (human) or `mt-` (mouse) prefix; falls back to `adata.var['gene_ids']`
+5. Per-cell QC metrics via `sc.pp.calculate_qc_metrics()` on RNA only:
    - `n_genes_by_counts` — genes detected per cell
-   - `total_counts` — total UMI count per cell
+   - `total_counts` — total RNA UMI count per cell
    - `pct_counts_mt` — mitochondrial read percentage
-4. Doublet detection via Scrublet — adds `obs['doublet_score']` and `obs['predicted_doublet']`; fails gracefully if Scrublet errors
-5. Filter application — removes cells failing any threshold
-6. Optional HTML report generation via `qc_report.py`
+6. Doublet detection via Scrublet on RNA only — adds `obs['doublet_score']` and `obs['predicted_doublet']`; fails gracefully
+7. Cell filter application — removes cells failing any RNA-based threshold
+8. MuData assembly — filtered cells applied to all modalities; QC obs columns live on `mdata["rna"]` only
+9. Optional HTML report generation via `qc_report.py`
 
 **Default thresholds**
 
 | Parameter | Default | What it removes |
 |-----------|---------|----------------|
 | `min_genes` | 200 | Empty droplets / dead cells |
-| `max_genes` | 2500 | Likely multiplets |
-| `max_mt_pct` | 5% | Lysed / dying cells |
+| `max_genes` | 6000 | Likely multiplets |
+| `max_mt_pct` | 20% | Lysed / dying cells |
 | `remove_doublets` | True | Scrublet-detected doublets |
 
 All thresholds are configurable per-dataset.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Raw counts in `adata.X`; may be mixed modality |
+| `modality` | str | `"auto"` | `"auto"` \| `"rna"` \| `"cite"` \| `"multiome"` |
+| `min_genes` | int | 200 | Minimum genes per cell |
+| `max_genes` | int | 6000 | Maximum genes per cell |
+| `max_mt_pct` | float | 20.0 | Maximum MT% per cell |
+| `remove_doublets` | bool | True | Remove Scrublet doublets |
+| `generate_report` | bool | False | Write HTML report |
+| `report_path` | str | `"reports/qc_report.html"` | HTML output path |
+| `sample_name` | str | `"sample"` | Label in report header |
 
 **Input**
 
 ```
 adata  : AnnData   →  raw counts in adata.X (output of ingest.py)
+                       May contain mixed modalities (RNA + ADT or RNA + ATAC)
 ```
 
 **Output**
 
 ```
-adata_filtered  : AnnData   →  cells passing all QC filters; QC metrics in .obs
-metrics         : dict      →  cell counts, per-filter removal counts, medians, thresholds
+mdata              : MuData   →  one AnnData per modality, filtered cells only
+mdata["rna"]       : AnnData  →  RNA features, QC metrics in .obs (always present)
+mdata["adt"]       : AnnData  →  ADT features, clean .obs (CITE-seq only)
+mdata["atac"]      : AnnData  →  ATAC peaks, clean .obs (Multiome only)
+metrics            : dict     →  cell counts, per-filter removal counts, medians,
+                                 thresholds, detected modality
 ```
 
 **Usage**
@@ -126,13 +155,19 @@ metrics         : dict      →  cell counts, per-filter removal counts, medians
 from pipeline.modules.qc.ingest import load_dataset
 from pipeline.modules.qc.qc import run_qc
 
-adata = load_dataset("data/benchmark/GSE194122_BMMC.h5ad")
+# Works for plain RNA, CITE-seq, and Multiome — no manual subsetting needed
+adata = load_dataset("data/benchmark/GSE194122_cite_raw_only.h5ad")
 
-# Basic usage
-adata_filtered, metrics = run_qc(adata)
+mdata, metrics = run_qc(adata)
+
+# Access results
+adata_rna = mdata["rna"]          # RNA AnnData with QC metrics in .obs
+adata_adt = mdata["adt"]          # ADT AnnData (CITE-seq only)
+print(metrics["modality"])        # "cite"
+print(metrics["n_cells_output"])  # cells that passed QC
 
 # Custom thresholds + HTML report
-adata_filtered, metrics = run_qc(
+mdata, metrics = run_qc(
     adata,
     min_genes=300,
     max_genes=5000,
@@ -141,9 +176,21 @@ adata_filtered, metrics = run_qc(
     report_path="reports/qc_GSE194122.html",
     sample_name="GSE194122_BMMC",
 )
+
+# Pass RNA to normalization
+from pipeline.modules.qc.normalize import normalize
+adata_norm = normalize(mdata["rna"])
 ```
 
-**Connects to**: `normalization.py` (Phase 1, next step) — pass `adata_filtered`
+**Helper functions (importable)**
+
+```python
+from pipeline.modules.qc.qc import _detect_modality
+
+modality = _detect_modality(adata)  # "rna" | "cite" | "multiome"
+```
+
+**Connects to**: `normalize.py` (Phase 1, next step) — pass `mdata["rna"]`
 
 ---
 
@@ -178,8 +225,8 @@ at code.
 **Input**
 
 ```
-adata_raw      : AnnData  →  pre-filter AnnData (after metrics computed)
-adata_filtered : AnnData  →  post-filter AnnData
+adata_raw      : AnnData  →  pre-filter RNA AnnData (after metrics computed)
+adata_filtered : AnnData  →  post-filter RNA AnnData
 metrics        : dict     →  output of run_qc()
 output_path    : str      →  where to write the .html file
 sample_name    : str      →  label shown in the report header
@@ -265,16 +312,17 @@ python pipeline/modules/qc/data_report.py \
 Raw file (.h5ad / .h5 / MTX dir)
         │
         ▼
-   ingest.py          → adata.X = raw counts
+   ingest.py          → adata.X = raw counts (may contain mixed modalities)
         │
         ▼
-     qc.py            → adata_filtered + metrics dict
+     qc.py            → MuData: mdata["rna"] + mdata["adt"] / mdata["atac"]
         │                       │
         │                       ▼
         │               qc_report.py  → reports/qc_report.html
         │
-        ▼
-  normalization.py    ← NEXT STEP (Phase 1)
+        ├── mdata["rna"]  → normalize.py   ← NEXT STEP (Phase 1)
+        ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
+        └── mdata["atac"] → ATAC QC (Phase 4)
 ```
 
 ---
@@ -289,16 +337,19 @@ python3 -c "
 from pipeline.modules.qc.ingest import load_dataset
 from pipeline.modules.qc.qc import run_qc
 
-adata = load_dataset('data/benchmark/GSE194122_openproblems_neurips2021_cite_BMMC_processed.h5ad')
-adata_filtered, metrics = run_qc(
+# Pass the full mixed AnnData — run_qc() handles modality detection internally
+adata = load_dataset('data/benchmark/GSE194122_cite_raw_only.h5ad')
+mdata, metrics = run_qc(
     adata,
     generate_report=True,
     report_path='reports/qc_BMMC.html',
     sample_name='GSE194122_BMMC',
 )
-print('Cells before:', metrics['n_cells_input'])
-print('Cells after: ', metrics['n_cells_output'])
-print('Removed:     ', metrics['n_cells_removed'])
+print('Modality detected:', metrics['modality'])
+print('Cells before:     ', metrics['n_cells_input'])
+print('Cells after:      ', metrics['n_cells_output'])
+print('Removed:          ', metrics['n_cells_removed'])
+print('MuData keys:      ', list(mdata.mod.keys()))
 "
 ```
 
@@ -310,10 +361,12 @@ print('Removed:     ', metrics['n_cells_removed'])
 |-----------|---------------|
 | `tests/test_phase0_structure.py` | Repo structure, imports, config schema |
 | `tests/test_ingest.py` | Format detection, raw count extraction, all three loaders |
-| `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation |
+| `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation, modality detection, MuData structure, ADT/ATAC preservation |
 
 Run all QC-related tests:
 
 ```bash
+conda activate omicsage
 python -m pytest tests/test_phase0_structure.py tests/test_ingest.py tests/test_qc.py -v
+# Expected: 42 passed (test_qc.py), 2 skipped
 ```
