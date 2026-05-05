@@ -1,5 +1,5 @@
 # OmicSage — Progress Tracker
-> Updated: 2026-04-30 (end of session 2)
+> Updated: 2026-05-04 (end of session 3)
 > Update this file at the end of every session.
 
 ---
@@ -25,12 +25,13 @@
 - [x] Conda environment created (omicsage, Python 3.11.15)
 - [x] All Phase 1 packages installed and verified (scanpy 1.11.5)
 - [x] GEOparse installed
+- [x] ipykernel + jupyter installed
 - [x] Always use: conda activate omicsage && python -m pytest
 
 ### Benchmark Dataset
 - [x] Dataset selected: GSE194122 NeurIPS 2021 BMMC (switched from GSE166635)
 - [x] CITE-seq file downloaded and unzipped (~2.5 GB)
-- [ ] Multiome file — downloading/unzipping (in progress)
+- [ ] Multiome file — large, deferred
 - [x] Data structure fully understood (see NEXT_SESSION.md)
 
 ### Utility Scripts
@@ -41,6 +42,7 @@
 ### Data Intake Report
 - [x] pipeline/modules/qc/data_report.py
       - Works for any .h5ad (public or personal)
+      - Uses backed='r' mode — works on files of any size (fixed this session)
       - Fetches GEO metadata via NCBI eutils API if --geo passed
       - Static matplotlib QC plots embedded in HTML
       - Inventories modalities, obs/var columns, embeddings, layers
@@ -53,19 +55,46 @@
       - Falls back to adata.raw, then layer scan
       - Populates adata.uns['omicsage_source'] provenance metadata
       - Ensures sparse CSR output
-- [x] tests/test_ingest.py — 30/30 tests passing (98s)
-      - Unit tests: format detection, integer matrix check, layer detection
-      - Contract tests: shape, dtype, uns, sample column, normalized layer
-      - Real data: GSE166635 HCC1 MTX + GSE194122 CITE h5ad
+- [x] tests/test_ingest.py — 30/30 tests passing
 
-### QC Module — NEXT SESSION
-- [ ] pipeline/modules/qc/qc.py
-- [ ] tests/test_qc.py
+### QC Module — COMPLETE
+- [x] pipeline/modules/qc/qc.py — COMPLETE, ALL TESTS PASSING
+      - MT gene auto-detection (MT- human / mt- mouse, gene_ids fallback)
+      - Per-cell metrics: n_genes_by_counts, total_counts, pct_counts_mt
+      - Scrublet doublet detection (graceful failure handling)
+      - Configurable filters: min_genes, max_genes, max_mt_pct, remove_doublets
+      - generate_report=True triggers HTML report generation
+      - Validated: MT% correlation vs GEX_pct_counts_mt r > 0.99 ✓
+- [x] pipeline/modules/qc/qc_report.py — COMPLETE
+      - Self-contained HTML report, no external dependencies
+      - Violin plots before/after, UMI vs genes scatter, doublet histogram
+      - Summary cards, filter tables, ground-truth MT% correlation plot
+- [x] tests/test_qc.py — 33 passed, 2 skipped
+      - Real data only — no synthetic fixtures
+      - Session-scoped fixtures, CITE-seq subsampled to 5000 cells
+      - Ground-truth MT% validation (r > 0.99, MAE < 0.5%)
 
-### Processing — NOT STARTED
-- [ ] Normalization (scran)
-- [ ] HVG selection
-- [ ] PCA + UMAP
+### Documentation
+- [x] docs/MODULE_DOCS.md — documents all 4 QC module scripts
+      (ingest.py, qc.py, qc_report.py, data_report.py)
+
+### Notebook
+- [x] notebooks/phase1_qc.ipynb — CREATED
+      - Runs full QC pipeline on CITE-seq + HCC MTX
+      - Generates HTML reports to reports/
+      - Saves filtered AnnData to data/processed/
+
+### Processed Data (output of QC)
+- [x] data/processed/GSE194122_cite_qc.h5ad
+- [x] data/processed/GSE166635_HCC1_qc.h5ad
+
+### Processing — NEXT SESSION
+- [ ] pipeline/modules/qc/normalize.py  ← NEXT
+      - scran normalization
+      - log1p transform
+      - HVG selection (top 2000, seurat_v3)
+- [ ] tests/test_normalize.py
+- [ ] PCA + UMAP + t-SNE
 - [ ] Batch correction (Harmony + scVI)
 
 ### Clustering — NOT STARTED
@@ -97,8 +126,8 @@
 | File | Modality | Status | Use |
 |------|----------|--------|-----|
 | GSE194122 CITE BMMC processed.h5ad | RNA + ADT | Ready | Phase 1 dev + validation |
-| GSE194122 multiome BMMC processed.h5ad | RNA + ATAC | Downloading | Phase 1 + Phase 4 |
-| GSE166635 HCC1+HCC2 MTX | RNA | Ready (data/test/) | Test fixture for MTX ingestion |
+| GSE194122 multiome BMMC processed.h5ad | RNA + ATAC | Deferred (large) | Phase 1 + Phase 4 |
+| GSE166635 HCC1+HCC2 MTX | RNA | Ready (data/test/) | MTX ingestion + QC testing |
 | PBMC 10k (10x Genomics) | RNA | Not downloaded | Validation |
 | 10x Visium human brain | Spatial | Not downloaded | Phase 5 |
 
@@ -113,3 +142,9 @@
 | 2026-04-30 | data_report.py outputs static HTML | No Quarto dependency for intake report |
 | 2026-04-30 | GSE166635 kept as test fixture in data/test/ | Good real MTX data for testing ingestion MTX path |
 | 2026-04-30 | ingest.py checks layers then adata.raw for raw counts | GSE194122 uses layers['counts']; other datasets may use adata.raw |
+| 2026-05-04 | data_report.py uses backed='r' | Large h5ad files (2.9 GB) were killing the process |
+| 2026-05-04 | QC tests use real data only, no synthetic fixtures | Synthetic fixtures produced unrealistic data and failed; real data is more meaningful |
+| 2026-05-04 | CITE-seq tests subsample to 5000 cells | 90k cells × 14k genes exceeds 7.6 GB RAM when running Scrublet |
+| 2026-05-04 | Ground-truth MT% tests subset to feature_types='GEX' | CITE file mixes RNA+ADT; var_names_make_unique renames MT genes and breaks detection |
+| 2026-05-04 | QC report embedded in qc.py via generate_report=True | Every step should produce a readable output — core OmicSage design principle |
+| 2026-05-04 | Notebook-first workflow for running pipeline | Better visibility per step, good portfolio piece |
