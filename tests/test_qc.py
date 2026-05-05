@@ -200,7 +200,9 @@ class TestMetricsComputed:
             "n_removed_low_genes", "n_removed_high_genes",
             "n_removed_high_mt", "n_removed_doublets",
             "median_genes_per_cell", "median_umi_per_cell",
-            "median_mt_pct", "n_mt_genes", "thresholds", "modality",
+            "median_mt_pct", "median_ribo_pct", "median_hb_pct",
+            "n_mt_genes", "n_ribo_genes", "n_hb_genes",
+            "thresholds", "modality",
         ]
         for key in required:
             assert key in metrics, f"Missing key in metrics dict: '{key}'"
@@ -315,7 +317,101 @@ class TestDoubletScoresAdded:
 
 
 # ---------------------------------------------------------------------------
-# 5. Filtered MuData shape
+# 5. Ribosomal and hemoglobin gene metrics
+# ---------------------------------------------------------------------------
+
+class TestRiboHbMetrics:
+
+    def test_pct_counts_ribo_in_obs(self, cite_qc):
+        """pct_counts_ribo must be present in mdata['rna'].obs after QC."""
+        _, mdata, _ = cite_qc
+        assert "pct_counts_ribo" in mdata["rna"].obs.columns
+
+    def test_pct_counts_hb_in_obs(self, cite_qc):
+        """pct_counts_hb must be present in mdata['rna'].obs after QC."""
+        _, mdata, _ = cite_qc
+        assert "pct_counts_hb" in mdata["rna"].obs.columns
+
+    def test_pct_counts_ribo_range(self, cite_qc):
+        """Ribo% must be in [0, 100] for all cells."""
+        _, mdata, _ = cite_qc
+        ribo = mdata["rna"].obs["pct_counts_ribo"]
+        assert (ribo >= 0).all() and (ribo <= 100).all(), (
+            f"Ribo% out of range: min={ribo.min():.2f}, max={ribo.max():.2f}"
+        )
+
+    def test_pct_counts_hb_range(self, cite_qc):
+        """HB% must be in [0, 100] for all cells."""
+        _, mdata, _ = cite_qc
+        hb = mdata["rna"].obs["pct_counts_hb"]
+        assert (hb >= 0).all() and (hb <= 100).all(), (
+            f"HB% out of range: min={hb.min():.2f}, max={hb.max():.2f}"
+        )
+
+    def test_ribo_genes_detected(self, cite_qc):
+        """At least 1 ribosomal gene (RPS/RPL) must be detected in BMMC data."""
+        _, _, metrics = cite_qc
+        assert metrics["n_ribo_genes"] > 0, (
+            "No ribosomal genes detected — check that var_names contain RPS/RPL symbols"
+        )
+
+    def test_ribo_gene_count_realistic(self, cite_qc):
+        """Human cells have ~80 cytoplasmic ribosomal protein genes (RPS + RPL).
+        Expect at least 50 and no more than 200."""
+        _, _, metrics = cite_qc
+        assert 50 <= metrics["n_ribo_genes"] <= 200, (
+            f"n_ribo_genes={metrics['n_ribo_genes']} — expected 50-200"
+        )
+
+    def test_median_ribo_pct_in_metrics(self, cite_qc):
+        """metrics dict must contain median_ribo_pct."""
+        _, _, metrics = cite_qc
+        assert "median_ribo_pct" in metrics
+
+    def test_median_hb_pct_in_metrics(self, cite_qc):
+        """metrics dict must contain median_hb_pct."""
+        _, _, metrics = cite_qc
+        assert "median_hb_pct" in metrics
+
+    def test_n_ribo_genes_in_metrics(self, cite_qc):
+        """metrics dict must contain n_ribo_genes."""
+        _, _, metrics = cite_qc
+        assert "n_ribo_genes" in metrics
+
+    def test_n_hb_genes_in_metrics(self, cite_qc):
+        """metrics dict must contain n_hb_genes."""
+        _, _, metrics = cite_qc
+        assert "n_hb_genes" in metrics
+
+    def test_median_ribo_pct_realistic(self, cite_qc):
+        """Ribosomal reads typically account for 10-60% in immune cells.
+        Expect median ribo% > 5% for BMMC data."""
+        _, _, metrics = cite_qc
+        assert metrics["median_ribo_pct"] > 5.0, (
+            f"median_ribo_pct={metrics['median_ribo_pct']:.2f}% — expected > 5% for BMMC"
+        )
+
+    def test_median_hb_pct_low_in_bmmc(self, cite_qc):
+        """BMMC cells are not erythrocytes — median HB% should be near 0."""
+        _, _, metrics = cite_qc
+        assert metrics["median_hb_pct"] < 5.0, (
+            f"median_hb_pct={metrics['median_hb_pct']:.2f}% — expected < 5% for BMMC "
+            f"(high HB% would suggest erythrocyte contamination)"
+        )
+
+    def test_ribo_var_column_present(self, cite_qc):
+        """mdata['rna'].var must contain a 'ribo' boolean column."""
+        _, mdata, _ = cite_qc
+        assert "ribo" in mdata["rna"].var.columns
+
+    def test_hb_var_column_present(self, cite_qc):
+        """mdata['rna'].var must contain a 'hb' boolean column."""
+        _, mdata, _ = cite_qc
+        assert "hb" in mdata["rna"].var.columns
+
+
+# ---------------------------------------------------------------------------
+# 6. Filtered MuData shape  (was 5 — renumbered after ribo/hb section added)
 # ---------------------------------------------------------------------------
 
 class TestFilteredMudataShape:

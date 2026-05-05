@@ -13,14 +13,14 @@ Output: MuData object + QC metrics dict.
         Multiome additionally contains "atac".
 
         QC metrics (n_genes_by_counts, total_counts, pct_counts_mt,
-        doublet_score, predicted_doublet) are computed on RNA features
-        only and live in mdata["rna"].obs.
+        pct_counts_ribo, pct_counts_hb, doublet_score, predicted_doublet)
+        are computed on RNA features only and live in mdata["rna"].obs.
         Other modalities start clean, ready for their own QC later.
 
 Filters applied (all configurable, all based on RNA metrics):
   - min_genes       : minimum genes per cell (default 200)
-  - max_genes       : maximum genes per cell (default 2500)
-  - max_mt_pct      : maximum MT% per cell   (default 5.0)
+  - max_genes       : maximum genes per cell (default 6000)
+  - max_mt_pct      : maximum MT% per cell   (default 20)
   - remove_doublets : drop Scrublet doublets  (default True)
 """
 
@@ -47,8 +47,8 @@ def run_qc(
     adata: AnnData,
     modality: str = "auto",
     min_genes: int = 200,
-    max_genes: int = 2500,
-    max_mt_pct: float = 5.0,
+    max_genes: int = 6000,
+    max_mt_pct: float = 20.0,
     remove_doublets: bool = True,
     scrublet_expected_doublet_rate: float = 0.06,
     random_state: int = 0,
@@ -127,19 +127,30 @@ def run_qc(
     logger.info("QC start — %d cells × %d RNA features", n_cells_input, n_genes_input)
 
     # ------------------------------------------------------------------
-    # 2. Detect mitochondrial genes (RNA only)
+    # 2. Detect mitochondrial, ribosomal, and hemoglobin genes (RNA only)
     # ------------------------------------------------------------------
     mt_mask = _detect_mt_genes(adata_rna)
     n_mt = int(mt_mask.sum())
     logger.info("Mitochondrial genes detected: %d", n_mt)
     adata_rna.var["mt"] = mt_mask
 
+    ribo_mask = adata_rna.var_names.str.startswith(("RPS", "RPL"))
+    n_ribo = int(ribo_mask.sum())
+    logger.info("Ribosomal genes detected: %d", n_ribo)
+    adata_rna.var["ribo"] = ribo_mask
+
+    hb_mask = adata_rna.var_names.str.contains("^HB[^(P)]", regex=True)
+    n_hb = int(hb_mask.sum())
+    logger.info("Hemoglobin genes detected: %d", n_hb)
+    adata_rna.var["hb"] = hb_mask
+
     # ------------------------------------------------------------------
     # 3. Compute per-cell QC metrics (RNA only)
+    #    pct_counts_mt, pct_counts_ribo, pct_counts_hb added to .obs
     # ------------------------------------------------------------------
     sc.pp.calculate_qc_metrics(
         adata_rna,
-        qc_vars=["mt"],
+        qc_vars=["mt", "ribo", "hb"],
         percent_top=None,
         log1p=False,
         inplace=True,
@@ -225,7 +236,11 @@ def run_qc(
         "median_genes_per_cell": float(np.median(adata_rna.obs["n_genes_by_counts"])),
         "median_umi_per_cell":   float(np.median(adata_rna.obs["total_counts"])),
         "median_mt_pct":         float(np.median(adata_rna.obs["pct_counts_mt"])),
+        "median_ribo_pct":       float(np.median(adata_rna.obs["pct_counts_ribo"])),
+        "median_hb_pct":         float(np.median(adata_rna.obs["pct_counts_hb"])),
         "n_mt_genes":            n_mt,
+        "n_ribo_genes":          n_ribo,
+        "n_hb_genes":            n_hb,
     }
 
     # ------------------------------------------------------------------
