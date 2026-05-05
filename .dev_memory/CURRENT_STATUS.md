@@ -1,31 +1,69 @@
 # OmicSage — Current Status
-Last updated: 2026-04-30
+> Last updated: 2026-05-05
 
 ## Phase
-Phase 0 — Foundation: COMPLETE
-Next: Phase 1 — Core scRNA Pipeline
+Phase 1 — Core scRNA Pipeline
 
-## Built and Verified
-- Repo structure: all dirs and files per spec
-- config/schema.yaml: complete, all parameters documented
-- pipeline/main.nf: modality router
-- pipeline/workflows/*.nf: stubs for all 4 modalities
-- nextflow.config: profiles local/docker/singularity/slurm/ci/test
-- docker/Dockerfile.python: mambaforge + scanpy + scvi + BioChatter + Quarto
-- docker/Dockerfile.r: Bioconductor + Seurat v5 + Signac + ArchR + SingleR
-- docker-compose.yml: python, streamlit, r, nextflow services
-- environment.yml: conda env
-- .github/workflows/ci.yml: lint + pytest + docker build
-- .github/workflows/docker-publish.yml: GHCR on version tags
-- ai/biochatter_client.py: typed stub (Phase 3 pending)
-- cli/omicsage.py: create-project, run, list, compare
-- ui/app.py: Streamlit landing page stub
-- tests/test_phase0_structure.py: 54 tests, all passing
-- .dev_memory/: all 5 files initialized
-- README.md, LICENSE, .gitignore
+## What Is Built and Tested Right Now
 
-## Not Yet Done
-- Docker images not built locally
-- GSE166635 not downloaded
-- First git push pending
-- DVC not initialized
+### ✅ Phase 0 — Foundation
+- Repo structure scaffolded
+- Docker base images (Python + R) — defined, not yet built locally
+- CI/CD via GitHub Actions — configured
+- YAML config schema — defined
+- .dev_memory/ system — initialized
+
+### ✅ Ingestion (pipeline/modules/qc/ingest.py)
+- Auto-detects 10x MEX, H5, AnnData formats
+- Moves normalized values out of .X, puts raw counts in .X
+- Handles GSE194122 CITE-seq and multiome, GSE166635 HCC
+
+### ✅ QC (pipeline/modules/qc/qc.py)
+- Modality-aware: auto-detects GEX / ADT / ATAC from var['feature_types']
+- Returns MuData with mdata["rna"], mdata["adt"], mdata["atac"] slots
+- MT%, genes/cell, Scrublet doublets, SoupX ambient RNA
+- 42 tests passing in tests/test_qc.py
+
+### ✅ Normalization (pipeline/modules/qc/normalize.py)  ← NEW THIS SESSION
+- Input: AnnData with raw counts in .X (from mdata["rna"])
+- Saves raw counts to layers['counts']
+- Normalizes to CP10K (normalize_total)
+- log1p transform
+- Saves log1p values to layers['logcounts']  (Seurat convention)
+- HVG selection — top 2000 genes, flavor='seurat_v3' (pre-log1p on counts)
+- batch_key support for per-batch HVG selection
+- Input validation — rejects already-normalized data
+- Provenance stored in uns['omicsage_normalization']
+- 12 tests passing in tests/test_normalize.py
+
+### ✅ Normalization Report (reports/normalization_report.py)  ← NEW THIS SESSION
+- Self-contained HTML report (no Quarto dependency yet)
+- Figures: HVG scatter, library size violin, top 20 HVGs, gene detection rate
+- Summary table + provenance table from uns
+- Callable from notebook or CLI
+- CLI: python reports/normalization_report.py --input ... --output ... --report ...
+
+## Total Tests Passing
+138 (pre-session) + 12 (normalize) = 150 expected after this session
+
+## What Is NOT Built Yet
+- reduce.py     — PCA + UMAP + neighbors (next session)
+- cluster.py    — Leiden clustering
+- annotate.py   — SingleR + LLM cell type annotation
+- DEG module
+- GSEA module
+- Trajectory
+- scATAC module (Phase 4)
+- Spatial module (Phase 5)
+- Multiome module (Phase 6)
+- Streamlit UI (Phase 7)
+- CLI (Phase 7)
+- Quarto reports (Phase 2)
+
+## Processed Data Files
+- data/processed/GSE194122_cite_rna_qc.h5ad        ← QC-filtered RNA, raw counts in .X
+- data/processed/GSE194122_cite_adt_qc.h5ad        ← QC-filtered ADT
+- data/processed/GSE194122_multiome_rna_qc.h5ad    ← QC-filtered multiome RNA
+- data/processed/GSE194122_multiome_atac_qc.h5ad   ← QC-filtered ATAC (Phase 4)
+- data/processed/GSE166635_HCC1_qc.h5ad            ← QC-filtered HCC RNA
+- data/processed/GSE194122_cite_normalized.h5ad    ← TO CREATE in notebook

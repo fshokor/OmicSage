@@ -19,8 +19,8 @@ Output: MuData object + QC metrics dict.
 
 Filters applied (all configurable, all based on RNA metrics):
   - min_genes       : minimum genes per cell (default 200)
-  - max_genes       : maximum genes per cell (default 6000)
-  - max_mt_pct      : maximum MT% per cell   (default 20)
+  - max_genes       : maximum genes per cell (default 2500)
+  - max_mt_pct      : maximum MT% per cell   (default 5.0)
   - remove_doublets : drop Scrublet doublets  (default True)
 """
 
@@ -47,8 +47,8 @@ def run_qc(
     adata: AnnData,
     modality: str = "auto",
     min_genes: int = 200,
-    max_genes: int = 6000,
-    max_mt_pct: float = 20.0,
+    max_genes: int = 2500,
+    max_mt_pct: float = 5.0,
     remove_doublets: bool = True,
     scrublet_expected_doublet_rate: float = 0.06,
     random_state: int = 0,

@@ -1,116 +1,129 @@
 ## Session Context
 Date: 2026-05-05
 Phase: 1 — Core scRNA Pipeline
-Last thing completed: Multi-modal QC fix — modality-aware run_qc() returning MuData, 42/42 tests passing, notebook updated
-File last worked on: notebooks/phase1_qc.ipynb
+Last thing completed: Normalization module — normalize.py, test_normalize.py (12 tests), normalization_report.py
+File last worked on: reports/normalization_report.py
 
 ## Today's Goal
-Build the normalization module — pipeline/modules/qc/normalize.py
-ONE goal only — do not start PCA/UMAP until normalization is tested and working.
+Build the dimensionality reduction module — pipeline/modules/qc/reduce.py
+ONE goal only — do not start clustering until PCA + UMAP is tested and working.
 
 ## Step 1 — Verify last session still works
 ```bash
 cd ~/OmicSage
 conda activate omicsage
-python -m pytest tests/test_phase0_structure.py tests/test_ingest.py tests/test_qc.py -v
-# Expected: 42 passed (test_qc.py), 2 skipped
+python -m pytest tests/test_normalize.py -v
+# Expected: 12 passed
 ```
 
-## Step 2 — Implement normalize.py
-File to create: pipeline/modules/qc/normalize.py
+## Step 2 — Implement reduce.py
+File to create: pipeline/modules/qc/reduce.py
 
 Key requirements:
-- Input: AnnData with raw counts in adata.X (from mdata["rna"], output of qc.py)
-- Save raw counts to adata.layers['counts'] before modifying X
-- Normalize with scran (scanpy's normalize_total as fallback)
-- Log1p transform
-- HVG selection: top 2000 highly variable genes (flavor='seurat_v3')
-- Return normalized AnnData + normalization metrics dict
-- Store normalization params in adata.uns['omicsage_normalization']
+- Input: normalized AnnData (output of normalize.py — logcounts in .X, HVGs flagged)
+- Run PCA on HVG subset only (use_highly_variable=True)
+- Store PCA in obsm['X_pca'], n_comps=50 default
+- Run UMAP (via sc.tl.umap) — store in obsm['X_umap']
+- Run t-SNE (optional, default off) — store in obsm['X_tsne']
+- Compute neighbors graph before UMAP (sc.pp.neighbors)
+- Store all params in adata.uns['omicsage_reduce']
+- Return reduced AnnData + metrics dict
+- n_neighbors=15, n_pcs=30 for neighbors (standard defaults)
 
 ## Step 3 — Write tests
-File to create: tests/test_normalize.py
+File to create: tests/test_reduce.py
 
 Tests to write:
-- test_raw_counts_preserved_in_layer()
-- test_x_is_normalized_after_run()
-- test_log1p_applied()
-- test_hvg_selected()
-- test_hvg_count_correct()
-- test_normalization_params_in_uns()
-- test_original_adata_not_mutated()
+- test_pca_embedding_shape()           — obsm['X_pca'] shape == (n_cells, n_comps)
+- test_umap_embedding_shape()          — obsm['X_umap'] shape == (n_cells, 2)
+- test_pca_uses_hvg_only()             — varm['PCs'] only on HVG subset
+- test_neighbors_graph_computed()      — obsp['connectivities'] exists
+- test_params_stored_in_uns()          — uns['omicsage_reduce'] has required keys
+- test_original_not_mutated()          — inplace=False leaves caller unchanged
+- test_tsne_optional()                 — tsne off by default, on when requested
 
-## Step 4 — Add normalization to notebook
-Add a new section to notebooks/phase1_qc.ipynb:
-- Load from data/processed/GSE194122_cite_rna_qc.h5ad  ← note: new filename from MuData fix
-- Run normalize.py
-- Show HVG plot
-- Save to data/processed/GSE194122_cite_normalized.h5ad
+## Step 4 — Generate report
+Add reduce step to normalization_report.py OR create separate
+reports/reduce_report.py with:
+- Variance explained plot (scree plot)
+- UMAP coloured by n_genes, mt_pct, batch (QC metrics)
+- PCA coloured by same QC metrics
+
+## Step 5 — Add reduce to notebook
+Add new section to notebooks/phase1_qc.ipynb:
+- Load from data/processed/GSE194122_cite_normalized.h5ad
+- Run reduce.py
+- Show UMAP coloured by cell_type (ground truth validation)
+- Save to data/processed/GSE194122_cite_reduced.h5ad
 
 ## Known Issues From Last Session
 - Docker images still not built locally (intentional)
 - Always use `python -m pytest` not bare `pytest` (system Python issue)
 - Always `conda activate omicsage` before running anything
-- OldFormatWarning from GSE194122 — harmless, file written with old anndata version
-- Notebook must be opened from OmicSage root — add os.chdir('/home/shoko/OmicSage') to cell 1
-- QC tests subsample CITE-seq to 5000 cells to stay within 7.6 GB RAM
+- OldFormatWarning from GSE194122 — harmless
+- Notebook must be opened from OmicSage root — os.chdir('/home/shoko/OmicSage') in cell 1
+- seurat_v3 HVG flavor needs ≥500 cells to avoid near-singularity errors
+  → tests use flavor='seurat' for small fixtures, seurat_v3 only in large fixture test
 
 ## Files Modified This Session
-- pipeline/modules/qc/qc.py              <- UPDATED: modality-aware, MuData return
-- tests/test_qc.py                       <- UPDATED: MuData access pattern, 42 tests
-- notebooks/phase1_qc.ipynb             <- UPDATED: MuData API, no manual GEX subsetting
-- .dev_memory/NEXT_SESSION.md           <- UPDATED
-- .dev_memory/PROGRESS.md              <- UPDATED
-- docs/MODULE_DOCS.md                   <- UPDATED
+- pipeline/modules/qc/normalize.py     ← CREATED: full normalization module
+- tests/test_normalize.py              ← CREATED: 12 tests, all passing
+- reports/normalization_report.py      ← CREATED: self-contained HTML report
+- .dev_memory/NEXT_SESSION.md          ← UPDATED (this file)
+- .dev_memory/CURRENT_STATUS.md        ← UPDATED
+- .dev_memory/PROGRESS.md             ← UPDATED
 
 ## Verify This Session's Work
 ```bash
 cd ~/OmicSage
 conda activate omicsage
-python -m pytest tests/test_qc.py -v
-# Expected: 42 passed, 2 skipped
+python -m pytest tests/test_normalize.py -v
+# Expected: 12 passed
 ```
 
-## Relevant Context — QC API (v2, updated this session)
+## Relevant Context — Normalize API
 
-run_qc() now returns (MuData, dict) — not (AnnData, dict).
+normalize() signature:
+    from pipeline.modules.qc.normalize import normalize
 
-    mdata, metrics = run_qc(adata)
-    mdata["rna"]   # filtered RNA AnnData — QC metrics in .obs
-    mdata["adt"]   # CITE-seq only — ADT features, same filtered cells
-    mdata["atac"]  # Multiome only — ATAC peaks, same filtered cells
+    adata_norm, metrics = normalize(
+        mdata["rna"],              # RNA slot from run_qc()
+        target_sum=1e4,            # CP10K
+        n_top_genes=2000,
+        hvg_flavor="seurat_v3",    # default — needs ≥500 cells
+        batch_key="batch",         # optional — per-batch HVG selection
+        inplace=False,
+    )
 
-Modality is auto-detected from adata.var['feature_types'].
-Pass the full mixed AnnData — no manual GEX subsetting needed.
+Layer layout after normalize():
+    adata.X                    — log1p-normalized values (same as logcounts)
+    adata.layers['counts']     — raw integer counts
+    adata.layers['logcounts']  — log1p CP10K values (mirrors .X, Seurat convention)
+    adata.var['highly_variable'] — boolean HVG flag (2000 genes)
+    adata.uns['omicsage_normalization'] — full provenance record
 
-For normalization, always pass mdata["rna"]:
-    adata_rna = mdata["rna"]
-    adata_norm = normalize(adata_rna, ...)
+Report:
+    from reports.normalization_report import run_normalization_report
+    run_normalization_report(adata_norm, metrics, dataset_name="GSE194122_CITE")
+    # → reports/output/normalization_report.html
 
 ## Relevant Context — GSE194122 Data Structure
-CITE-seq file (our primary benchmark):
-  - adata.X                = NORMALIZED values in raw file
-  - adata.layers['counts'] = RAW integer counts <- ingest.py moves this to X
-  - adata.var['feature_types'] = 'GEX' (RNA) or 'ADT' (protein)
-  - adata.obs['cell_type'] = 8+ annotated cell types (ground truth for validation)
-  - adata.obs['GEX_pct_counts_mt'] = precomputed MT% (validated r > 0.99 ✓)
-  - adata.obs['batch'], obs['Site'], obs['DonorID'] = batch info for correction
-  - adata.obsm['GEX_X_umap'], obsm['GEX_X_pca'] = ground truth embeddings
+Processed files (updated after this session):
+  - data/processed/GSE194122_cite_rna_qc.h5ad       ← input to normalize
+  - data/processed/GSE194122_cite_normalized.h5ad   ← output of normalize (to create in notebook)
+  - data/processed/GSE194122_cite_adt_qc.h5ad
+  - data/processed/GSE194122_multiome_rna_qc.h5ad
+  - data/processed/GSE194122_multiome_atac_qc.h5ad
+  - data/processed/GSE166635_HCC1_qc.h5ad
 
-Processed files (output of QC, input for normalization):
-  - data/processed/GSE194122_cite_rna_qc.h5ad    <- RNA only, filtered, raw counts in X
-  - data/processed/GSE194122_cite_adt_qc.h5ad    <- ADT only, filtered, ready for CLR
-  - data/processed/GSE194122_multiome_rna_qc.h5ad   <- RNA only, filtered
-  - data/processed/GSE194122_multiome_atac_qc.h5ad  <- ATAC peaks, filtered, Phase 4
-  - data/processed/GSE166635_HCC1_qc.h5ad        <- filtered, raw counts in X
-
-Validation strategy:
-  Our QC MT%   -> compare to obs['GEX_pct_counts_mt']  (done ✓, r > 0.99)
-  Our clusters -> compare to obs['cell_type']            (Phase 1 milestone)
-  Our UMAP     -> compare to obsm['GEX_X_umap']         (Phase 1 milestone)
+Validation strategy for reduce step:
+  Our UMAP  → compare to adata.obsm['GEX_X_umap']   (ground truth from paper)
+  Our PCA   → compare to adata.obsm['GEX_X_pca']    (ground truth from paper)
+  Our clusters → compare to adata.obs['cell_type']   (Phase 1 milestone)
 
 ## Conda Environment
 Name: omicsage
 Activate: conda activate omicsage
 Python: 3.11.15
-Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata, ipykernel, jupyter
+Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata,
+                   ipykernel, jupyter, scikit-misc (added this session for seurat_v3)

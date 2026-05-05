@@ -2,7 +2,7 @@
 
 > Location: `pipeline/modules/qc/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: May 2026
+> Last updated: 2026-05-05
 
 This document describes every script in the QC module — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -190,7 +190,7 @@ from pipeline.modules.qc.qc import _detect_modality
 modality = _detect_modality(adata)  # "rna" | "cite" | "multiome"
 ```
 
-**Connects to**: `normalize.py` (Phase 1, next step) — pass `mdata["rna"]`
+**Connects to**: `normalize.py` — pass `mdata["rna"]`
 
 ---
 
@@ -306,6 +306,201 @@ python pipeline/modules/qc/data_report.py \
 
 ---
 
+
+---
+
+## 5. `normalize.py`
+
+**What it does**
+
+Normalizes raw-count RNA AnnData (the `mdata["rna"]` slot from `qc.py`) and
+selects highly variable genes for dimensionality reduction. Produces two layers
+so every downstream module can access either raw or normalized counts without
+recomputation.
+
+**Why it exists**
+
+Raw counts are not directly comparable across cells — cells with more RNA
+captured will appear to express every gene more highly. Normalization removes
+this cell-level sequencing depth effect. HVG selection then reduces the gene
+space to the genes that carry the most biological signal, which speeds up PCA,
+UMAP, and clustering without sacrificing accuracy.
+
+**Steps performed (in order)**
+
+1. Input validation — rejects non-AnnData inputs and already-normalized matrices
+2. Save raw counts to `layers['counts']` before any modification
+3. HVG selection on raw counts (`seurat_v3` flavor only — run pre-normalization
+   as the method requires integer counts for its variance model)
+4. Normalize per cell to `target_sum` counts (`sc.pp.normalize_total`)
+5. log1p transform (`sc.pp.log1p`)
+6. Save log1p-normalized values to `layers['logcounts']` (Seurat convention)
+7. HVG selection for non-`seurat_v3` flavors (run post log1p)
+8. Store all parameters and software versions in `uns['omicsage_normalization']`
+
+**Layer layout after normalize()**
+
+| Slot | Contents |
+|------|----------|
+| `.X` | log1p-normalized values (same as `logcounts`) |
+| `layers['counts']` | Raw integer counts (preserved from input) |
+| `layers['logcounts']` | log1p CP10K values — Seurat convention |
+| `var['highly_variable']` | Boolean HVG flag (default: top 2000 genes) |
+| `uns['omicsage_normalization']` | Full provenance record |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Raw counts in `.X` — pass `mdata["rna"]` from `run_qc()` |
+| `target_sum` | float | `1e4` | Per-cell normalization target (CP10K) |
+| `n_top_genes` | int | 2000 | Number of highly variable genes to select |
+| `hvg_flavor` | str | `"seurat_v3"` | HVG method — `"seurat_v3"` \| `"seurat"` \| `"cell_ranger"` |
+| `batch_key` | str | None | `obs` column for per-batch HVG selection (e.g. `"batch"`, `"DonorID"`) |
+| `min_mean` | float | 0.0125 | HVG filter — min mean expression (non-`seurat_v3` only) |
+| `max_mean` | float | 3.0 | HVG filter — max mean expression (non-`seurat_v3` only) |
+| `min_disp` | float | 0.5 | HVG filter — min dispersion (non-`seurat_v3` only) |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Note on `hvg_flavor`**: `seurat_v3` fits a regularized negative binomial
+variance model on raw counts and requires `scikit-misc` (`pip install scikit-misc`).
+It also requires ≥ ~200 cells to avoid numerical singularities — use `seurat`
+flavor only for small test fixtures.
+
+**Note on `batch_key`**: When provided, `sc.pp.highly_variable_genes` runs
+per batch and flags a gene as highly variable if it qualifies in at least one
+batch. Scanpy adds `var['highly_variable_nbatches']` to record how many batches
+called each gene variable. Recommended for multi-donor / multi-site datasets.
+
+**Input**
+
+```
+adata  : AnnData   →  raw counts in adata.X  (output of run_qc() → mdata["rna"])
+```
+
+**Output**
+
+```
+adata_norm.X                          →  log1p-normalized values
+adata_norm.layers['counts']           →  raw integer counts (preserved)
+adata_norm.layers['logcounts']        →  log1p CP10K values
+adata_norm.var['highly_variable']     →  boolean HVG flag
+adata_norm.var['highly_variable_nbatches']  →  per-batch HVG count (if batch_key used)
+adata_norm.uns['omicsage_normalization']    →  provenance record
+metrics  : dict                       →  n_cells, n_genes, n_hvg_selected,
+                                          target_sum, hvg_flavor, batch_key,
+                                          mean_counts_per_cell_after_norm,
+                                          log1p_applied, raw_counts_in_layer,
+                                          normalized_in_layer
+```
+
+**Usage**
+
+```python
+from pipeline.modules.qc.normalize import normalize
+
+# Minimal — production defaults
+adata_norm, metrics = normalize(mdata["rna"])
+
+# With batch correction for multi-donor data
+adata_norm, metrics = normalize(
+    mdata["rna"],
+    target_sum=1e4,
+    n_top_genes=2000,
+    hvg_flavor="seurat_v3",
+    batch_key="batch",         # or "DonorID", "Site"
+    inplace=False,
+)
+
+print(metrics["n_hvg_selected"])   # 2000
+print(metrics["batch_key"])        # "batch"
+
+# Access layers
+adata_norm.layers["counts"]     # raw counts
+adata_norm.layers["logcounts"]  # log1p normalized
+```
+
+**Connects to**: `normalization_report.py` for the report, then `reduce.py` for PCA + UMAP
+
+---
+
+## 6. `normalization_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report for the normalization step.
+Contains four figures and two summary tables. The HTML file is fully
+portable — all figures are base64-embedded PNGs, no internet required.
+
+**Why it exists**
+
+Same philosophy as `qc_report.py`: every pipeline step produces a
+human-readable output. The normalization report lets a biologist confirm
+that HVG selection looks sensible (the scatter should show a clear
+population of variable genes) and that library sizes are uniform after
+normalization before dimensionality reduction begins.
+
+**Report contents**
+
+| Figure | What it shows |
+|--------|--------------|
+| HVG scatter | Mean expression vs normalised variance — HVGs in orange, background in grey |
+| Library size distribution | Per-cell total counts before vs after normalization (violin) |
+| Top 20 HVGs | Bar chart of the most variable genes by name |
+| Gene detection rate | Cumulative fraction of cells each gene is detected in |
+
+Plus a summary table (cells, genes, HVG count, flavor, batch key, target sum)
+and a provenance table pulled directly from `uns['omicsage_normalization']`.
+
+**Input**
+
+```
+adata_norm   : AnnData   →  output of normalize() — must have layers['counts']
+                             and layers['logcounts']
+metrics      : dict      →  output of normalize()
+report_path  : str       →  where to write the .html file
+dataset_name : str       →  label shown in the report header
+```
+
+**Output**
+
+```
+reports/output/normalization_report.html   →  self-contained HTML (~1-3 MB)
+```
+
+**Usage**
+
+From notebook:
+
+```python
+from reports.normalization_report import run_normalization_report
+
+run_normalization_report(
+    adata_norm=adata_norm,
+    metrics=metrics,
+    report_path="reports/output/normalization_report.html",
+    dataset_name="GSE194122_CITE",
+)
+```
+
+From CLI (runs normalize + saves h5ad + generates report in one command):
+
+```bash
+python reports/normalization_report.py \
+    --input  data/processed/GSE194122_cite_rna_qc.h5ad \
+    --output data/processed/GSE194122_cite_normalized.h5ad \
+    --report reports/output/normalization_report.html \
+    --dataset GSE194122_CITE \
+    --batch-key batch
+```
+
+**Dependencies**: `matplotlib` only — no Plotly, no Bokeh, no JS frameworks.
+
+**Connects to**: `reduce.py` — pass `adata_norm` to PCA + UMAP
+
+
+---
+
 ## Module Data Flow
 
 ```
@@ -320,7 +515,17 @@ Raw file (.h5ad / .h5 / MTX dir)
         │                       ▼
         │               qc_report.py  → reports/qc_report.html
         │
-        ├── mdata["rna"]  → normalize.py   ← NEXT STEP (Phase 1)
+        ├── mdata["rna"]
+        │       │
+        │       ▼
+        │   normalize.py  → layers['counts'] + layers['logcounts'] + HVGs
+        │       │                   │
+        │       │                   ▼
+        │       │       normalization_report.py → reports/output/normalization_report.html
+        │       │
+        │       ▼
+        │   reduce.py     → obsm['X_pca'] + obsm['X_umap']   ← NEXT STEP
+        │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
 ```
@@ -362,11 +567,12 @@ print('MuData keys:      ', list(mdata.mod.keys()))
 | `tests/test_phase0_structure.py` | Repo structure, imports, config schema |
 | `tests/test_ingest.py` | Format detection, raw count extraction, all three loaders |
 | `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation, modality detection, MuData structure, ADT/ATAC preservation |
+| `tests/test_normalize.py` | Raw count preservation, normalization correctness, log1p, HVG selection, HVG count accuracy, batch_key, logcounts layer, provenance, mutation guard, input validation |
 
-Run all QC-related tests:
+Run all QC + normalization tests:
 
 ```bash
 conda activate omicsage
-python -m pytest tests/test_phase0_structure.py tests/test_ingest.py tests/test_qc.py -v
-# Expected: 42 passed (test_qc.py), 2 skipped
+python -m pytest tests/test_phase0_structure.py tests/test_ingest.py tests/test_qc.py tests/test_normalize.py -v
+# Expected: 42 passed (test_qc.py), 12 passed (test_normalize.py), 2 skipped
 ```
