@@ -11,6 +11,7 @@ Provenance is stored in adata.uns['omicsage_cluster'].
 
 from __future__ import annotations
 
+import importlib.metadata
 import logging
 import warnings
 from datetime import datetime, timezone
@@ -119,6 +120,9 @@ def cluster(
             adjacency=adata.obsp[connectivities_key],
             key_added=obs_key,
             random_state=random_state,
+            flavor="igraph",
+            n_iterations=2,
+            directed=False,
         )
 
         labels = adata.obs[obs_key].values
@@ -187,7 +191,7 @@ def cluster(
         "pca_key": pca_key,
         "connectivities_key": connectivities_key,
         "random_state": random_state,
-        "scanpy_version": sc.__version__,
+        "scanpy_version": importlib.metadata.version("scanpy"),
         "omicsage_module": "pipeline.modules.qc.cluster",
         "omicsage_version": "0.1.0",
         "timestamp": datetime.now(timezone.utc).isoformat(),

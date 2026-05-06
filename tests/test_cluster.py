@@ -362,11 +362,14 @@ def test_params_stored_in_uns():
     # scanpy_version must be a non-empty string
     assert isinstance(record["scanpy_version"], str) and len(record["scanpy_version"]) > 0
 
-    # n_clusters must be a dict with an entry per resolution
+    # n_clusters must be a dict with an entry per resolution.
+    # uns stores string keys (e.g. '0.2') for h5ad/HDF5 compatibility —
+    # the metrics dict returned to the caller still uses float keys.
     assert isinstance(record["n_clusters"], dict)
     for res in resolutions:
-        assert res in record["n_clusters"], (
-            f"n_clusters missing entry for resolution={res}"
+        assert str(res) in record["n_clusters"], (
+            f"n_clusters missing entry for resolution={res} "
+            f"(uns uses string keys, got: {list(record['n_clusters'].keys())})"
         )
 
 
