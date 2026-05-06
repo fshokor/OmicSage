@@ -13,7 +13,7 @@ Usage
     python reports/cluster_report.py \
         --input  data/processed/GSE194122_cite_reduced.h5ad \
         --output data/processed/GSE194122_cite_clustered.h5ad \
-        --report reports/output/cluster_report.html \
+        --report reports/cluster_report.html \
         --dataset GSE194122_CITE
 
     # From notebook:
@@ -21,7 +21,7 @@ Usage
     run_cluster_report(
         adata_clustered=adata_clustered,
         metrics=metrics,
-        report_path="reports/output/cluster_report.html",
+        report_path="reports/cluster_report.html",
         dataset_name="GSE194122_CITE",
     )
 
@@ -144,48 +144,170 @@ def _plot_umap_resolutions(adata_clustered: AnnData, metrics: dict) -> str:
 
 def _plot_silhouette_bar(metrics: dict) -> str:
     """
-    Bar chart of silhouette score per resolution.
-    The best resolution bar is highlighted in orange; others in steel blue.
+    Bar chart of silhouette score per resolution (primary axis) with
+    n_clusters overlaid as a line on the secondary axis.
+    The selected resolution bar is highlighted in orange.
     """
     resolutions = metrics["resolutions"]
-    scores = [metrics["silhouette_scores"][r] for r in resolutions]
-    best_res = metrics["best_resolution"]
+    scores      = [metrics["silhouette_scores"][r] for r in resolutions]
+    n_clusters  = [metrics["n_clusters"][r] for r in resolutions]
+    best_res    = metrics["best_resolution"]
 
     colors = ["#E07B3A" if r == best_res else "#4C78A8" for r in resolutions]
 
-    fig, ax = plt.subplots(figsize=(max(6, len(resolutions) * 1.2), 4))
+    fig, ax1 = plt.subplots(figsize=(max(6, len(resolutions) * 1.4), 4))
     x = np.arange(len(resolutions))
-    bars = ax.bar(x, scores, color=colors, width=0.6, alpha=0.85, edgecolor="white")
 
-    # Value labels on bars
+    # Primary axis — silhouette bars
+    bars = ax1.bar(x, scores, color=colors, width=0.6, alpha=0.80, edgecolor="white")
     for bar, score in zip(bars, scores):
         ypos = bar.get_height() + 0.005 if score >= 0 else bar.get_height() - 0.02
-        ax.text(
-            bar.get_x() + bar.get_width() / 2,
-            ypos,
-            f"{score:.3f}",
-            ha="center", va="bottom", fontsize=9,
-        )
+        ax1.text(bar.get_x() + bar.get_width() / 2, ypos,
+                 f"{score:.3f}", ha="center", va="bottom", fontsize=8)
 
-    ax.set_xticks(x)
-    ax.set_xticklabels([f"{r:.2g}" for r in resolutions], fontsize=10)
-    ax.set_xlabel("Leiden Resolution", fontsize=11)
-    ax.set_ylabel("Silhouette Score", fontsize=11)
-    ax.set_title(
-        "Silhouette Score vs Resolution\n"
-        f"(selected: {best_res:.2g}, score: {metrics['best_silhouette']:.3f})",
+    ax1.set_xticks(x)
+    ax1.set_xticklabels([f"{r:.2g}" for r in resolutions], fontsize=10)
+    ax1.set_xlabel("Leiden Resolution", fontsize=11)
+    ax1.set_ylabel("Silhouette Score", fontsize=11, color="#4C78A8")
+    ax1.axhline(0, color="#bbb", linewidth=0.8, linestyle="--")
+    ax1.spines[["top"]].set_visible(False)
+
+    # Secondary axis — n_clusters line
+    ax2 = ax1.twinx()
+    ax2.plot(x, n_clusters, color="#2CA02C", marker="o", linewidth=2,
+             markersize=5, label="n clusters", zorder=5)
+    for xi, nc in zip(x, n_clusters):
+        ax2.text(xi, nc + max(n_clusters) * 0.03, str(nc),
+                 ha="center", va="bottom", fontsize=8, color="#2CA02C")
+    ax2.set_ylabel("Number of Clusters", fontsize=11, color="#2CA02C")
+    ax2.spines[["top"]].set_visible(False)
+    ax2.tick_params(axis="y", labelcolor="#2CA02C")
+
+    # n_clusters_expected reference line
+    n_expected = metrics.get("n_clusters_expected")
+    if n_expected is not None:
+        ax2.axhline(n_expected, color="#D62728", linewidth=1.2, linestyle=":",
+                    label=f"Expected: {n_expected}")
+        ax2.text(len(resolutions) - 0.5, n_expected,
+                 f" expected={n_expected}", va="center",
+                 fontsize=8, color="#D62728")
+
+    selection_reason = metrics.get("selection_reason", "")
+    ax1.set_title(
+        f"Silhouette Score & Cluster Count vs Resolution"
+        f"Selected: res={best_res:.2g}  |  reason: {selection_reason}",
         fontsize=12, fontweight="bold",
     )
-    ax.axhline(0, color="#999", linewidth=0.8, linestyle="--")
-    ax.spines[["top", "right"]].set_visible(False)
 
-    # Legend
     from matplotlib.patches import Patch
+    from matplotlib.lines import Line2D
     legend_elements = [
         Patch(facecolor="#E07B3A", label=f"Selected (res={best_res:.2g})"),
         Patch(facecolor="#4C78A8", label="Other resolutions"),
+        Line2D([0], [0], color="#2CA02C", marker="o", label="n clusters"),
     ]
-    ax.legend(handles=legend_elements, frameon=False, fontsize=9)
+    if n_expected is not None:
+        legend_elements.append(
+            Line2D([0], [0], color="#D62728", linestyle=":", label=f"Expected ({n_expected})")
+        )
+    ax1.legend(handles=legend_elements, frameon=False, fontsize=8, loc="upper left")
+
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+
+def _plot_resolution_selection(metrics: dict) -> str:
+    """
+    Four-panel resolution selection diagnostic:
+      Top-left  : n_clusters vs resolution (with expected count line if set)
+      Top-right : cluster count delta (new clusters added at each step)
+      Bottom-left : stability score vs resolution
+      Bottom-right: silhouette score vs resolution
+    Selected resolution is marked with a vertical dashed line on every panel.
+    """
+    resolutions  = metrics["resolutions"]
+    n_clust      = [metrics["n_clusters"][r] for r in resolutions]
+    deltas       = [metrics["n_clusters_delta"][r] for r in resolutions]
+    stability    = [metrics["stability_scores"][r] for r in resolutions]
+    silhouette   = [metrics["silhouette_scores"][r] for r in resolutions]
+    best_res     = metrics["best_resolution"]
+    best_idx     = resolutions.index(best_res)
+    n_expected   = metrics.get("n_clusters_expected")
+    reason       = metrics.get("selection_reason", "")
+
+    x      = np.arange(len(resolutions))
+    xlbls  = [f"{r:.2g}" for r in resolutions]
+    vline_kw = dict(color="#E07B3A", linewidth=1.8, linestyle="--", alpha=0.8)
+
+    fig, axes = plt.subplots(2, 2, figsize=(13, 8))
+    fig.suptitle(
+        f"Resolution Selection Diagnostics  —  selected={best_res:.2g}  "
+        f"({metrics['best_n_clusters']} clusters, reason='{reason}')",
+        fontsize=13, fontweight="bold",
+    )
+
+    # Panel 1 — n_clusters
+    ax = axes[0, 0]
+    ax.plot(x, n_clust, color="#1F77B4", marker="o", linewidth=2, markersize=6)
+    ax.axvline(best_idx, **vline_kw, label=f"Selected (res={best_res:.2g})")
+    if n_expected is not None:
+        ax.axhline(n_expected, color="#D62728", linewidth=1.2, linestyle=":",
+                   label=f"Expected ({n_expected})")
+        ax.legend(frameon=False, fontsize=8)
+    else:
+        ax.legend(frameon=False, fontsize=8)
+    for xi, nc in zip(x, n_clust):
+        ax.text(xi, nc + max(n_clust) * 0.03, str(nc),
+                ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(xlbls)
+    ax.set_title("Number of Clusters", fontsize=11, fontweight="bold")
+    ax.set_xlabel("Resolution"); ax.set_ylabel("n clusters")
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Panel 2 — delta
+    ax = axes[0, 1]
+    delta_colors = ["#AEC7E8" if r != best_res else "#E07B3A" for r in resolutions]
+    ax.bar(x, deltas, color=delta_colors, width=0.6, alpha=0.85, edgecolor="white")
+    ax.axvline(best_idx, **vline_kw)
+    for xi, d in zip(x, deltas):
+        ax.text(xi, d + max(deltas) * 0.03 if d >= 0 else d - max(deltas) * 0.05,
+                f"+{d}" if d > 0 else str(d),
+                ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(xlbls)
+    ax.set_title("Cluster Count Delta (new clusters per step)",
+                 fontsize=11, fontweight="bold")
+    ax.set_xlabel("Resolution"); ax.set_ylabel("Δ n clusters")
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Panel 3 — stability
+    ax = axes[1, 0]
+    stab_colors = ["#98DF8A" if r != best_res else "#E07B3A" for r in resolutions]
+    ax.bar(x, stability, color=stab_colors, width=0.6, alpha=0.85, edgecolor="white")
+    ax.axvline(best_idx, **vline_kw)
+    for xi, s in zip(x, stability):
+        ax.text(xi, s + 0.01, f"{s:.2f}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(xlbls)
+    ax.set_ylim(0, 1.15)
+    ax.set_title("Stability Score  (1 = plateau, lower = rapid growth)",
+                 fontsize=11, fontweight="bold")
+    ax.set_xlabel("Resolution"); ax.set_ylabel("Stability")
+    ax.spines[["top", "right"]].set_visible(False)
+
+    # Panel 4 — silhouette
+    ax = axes[1, 1]
+    sil_colors = ["#FFBB78" if r != best_res else "#E07B3A" for r in resolutions]
+    ax.bar(x, silhouette, color=sil_colors, width=0.6, alpha=0.85, edgecolor="white")
+    ax.axvline(best_idx, **vline_kw)
+    ax.axhline(0, color="#bbb", linewidth=0.8, linestyle="--")
+    for xi, s in zip(x, silhouette):
+        yp = s + 0.005 if s >= 0 else s - 0.015
+        ax.text(xi, yp, f"{s:.3f}", ha="center", va="bottom", fontsize=8)
+    ax.set_xticks(x); ax.set_xticklabels(xlbls)
+    ax.set_title("Silhouette Score  (geometric cluster quality)",
+                 fontsize=11, fontweight="bold")
+    ax.set_xlabel("Resolution"); ax.set_ylabel("Silhouette")
+    ax.spines[["top", "right"]].set_visible(False)
 
     fig.tight_layout()
     return _fig_to_b64(fig)
@@ -354,18 +476,30 @@ _HTML_TEMPLATE = """\
     <strong>UMAP — Leiden Clustering across Resolutions</strong>
     <p class="meta">
       Each panel shows cluster assignments at one resolution.
-      The gold-bordered panel is the auto-selected best resolution
-      (highest silhouette score).
+      The gold-bordered panel is the selected resolution.
+      Selection reason is shown in the diagnostics section below.
     </p>
     <img src="data:image/png;base64,{fig_umap_resolutions}" alt="UMAP resolutions">
   </div>
   <div class="fig-box wide">
-    <strong>Silhouette Score vs Resolution</strong>
+    <strong>Silhouette Score &amp; Cluster Count vs Resolution</strong>
     <p class="meta">
-      Higher silhouette score = better-separated clusters.
-      Orange bar = auto-selected resolution.
+      Orange bars = selected resolution.  Green line = number of clusters (right axis).
+      Red dotted line = expected cluster count (if set).
+      Selection reason shown in the title.
     </p>
     <img src="data:image/png;base64,{fig_silhouette}" alt="Silhouette scores">
+  </div>
+  <div class="fig-box wide">
+    <strong>Resolution Selection Diagnostics (4-panel)</strong>
+    <p class="meta">
+      Top-left: cluster count curve — look for a plateau near your expected count.<br>
+      Top-right: delta (new clusters per step) — large jumps signal an unstable region.<br>
+      Bottom-left: stability score — peaks at the plateau edge (score = 1 = no further growth).<br>
+      Bottom-right: silhouette score — geometric cluster quality.<br>
+      Orange dashed line marks the selected resolution across all panels.
+    </p>
+    <img src="data:image/png;base64,{fig_resolution_diagnostics}" alt="Resolution diagnostics">
   </div>
   <div class="fig-box wide">
     <strong>Cluster Size Distribution — Best Resolution ({best_res:.2g})</strong>
@@ -415,6 +549,9 @@ def _build_html(
     print("  Rendering silhouette bar chart ...", flush=True)
     fig_silhouette = _plot_silhouette_bar(metrics)
 
+    print("  Rendering resolution selection diagnostics ...", flush=True)
+    fig_resolution_diagnostics = _plot_resolution_selection(metrics)
+
     print("  Rendering cluster size distribution ...", flush=True)
     fig_cluster_sizes = _plot_cluster_sizes(adata_clustered, metrics)
 
@@ -434,18 +571,33 @@ def _build_html(
         f"<tr><td>Silhouette @ res={r:.2g}</td><td>{silhouette_scores[r]:.4f}</td></tr>"
         for r in metrics["resolutions"]
     )
+    n_expected = metrics.get("n_clusters_expected")
+    selection_reason = metrics.get("selection_reason", "—")
     summary_items = [
-        ("Cells",                       f"{adata_clustered.n_obs:,}"),
-        ("Resolutions tested",          ", ".join(f"{r:.2g}" for r in metrics["resolutions"])),
-        ("Best resolution (selected)",  f"{best_res:.2g}"),
-        ("Clusters at best resolution", str(metrics["best_n_clusters"])),
-        ("Best silhouette score",       f"{metrics['best_silhouette']:.4f}"),
+        ("Cells",                        f"{adata_clustered.n_obs:,}"),
+        ("Resolutions tested",           ", ".join(f"{r:.2g}" for r in metrics["resolutions"])),
+        ("Selected resolution",          f"{best_res:.2g}"),
+        ("Selection reason",             selection_reason),
+        ("Clusters at selected resolution", str(metrics["best_n_clusters"])),
+        ("Expected clusters (prior)",    str(n_expected) if n_expected is not None else "not set"),
+        ("Best silhouette score",        f"{metrics['best_silhouette']:.4f}"),
+        ("Stability score at selection", f"{metrics['best_stability']:.4f}"),
     ]
     summary_rows = "\n  ".join(
         f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in summary_items
     )
-    # Append per-resolution silhouette rows
-    summary_rows += "\n  " + sil_rows
+    # Append per-resolution rows
+    per_res_rows = []
+    for r in metrics["resolutions"]:
+        marker = " ★" if r == best_res else ""
+        per_res_rows.append(
+            f"<tr><td>res={r:.2g}{marker}</td>"
+            f"<td>n={metrics['n_clusters'][r]}  "
+            f"Δ={metrics['n_clusters_delta'][r]:+d}  "
+            f"stability={metrics['stability_scores'][r]:.3f}  "
+            f"silhouette={metrics['silhouette_scores'][r]:.4f}</td></tr>"
+        )
+    summary_rows += "\n  " + "\n  ".join(per_res_rows)
 
     # --- provenance table ---
     prov = adata_clustered.uns.get("omicsage_cluster", {})
@@ -471,6 +623,7 @@ def _build_html(
         provenance_rows=provenance_rows,
         fig_umap_resolutions=fig_umap_resolutions,
         fig_silhouette=fig_silhouette,
+        fig_resolution_diagnostics=fig_resolution_diagnostics,
         fig_cluster_sizes=fig_cluster_sizes,
         cell_type_section=cell_type_section,
     )
@@ -483,7 +636,7 @@ def _build_html(
 def run_cluster_report(
     adata_clustered: AnnData,
     metrics: dict,
-    report_path: str = "reports/output/cluster_report.html",
+    report_path: str = "reports/cluster_report.html",
     dataset_name: str = "dataset",
 ) -> str:
     """
@@ -530,7 +683,7 @@ def _parse_args() -> argparse.Namespace:
     p.add_argument("--output",  default=None,
                    help="Where to save the clustered h5ad "
                         "(if omitted, cluster runs but h5ad is not saved)")
-    p.add_argument("--report",  default="reports/output/cluster_report.html",
+    p.add_argument("--report",  default="reports/cluster_report.html",
                    help="Path for the output HTML report")
     p.add_argument("--dataset", default=None,
                    help="Dataset label shown in the report (default: input filename)")
