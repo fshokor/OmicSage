@@ -21,14 +21,16 @@
 - [x] batch_key support for HVG selection
 - [x] layers['counts'] + layers['logcounts'] (Seurat convention)
 - [x] Normalization report (HTML, self-contained)
-- [x] PCA + UMAP + neighbors (reduce.py)  ← COMPLETED THIS SESSION
+- [x] PCA + UMAP + neighbors (reduce.py)
 - [x] Data-driven PC selection (elbow via kneed + variance fallback)
 - [x] Dimensionality reduction report (HTML, self-contained)
 - [x] Notebook Step 3 — dimensionality reduction section
-- [ ] Leiden clustering with resolution sweep  ← NEXT
-- [ ] Silhouette score-based resolution selection
+- [x] Leiden clustering with resolution sweep (cluster.py)  ← COMPLETED THIS SESSION
+- [x] Silhouette score per resolution + best_resolution_override  ← COMPLETED THIS SESSION
+- [x] Clustering report (HTML, self-contained)  ← COMPLETED THIS SESSION
+- [x] Notebook Step 4 — clustering section + ARI milestone check  ← COMPLETED THIS SESSION
 - [ ] Harmony + scVI batch correction
-- [ ] SingleR annotation
+- [ ] SingleR annotation  ← NEXT
 - [ ] DEG: Wilcoxon + pseudobulk
 - [ ] GSEA: GO/KEGG/Reactome
 - [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper

@@ -2,7 +2,7 @@
 
 > Location: `pipeline/modules/qc/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-06
+> Last updated: 2026-05-06 (session 2)
 
 This document describes every script in the QC module — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -521,6 +521,146 @@ python reports/reduce_report.py \
 
 ---
 
+
+---
+
+## 9. `cluster.py`
+
+**What it does**
+
+Runs Leiden community detection at multiple resolutions on the kNN graph
+produced by `reduce.py`. Computes a silhouette score per resolution to
+quantify cluster separation, and either auto-selects the best resolution or
+uses a caller-supplied override.
+
+**Why it exists**
+
+Choosing a clustering resolution is one of the most consequential decisions
+in single-cell analysis. Too low → biologically distinct populations are merged.
+Too high → one real population gets split arbitrarily. Sweeping multiple
+resolutions and scoring each with silhouette makes the trade-off explicit and
+reproducible. The `best_resolution_override` parameter lets the analyst
+over-cluster deliberately before annotation — the standard approach is to
+over-cluster slightly then merge during annotation, rather than to split.
+
+**Steps performed (in order)**
+
+1. Input validation — checks obsm['X_pca'] and obsp['connectivities'] are present
+2. Resolution sweep — runs `sc.tl.leiden` at each resolution in `resolution_range`
+3. Stores each result in `obs[f'leiden_{res}']`
+4. Computes silhouette score per resolution on X_pca (subsampled above 10k cells)
+5. Selects best resolution — override if supplied, otherwise argmax of silhouette scores
+6. Copies best-resolution labels to `obs['leiden']` as a convenience key
+7. Stores provenance in `uns['omicsage_cluster']` with string-keyed dicts (HDF5 requirement)
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Reduced AnnData — must have obsm['X_pca'] and obsp['connectivities'] |
+| `resolution_range` | list[float] | `[0.2, 0.4, 0.6, 0.8, 1.0]` | Leiden resolutions to sweep |
+| `best_resolution_override` | float | None | Pin a specific resolution; None = silhouette auto-select |
+| `pca_key` | str | `"X_pca"` | obsm key for silhouette scoring |
+| `connectivities_key` | str | `"connectivities"` | obsp key for Leiden adjacency |
+| `random_state` | int | 0 | Reproducibility seed |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Input**
+
+```
+adata  : AnnData   →  reduced AnnData (output of reduce())
+                       Must have obsm['X_pca'] and obsp['connectivities']
+```
+
+**Output**
+
+```
+adata.obs[f'leiden_{res}']         →  cluster labels at each resolution tested
+adata.obs['leiden']                →  labels at the selected resolution (convenience key)
+adata.uns['omicsage_cluster']      →  provenance record (string-keyed dicts for h5ad compat)
+metrics : dict                     →  resolutions, n_clusters, silhouette_scores,
+                                       best_resolution, best_silhouette, best_n_clusters
+```
+
+**Usage**
+
+```python
+from pipeline.modules.qc.cluster import cluster
+
+# Silhouette auto-select
+adata_clustered, metrics = cluster(adata_reduced)
+
+# Override resolution (recommended before annotation)
+adata_clustered, metrics = cluster(
+    adata_reduced,
+    resolution_range=[0.2, 0.4, 0.6, 0.8, 1.0],
+    best_resolution_override=0.8,
+)
+
+print(metrics["best_resolution"])    # 0.8
+print(metrics["best_n_clusters"])    # e.g. 25
+print(metrics["silhouette_scores"])  # {0.2: 0.21, 0.4: 0.18, ...}
+```
+
+**Important note on resolution selection**
+
+Silhouette score optimises for geometric separation in PCA space and tends to
+select low resolutions (few, well-separated clusters). For annotation purposes
+it is usually better to over-cluster and merge than to under-cluster and split.
+Use `best_resolution_override` to pin a higher resolution when the dataset has
+many expected cell types (e.g. PBMC / BMMC datasets).
+
+**Connects to**: `cluster_report.py` for the report, then `annotate.py` for cell type annotation
+
+---
+
+## 10. `cluster_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report for the Leiden clustering step.
+Contains four figures and two summary tables. Callable from notebook or CLI.
+
+**Why it exists**
+
+Visualising clustering at multiple resolutions side-by-side is the fastest way
+to judge whether the sweep produced sensible results. The silhouette bar chart
+makes the auto-selection transparent. The cluster size distribution reveals
+imbalanced or degenerate clusters before annotation begins.
+
+**Report contents**
+
+| Figure | What it shows |
+|--------|--------------|
+| UMAP grid (one panel per resolution) | Cluster assignments per resolution; gold border on the selected panel |
+| Silhouette bar chart | Score per resolution; orange bar = selected; value labels on each bar |
+| Cluster size distribution | Cell counts per cluster at best resolution, sorted descending; median line |
+| UMAP × ground-truth cell_type (optional) | Only rendered when `obs['cell_type']` is present; legend placed outside axes |
+
+**Usage**
+
+```python
+from reports.cluster_report import run_cluster_report
+
+run_cluster_report(
+    adata_clustered=adata_clustered,
+    metrics=metrics,
+    report_path="reports/output/cluster_report.html",
+    dataset_name="GSE194122_CITE",
+)
+```
+
+```bash
+python reports/cluster_report.py \
+    --input  data/processed/GSE194122_cite_reduced.h5ad \
+    --output data/processed/GSE194122_cite_clustered.h5ad \
+    --report reports/output/cluster_report.html \
+    --dataset GSE194122_CITE \
+    --resolutions 0.2 0.4 0.6 0.8 1.0
+```
+
+**Connects to**: `annotate.py` — pass `adata_clustered` to SingleR annotation
+
 ## Module Data Flow
 
 ```
@@ -550,7 +690,13 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │       reduce_report.py → reports/output/reduce_report.html
         │       │
         │       ▼
-        │   cluster.py    → obs['leiden_*']    ← NEXT STEP
+        │   cluster.py    → obs['leiden_*'] + obs['leiden']
+        │       │                   │
+        │       │                   ▼
+        │       │       cluster_report.py → reports/output/cluster_report.html
+        │       │
+        │       ▼
+        │   annotate.py   → obs['cell_type_singler']    ← NEXT STEP
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -567,13 +713,14 @@ Raw file (.h5ad / .h5 / MTX dir)
 | `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation, modality detection, MuData structure, ADT/ATAC preservation |
 | `tests/test_normalize.py` | Raw count preservation, normalization correctness, log1p, HVG selection, HVG count accuracy, batch_key, logcounts layer, provenance, mutation guard, input validation |
 | `tests/test_reduce.py` | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, elbow/variance/manual PC selection, no-HVG fallback |
+| `tests/test_cluster.py` | Leiden labels in obs, all resolutions computed, string labels, n_clusters bounds, silhouette scores, best resolution selection, provenance keys, inplace guard |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 162 passed (approximate), 2 skipped
+# Expected: 170 passed (approximate), 2 skipped
 ```
 
 Run just the reduce tests:
@@ -581,4 +728,11 @@ Run just the reduce tests:
 ```bash
 python -m pytest tests/test_reduce.py -v
 # Expected: 12 passed
+
+Run just the cluster tests:
+
+```bash
+python -m pytest tests/test_cluster.py -v
+# Expected: 8 passed
+```
 ```
