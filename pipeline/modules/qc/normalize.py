@@ -28,6 +28,7 @@ from __future__ import annotations
 
 import logging
 import warnings
+from datetime import datetime, timezone
 from typing import Optional
 
 import numpy as np
@@ -194,7 +195,6 @@ def normalize(
     # ------------------------------------------------------------------
     # Step 7 — Store provenance in uns
     # ------------------------------------------------------------------
-    import scanpy
     adata_out.uns["omicsage_normalization"] = {
         "target_sum": target_sum,
         "n_top_genes": n_top_genes,
@@ -206,9 +206,10 @@ def normalize(
         "n_hvg_selected": n_hvg_selected,
         "log1p_applied": True,
         "normalized_in_layer": "logcounts",
-        "scanpy_version": scanpy.__version__,
+        "scanpy_version": sc.__version__,
         "omicsage_module": "pipeline.modules.qc.normalize",
         "omicsage_version": "0.1.0",
+        "timestamp": datetime.now(timezone.utc).isoformat(),
     }
 
     logger.info(

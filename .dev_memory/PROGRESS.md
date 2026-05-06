@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-05
+> Last updated: 2026-05-06
 
 ## Phase 0 — Foundation
 - [x] GitHub repo created
@@ -21,9 +21,13 @@
 - [x] batch_key support for HVG selection
 - [x] layers['counts'] + layers['logcounts'] (Seurat convention)
 - [x] Normalization report (HTML, self-contained)
-- [ ] PCA + UMAP + neighbors (reduce.py)  ← NEXT
+- [x] PCA + UMAP + neighbors (reduce.py)  ← COMPLETED THIS SESSION
+- [x] Data-driven PC selection (elbow via kneed + variance fallback)
+- [x] Dimensionality reduction report (HTML, self-contained)
+- [x] Notebook Step 3 — dimensionality reduction section
+- [ ] Leiden clustering with resolution sweep  ← NEXT
+- [ ] Silhouette score-based resolution selection
 - [ ] Harmony + scVI batch correction
-- [ ] Leiden clustering with resolution sweep
 - [ ] SingleR annotation
 - [ ] DEG: Wilcoxon + pseudobulk
 - [ ] GSEA: GO/KEGG/Reactome

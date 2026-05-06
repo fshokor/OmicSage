@@ -2,7 +2,7 @@
 
 > Location: `pipeline/modules/qc/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-05
+> Last updated: 2026-05-06
 
 This document describes every script in the QC module — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -182,14 +182,6 @@ from pipeline.modules.qc.normalize import normalize
 adata_norm = normalize(mdata["rna"])
 ```
 
-**Helper functions (importable)**
-
-```python
-from pipeline.modules.qc.qc import _detect_modality
-
-modality = _detect_modality(adata)  # "rna" | "cite" | "multiome"
-```
-
 **Connects to**: `normalize.py` — pass `mdata["rna"]`
 
 ---
@@ -202,18 +194,10 @@ Generates a self-contained HTML QC report after filtering. The report
 is a single `.html` file with all plots embedded as base64 PNG images —
 no external dependencies, no internet required, opens in any browser.
 
-**Why it exists**
-
-OmicSage's core promise is that every analysis step produces a readable
-output — not just a filtered AnnData that only a bioinformatician can
-inspect. The QC report lets a biologist (or a PI reviewing the analysis)
-understand exactly how many cells were removed and why, without looking
-at code.
-
 **Report contents**
 
 | Section | What it shows |
-|---------|--------------|
+|---------|--------------| 
 | Summary cards | Cells in, cells kept, cells removed, pass rate, MT genes found, doublets removed |
 | Violin plots (before vs after) | Genes per cell, total UMI, MT% — with threshold lines |
 | UMI vs genes scatter | Each dot = one cell, coloured by MT% |
@@ -222,26 +206,9 @@ at code.
 | Filter thresholds table | Every parameter used + cells removed by that filter |
 | Ground-truth validation | MT% correlation vs `GEX_pct_counts_mt` (only if column present) |
 
-**Input**
-
-```
-adata_raw      : AnnData  →  pre-filter RNA AnnData (after metrics computed)
-adata_filtered : AnnData  →  post-filter RNA AnnData
-metrics        : dict     →  output of run_qc()
-output_path    : str      →  where to write the .html file
-sample_name    : str      →  label shown in the report header
-```
-
-**Output**
-
-```
-reports/qc_report.html   →  self-contained HTML file (~1-3 MB)
-```
-
 **Usage**
 
 Called automatically by `run_qc()` when `generate_report=True`.
-Can also be called directly:
 
 ```python
 from pipeline.modules.qc.qc_report import generate_qc_report
@@ -255,8 +222,6 @@ generate_qc_report(
 )
 ```
 
-**Dependencies**: `matplotlib` only — no Plotly, no Bokeh, no JS frameworks.
-
 ---
 
 ## 4. `data_report.py`
@@ -264,34 +229,9 @@ generate_qc_report(
 **What it does**
 
 Generates a data intake HTML report summarising the contents of a raw
-h5ad file *before any QC is applied*. Designed to be run immediately
-after downloading a new dataset to understand its structure.
-
-**Why it exists**
-
-Before running any pipeline step, you need to know: how many cells, how
-many genes, what metadata columns exist, what layers are present, and
-whether the file needs special handling. This report answers all of
-those questions in one browser tab.
-
-**Important**: Uses `backed='r'` mode to read h5ad files — only metadata
-is loaded into memory. The full count matrix is never read. This means
-the report works on files of any size (including 2.9 GB multiome files)
-without memory issues.
-
-**Input**
-
-```
---input   : path to .h5ad file
---geo     : GEO accession (e.g. GSE194122) shown in report header
---output  : path for HTML output (e.g. reports/data_intake.html)
-```
-
-**Output**
-
-```
-reports/data_intake.html   →  self-contained HTML file
-```
+h5ad file *before any QC is applied*. Uses `backed='r'` mode — only
+metadata is loaded, the full count matrix is never read. Works on files
+of any size including large multiome files.
 
 **Usage**
 
@@ -306,9 +246,6 @@ python pipeline/modules/qc/data_report.py \
 
 ---
 
-
----
-
 ## 5. `normalize.py`
 
 **What it does**
@@ -318,25 +255,16 @@ selects highly variable genes for dimensionality reduction. Produces two layers
 so every downstream module can access either raw or normalized counts without
 recomputation.
 
-**Why it exists**
-
-Raw counts are not directly comparable across cells — cells with more RNA
-captured will appear to express every gene more highly. Normalization removes
-this cell-level sequencing depth effect. HVG selection then reduces the gene
-space to the genes that carry the most biological signal, which speeds up PCA,
-UMAP, and clustering without sacrificing accuracy.
-
 **Steps performed (in order)**
 
 1. Input validation — rejects non-AnnData inputs and already-normalized matrices
 2. Save raw counts to `layers['counts']` before any modification
-3. HVG selection on raw counts (`seurat_v3` flavor only — run pre-normalization
-   as the method requires integer counts for its variance model)
+3. HVG selection on raw counts (`seurat_v3` flavor only — run pre-normalization)
 4. Normalize per cell to `target_sum` counts (`sc.pp.normalize_total`)
 5. log1p transform (`sc.pp.log1p`)
 6. Save log1p-normalized values to `layers['logcounts']` (Seurat convention)
 7. HVG selection for non-`seurat_v3` flavors (run post log1p)
-8. Store all parameters and software versions in `uns['omicsage_normalization']`
+8. Store all parameters, software versions, and timestamp in `uns['omicsage_normalization']`
 
 **Layer layout after normalize()**
 
@@ -346,7 +274,7 @@ UMAP, and clustering without sacrificing accuracy.
 | `layers['counts']` | Raw integer counts (preserved from input) |
 | `layers['logcounts']` | log1p CP10K values — Seurat convention |
 | `var['highly_variable']` | Boolean HVG flag (default: top 2000 genes) |
-| `uns['omicsage_normalization']` | Full provenance record |
+| `uns['omicsage_normalization']` | Full provenance record including timestamp |
 
 **Parameters**
 
@@ -356,68 +284,22 @@ UMAP, and clustering without sacrificing accuracy.
 | `target_sum` | float | `1e4` | Per-cell normalization target (CP10K) |
 | `n_top_genes` | int | 2000 | Number of highly variable genes to select |
 | `hvg_flavor` | str | `"seurat_v3"` | HVG method — `"seurat_v3"` \| `"seurat"` \| `"cell_ranger"` |
-| `batch_key` | str | None | `obs` column for per-batch HVG selection (e.g. `"batch"`, `"DonorID"`) |
-| `min_mean` | float | 0.0125 | HVG filter — min mean expression (non-`seurat_v3` only) |
-| `max_mean` | float | 3.0 | HVG filter — max mean expression (non-`seurat_v3` only) |
-| `min_disp` | float | 0.5 | HVG filter — min dispersion (non-`seurat_v3` only) |
+| `batch_key` | str | None | `obs` column for per-batch HVG selection |
 | `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
-
-**Note on `hvg_flavor`**: `seurat_v3` fits a regularized negative binomial
-variance model on raw counts and requires `scikit-misc` (`pip install scikit-misc`).
-It also requires ≥ ~200 cells to avoid numerical singularities — use `seurat`
-flavor only for small test fixtures.
-
-**Note on `batch_key`**: When provided, `sc.pp.highly_variable_genes` runs
-per batch and flags a gene as highly variable if it qualifies in at least one
-batch. Scanpy adds `var['highly_variable_nbatches']` to record how many batches
-called each gene variable. Recommended for multi-donor / multi-site datasets.
-
-**Input**
-
-```
-adata  : AnnData   →  raw counts in adata.X  (output of run_qc() → mdata["rna"])
-```
-
-**Output**
-
-```
-adata_norm.X                          →  log1p-normalized values
-adata_norm.layers['counts']           →  raw integer counts (preserved)
-adata_norm.layers['logcounts']        →  log1p CP10K values
-adata_norm.var['highly_variable']     →  boolean HVG flag
-adata_norm.var['highly_variable_nbatches']  →  per-batch HVG count (if batch_key used)
-adata_norm.uns['omicsage_normalization']    →  provenance record
-metrics  : dict                       →  n_cells, n_genes, n_hvg_selected,
-                                          target_sum, hvg_flavor, batch_key,
-                                          mean_counts_per_cell_after_norm,
-                                          log1p_applied, raw_counts_in_layer,
-                                          normalized_in_layer
-```
 
 **Usage**
 
 ```python
 from pipeline.modules.qc.normalize import normalize
 
-# Minimal — production defaults
-adata_norm, metrics = normalize(mdata["rna"])
-
-# With batch correction for multi-donor data
 adata_norm, metrics = normalize(
     mdata["rna"],
     target_sum=1e4,
     n_top_genes=2000,
     hvg_flavor="seurat_v3",
-    batch_key="batch",         # or "DonorID", "Site"
+    batch_key="batch",
     inplace=False,
 )
-
-print(metrics["n_hvg_selected"])   # 2000
-print(metrics["batch_key"])        # "batch"
-
-# Access layers
-adata_norm.layers["counts"]     # raw counts
-adata_norm.layers["logcounts"]  # log1p normalized
 ```
 
 **Connects to**: `normalization_report.py` for the report, then `reduce.py` for PCA + UMAP
@@ -429,16 +311,7 @@ adata_norm.layers["logcounts"]  # log1p normalized
 **What it does**
 
 Generates a self-contained HTML report for the normalization step.
-Contains four figures and two summary tables. The HTML file is fully
-portable — all figures are base64-embedded PNGs, no internet required.
-
-**Why it exists**
-
-Same philosophy as `qc_report.py`: every pipeline step produces a
-human-readable output. The normalization report lets a biologist confirm
-that HVG selection looks sensible (the scatter should show a clear
-population of variable genes) and that library sizes are uniform after
-normalization before dimensionality reduction begins.
+Contains four figures and two summary tables. Callable from notebook or CLI.
 
 **Report contents**
 
@@ -449,28 +322,7 @@ normalization before dimensionality reduction begins.
 | Top 20 HVGs | Bar chart of the most variable genes by name |
 | Gene detection rate | Cumulative fraction of cells each gene is detected in |
 
-Plus a summary table (cells, genes, HVG count, flavor, batch key, target sum)
-and a provenance table pulled directly from `uns['omicsage_normalization']`.
-
-**Input**
-
-```
-adata_norm   : AnnData   →  output of normalize() — must have layers['counts']
-                             and layers['logcounts']
-metrics      : dict      →  output of normalize()
-report_path  : str       →  where to write the .html file
-dataset_name : str       →  label shown in the report header
-```
-
-**Output**
-
-```
-reports/output/normalization_report.html   →  self-contained HTML (~1-3 MB)
-```
-
 **Usage**
-
-From notebook:
 
 ```python
 from reports.normalization_report import run_normalization_report
@@ -483,8 +335,6 @@ run_normalization_report(
 )
 ```
 
-From CLI (runs normalize + saves h5ad + generates report in one command):
-
 ```bash
 python reports/normalization_report.py \
     --input  data/processed/GSE194122_cite_rna_qc.h5ad \
@@ -494,10 +344,180 @@ python reports/normalization_report.py \
     --batch-key batch
 ```
 
-**Dependencies**: `matplotlib` only — no Plotly, no Bokeh, no JS frameworks.
-
 **Connects to**: `reduce.py` — pass `adata_norm` to PCA + UMAP
 
+---
+
+## 7. `reduce.py`
+
+**What it does**
+
+Runs PCA, neighbor graph construction, UMAP (and optionally t-SNE) on a
+normalized AnnData (output of `normalize.py`). The number of PCs used for
+the neighbor graph is chosen automatically by default using elbow detection
+on the variance-explained curve (`kneed`). The user can override with
+`n_pcs=<int>`.
+
+**Why it exists**
+
+Raw gene expression space has thousands of dimensions — most of which are
+noise. PCA compresses this into a low-dimensional space capturing the major
+axes of biological variation. UMAP then projects this into 2D for visualization.
+The neighbor graph (kNN) built on the PCA embedding is the foundation for
+Leiden clustering in the next step.
+
+Choosing n_pcs data-adaptively (rather than hardcoding 30) ensures the neighbor
+graph captures real biological variation without including noise PCs that would
+blur cluster boundaries.
+
+**Steps performed (in order)**
+
+1. Input validation — warns if raw counts are passed instead of normalized data
+2. PCA on HVG subset only (`use_highly_variable=True`, `svd_solver='arpack'`)
+3. Auto-select n_pcs via elbow detection (kneed) — fallback chain:
+   elbow → variance threshold (85%) → fixed (30) — each step logs a warning
+4. Neighbor graph (`sc.pp.neighbors`, `n_neighbors=15`, `n_pcs=selected`)
+5. UMAP (`sc.tl.umap`) — always computed
+6. t-SNE (`sc.tl.tsne`) — optional, default off (slow on large datasets)
+7. Store all parameters, software versions, and timestamp in `uns['omicsage_reduce']`
+
+**obsm / obsp layout after reduce()**
+
+| Slot | Contents |
+|------|----------|
+| `obsm['X_pca']` | PCA embedding (n_cells × n_comps) |
+| `obsm['X_umap']` | UMAP embedding (n_cells × 2) |
+| `obsm['X_tsne']` | t-SNE embedding (n_cells × 2) — only if `run_tsne=True` |
+| `obsp['connectivities']` | Sparse kNN connectivity matrix |
+| `obsp['distances']` | Sparse kNN distance matrix |
+| `uns['omicsage_reduce']` | Full provenance record including timestamp |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Normalized AnnData — log1p in `.X`, HVGs in `var['highly_variable']` |
+| `n_comps` | int | 50 | Number of PCA components to compute |
+| `n_pcs` | int | None | PCs to use for neighbor graph — None = auto-select |
+| `n_pcs_method` | str | `"elbow"` | `"elbow"` \| `"variance"` \| `"fixed"` |
+| `variance_threshold` | float | 0.85 | Cumulative variance target for `n_pcs_method="variance"` |
+| `n_neighbors` | int | 15 | Number of neighbors for kNN graph |
+| `run_tsne` | bool | False | Also compute t-SNE (slow on large datasets) |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+| `random_state` | int | 0 | Reproducibility seed for all stochastic steps |
+
+**PC selection methods**
+
+| Method | How it works | When to use |
+|--------|-------------|-------------|
+| `"elbow"` (default) | kneed KneeLocator on variance-explained curve; falls back to `"variance"` | Most datasets |
+| `"variance"` | Keep PCs until cumulative variance ≥ `variance_threshold` | Flat scree curves |
+| `"fixed"` | Always use `min(30, n_comps)` | Reproducibility / debugging |
+| manual `n_pcs=N` | Bypasses auto-selection entirely | Expert override |
+
+**Input**
+
+```
+adata  : AnnData   →  normalized AnnData (output of normalize())
+                       Must have log1p values in .X and HVGs flagged in var['highly_variable']
+```
+
+**Output**
+
+```
+adata_reduced.obsm['X_pca']     →  PCA embedding
+adata_reduced.obsm['X_umap']    →  UMAP embedding
+adata_reduced.obsm['X_tsne']    →  t-SNE embedding (if run_tsne=True)
+adata_reduced.obsp['connectivities']  →  kNN graph
+adata_reduced.obsp['distances']       →  kNN distances
+adata_reduced.uns['omicsage_reduce']  →  provenance record
+metrics  : dict                 →  n_cells, n_genes, n_hvg_used, n_comps_computed,
+                                    n_pcs_used, pc_selection_method,
+                                    cumulative_variance_explained,
+                                    variance_explained_per_pc, n_neighbors,
+                                    run_tsne, embeddings_computed
+```
+
+**Usage**
+
+```python
+from pipeline.modules.qc.reduce import reduce
+
+# Production defaults — elbow PC selection
+adata_reduced, metrics = reduce(adata_norm)
+
+# Manual PC override
+adata_reduced, metrics = reduce(adata_norm, n_pcs=20)
+
+# With t-SNE and variance-based PC selection
+adata_reduced, metrics = reduce(
+    adata_norm,
+    n_comps=50,
+    n_pcs=None,
+    n_pcs_method="variance",
+    variance_threshold=0.85,
+    n_neighbors=15,
+    run_tsne=True,
+    inplace=False,
+)
+
+print(metrics["n_pcs_used"])            # e.g. 18
+print(metrics["pc_selection_method"])   # "elbow"
+print(metrics["cumulative_variance_explained"])  # e.g. 0.81
+```
+
+**Connects to**: `reduce_report.py` for the report, then `cluster.py` for Leiden clustering
+
+---
+
+## 8. `reduce_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report for the dimensionality reduction step.
+Contains five figures and two summary tables. Callable from notebook or CLI.
+
+**Why it exists**
+
+The scree plot is the primary tool for validating PC selection. The QC overlays
+on UMAP detect whether major axes of variation are driven by biology or technical
+factors (sequencing depth, MT%, doublets). If UMAP structure is dominated by
+`total_counts` or `pct_counts_mt`, covariates should be regressed out before
+clustering.
+
+**Report contents**
+
+| Figure | What it shows |
+|--------|--------------|
+| Scree plot (2 panels) | Per-PC variance bars + cumulative curve; red dashed line at selected n_pcs |
+| UMAP × QC (2×2 grid) | n_genes, total_counts, MT%, doublet_score overlaid on UMAP |
+| PCA × QC (1×2) | PC1 vs PC2 coloured by n_genes and total_counts |
+| UMAP × batch (optional) | One colour per batch — only rendered when `batch_key` is passed |
+
+**Usage**
+
+```python
+from reports.reduce_report import run_reduce_report
+
+run_reduce_report(
+    adata_reduced=adata_reduced,
+    metrics=metrics,
+    report_path="reports/output/reduce_report.html",
+    dataset_name="GSE194122_CITE",
+    batch_key="batch",    # optional — adds batch UMAP panel
+)
+```
+
+```bash
+python reports/reduce_report.py \
+    --input  data/processed/GSE194122_cite_normalized.h5ad \
+    --output data/processed/GSE194122_cite_reduced.h5ad \
+    --report reports/output/reduce_report.html \
+    --dataset GSE194122_CITE \
+    --batch-key batch
+```
+
+**Connects to**: `cluster.py` — pass `adata_reduced` to Leiden clustering
 
 ---
 
@@ -524,38 +544,16 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │       normalization_report.py → reports/output/normalization_report.html
         │       │
         │       ▼
-        │   reduce.py     → obsm['X_pca'] + obsm['X_umap']   ← NEXT STEP
+        │   reduce.py     → obsm['X_pca'] + obsm['X_umap'] + obsp['connectivities']
+        │       │                   │
+        │       │                   ▼
+        │       │       reduce_report.py → reports/output/reduce_report.html
+        │       │
+        │       ▼
+        │   cluster.py    → obs['leiden_*']    ← NEXT STEP
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
-```
-
----
-
-## Running the Full QC Step
-
-```bash
-cd ~/OmicSage
-conda activate omicsage
-
-python3 -c "
-from pipeline.modules.qc.ingest import load_dataset
-from pipeline.modules.qc.qc import run_qc
-
-# Pass the full mixed AnnData — run_qc() handles modality detection internally
-adata = load_dataset('data/benchmark/GSE194122_cite_raw_only.h5ad')
-mdata, metrics = run_qc(
-    adata,
-    generate_report=True,
-    report_path='reports/qc_BMMC.html',
-    sample_name='GSE194122_BMMC',
-)
-print('Modality detected:', metrics['modality'])
-print('Cells before:     ', metrics['n_cells_input'])
-print('Cells after:      ', metrics['n_cells_output'])
-print('Removed:          ', metrics['n_cells_removed'])
-print('MuData keys:      ', list(mdata.mod.keys()))
-"
 ```
 
 ---
@@ -568,11 +566,19 @@ print('MuData keys:      ', list(mdata.mod.keys()))
 | `tests/test_ingest.py` | Format detection, raw count extraction, all three loaders |
 | `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation, modality detection, MuData structure, ADT/ATAC preservation |
 | `tests/test_normalize.py` | Raw count preservation, normalization correctness, log1p, HVG selection, HVG count accuracy, batch_key, logcounts layer, provenance, mutation guard, input validation |
+| `tests/test_reduce.py` | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, elbow/variance/manual PC selection, no-HVG fallback |
 
-Run all QC + normalization tests:
+Run all tests:
 
 ```bash
 conda activate omicsage
-python -m pytest tests/test_phase0_structure.py tests/test_ingest.py tests/test_qc.py tests/test_normalize.py -v
-# Expected: 42 passed (test_qc.py), 12 passed (test_normalize.py), 2 skipped
+python -m pytest tests/ -v
+# Expected: 162 passed (approximate), 2 skipped
+```
+
+Run just the reduce tests:
+
+```bash
+python -m pytest tests/test_reduce.py -v
+# Expected: 12 passed
 ```
