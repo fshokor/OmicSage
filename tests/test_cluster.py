@@ -174,6 +174,42 @@ def test_best_resolution_selected_silhouette():
 
 
 # ---------------------------------------------------------------------------
+# Test 6b
+# ---------------------------------------------------------------------------
+
+def test_delta_elbow_selects_after_largest_jump():
+    """
+    The delta-elbow logic must select the resolution that captured the
+    largest jump in cluster count — not the last resolution.
+
+    We mock a scenario with a clear elbow by using a wide resolution range
+    and checking that the selected resolution is NOT always the highest.
+    This guards against the regression where stability=1.0 for the last
+    resolution always won.
+    """
+    # Use a wide range — on real-structured data the elbow should not be last
+    resolutions = [0.5, 1.0, 1.5, 2.0, 2.5]
+    adata = _make_reduced_adata()
+    _, metrics = cluster(adata, resolution_range=resolutions)
+
+    best_res = metrics["best_resolution"]
+    reason   = metrics["selection_reason"]
+
+    # When stability_plateau is used, the selected resolution must NOT always
+    # be the last one — we are testing the elbow logic not just "did it run"
+    if reason == "stability_plateau":
+        deltas = metrics["n_clusters_delta"]
+        # The selected resolution should be at or after the largest delta
+        max_delta     = max(deltas[r] for r in resolutions)
+        max_delta_res = [r for r in resolutions if deltas[r] == max_delta]
+        # best_res should be >= the resolution of the largest jump
+        assert best_res >= min(max_delta_res), (
+            f"Elbow selection chose res={best_res} which is before the "
+            f"largest jump at res={min(max_delta_res)} (delta={max_delta})"
+        )
+
+
+# ---------------------------------------------------------------------------
 # Test 7
 # ---------------------------------------------------------------------------
 

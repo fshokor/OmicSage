@@ -308,48 +308,91 @@ def _select_by_stability(
     silhouette_scores: dict[float, float],
 ) -> tuple[float, str]:
     """
-    Pick the resolution at the start of the stability plateau — the last
-    resolution before the cluster count stops growing rapidly.
+    Pick the resolution at the elbow of the delta curve — the resolution
+    where the cluster count makes its largest jump, after which further
+    increases in resolution produce only small additions.
+
+    This corresponds to the biological intuition: the resolution just after
+    the biggest structural split captures the main cell populations without
+    over-fragmenting into incremental sub-clusters.
+
+    Example (from the session that motivated this fix):
+      res=0.2 →  9 clusters  delta=0
+      res=0.4 → 10 clusters  delta=+1
+      res=0.6 → 17 clusters  delta=+7   ← largest jump → select 0.6
+      res=0.8 → 20 clusters  delta=+3
+      res=1.0 → 23 clusters  delta=+3
+      res=1.2 → 26 clusters  delta=+3
+      res=1.5 → 28 clusters  delta=+2   ← old (wrong) logic selected this
 
     Algorithm:
-      - Find the maximum stability score across all resolutions.
-      - Among all resolutions tied at that score, pick the lowest resolution
-        (earliest plateau entry).
-      - Use silhouette as a tiebreaker if multiple resolutions share the exact
-        same stability score at the same level.
-
-    Falls back to silhouette argmax if all stability scores are equal
-    (flat curve — no meaningful plateau).
+      1. Compute delta drop between consecutive resolutions:
+         delta_drop[i] = delta[i] - delta[i+1]  (how much the jump shrinks)
+      2. The resolution with the largest delta (most new clusters added) is
+         the structural "unlock" point — select it.
+      3. Use silhouette as tiebreaker if multiple resolutions share the max delta.
+      4. Fall back to silhouette argmax if all deltas are equal (flat curve).
     """
-    max_stability = max(stability_scores.values())
-    all_equal     = len(set(stability_scores.values())) == 1
+    if len(resolution_range) < 2:
+        best_res = resolution_range[0]
+        return best_res, "silhouette"
+
+    # deltas for resolutions after the first (first delta is always 0)
+    deltas = {r: stability_scores[r] for r in resolution_range}  # kept for compat
+    # Re-derive raw deltas from stability scores: stability = 1/(1+next_delta)
+    # → next_delta = 1/stability - 1
+    # Instead, recalculate directly from stability_scores which encode next_delta.
+    # But stability_scores are already computed from n_clusters_delta in the caller.
+    # We don't have n_clusters_delta here — use stability to reconstruct next_delta:
+    #   stability[r] = 1 / (1 + |delta[next_r]|)
+    #   |delta[next_r]| = 1/stability[r] - 1
+    reconstructed_next_delta = {
+        r: round(1.0 / stability_scores[r] - 1.0)
+        for r in resolution_range
+    }
+
+    # The resolution whose NEXT step has the largest drop is the elbow:
+    # we want the res where reconstructed_next_delta is largest (the big jump
+    # happens going INTO the next resolution, so we pick the resolution BEFORE
+    # the jump — that is, the resolution at which the next step adds the most).
+    # But we want the resolution AFTER the big jump (the one that captured it).
+    # The delta of res[i] = clusters added going from res[i-1] to res[i].
+    # Largest delta means res[i] is where the unlock happened — select res[i].
+
+    # next_delta[r] tells us: if I go from r to next_r, how many clusters do I add?
+    # We want the r for which next_delta is largest — meaning going TO next_r was
+    # the big jump — so select next_r (the resolution that made the big addition).
+    max_next_delta = max(reconstructed_next_delta[r] for r in resolution_range)
+    all_equal = max_next_delta == 0 or len(set(reconstructed_next_delta.values())) == 1
 
     if all_equal:
-        # Flat curve — plateau detection is uninformative, fall back to silhouette
         best_res = max(silhouette_scores, key=lambda r: silhouette_scores[r])
         logger.info(
-            "Stability scores are all equal — falling back to silhouette argmax: %.2f",
-            best_res,
+            "Delta curve is flat — falling back to silhouette argmax: %.2f", best_res
         )
         return best_res, "silhouette"
 
-    # Candidates: resolutions at the plateau (highest stability)
-    candidates = [r for r in resolution_range
-                  if abs(stability_scores[r] - max_stability) < 1e-9]
+    # Find the resolution(s) with the largest next_delta
+    candidates_before = [r for r in resolution_range
+                         if reconstructed_next_delta[r] == max_next_delta]
 
-    # Among plateau candidates, prefer lowest resolution (earliest stable point),
-    # break further ties by silhouette
-    best_res = min(
-        candidates,
-        key=lambda r: (r, -silhouette_scores[r]),
-    )
+    # Select the NEXT resolution after the biggest jump — that is where the
+    # structural unlock was captured
+    best_candidates = []
+    for r in candidates_before:
+        idx = resolution_range.index(r)
+        if idx + 1 < len(resolution_range):
+            best_candidates.append(resolution_range[idx + 1])
+        else:
+            best_candidates.append(r)  # edge case: last resolution
+
+    # Tiebreak by silhouette
+    best_res = max(best_candidates, key=lambda r: silhouette_scores[r])
 
     logger.info(
-        "Stability plateau selection: plateau candidates=%s, selected=%.2f "
-        "(stability=%.3f, silhouette=%.4f)",
-        candidates, best_res,
-        stability_scores[best_res],
-        silhouette_scores[best_res],
+        "Delta-elbow selection: largest jump before=%s (delta=%d), "
+        "selected=%s (silhouette=%.4f)",
+        candidates_before, max_next_delta, best_res, silhouette_scores[best_res],
     )
     return best_res, "stability_plateau"
 
