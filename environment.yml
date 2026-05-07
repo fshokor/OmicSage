@@ -46,3 +46,4 @@ dependencies:
     - dvc==3.51.2
     - scikit-misc
     - kneed>=0.8.5
+    - celltypist>=1.6 
