@@ -1,5 +1,5 @@
 # OmicSage — Current Status
-> Last updated: 2026-05-06
+> Last updated: 2026-05-09
 
 ## Phase
 Phase 1 — Core scRNA Pipeline
@@ -21,89 +21,93 @@ Phase 1 — Core scRNA Pipeline
 ### ✅ QC (pipeline/modules/qc/qc.py)
 - Modality-aware: auto-detects GEX / ADT / ATAC from var['feature_types']
 - Returns MuData with mdata["rna"], mdata["adt"], mdata["atac"] slots
-- MT%, genes/cell, Scrublet doublets, SoupX ambient RNA
+- MT%, genes/cell, Scrublet doublets
 - 42 tests passing in tests/test_qc.py
 
 ### ✅ Normalization (pipeline/modules/qc/normalize.py)
 - Input: AnnData with raw counts in .X (from mdata["rna"])
 - Saves raw counts to layers['counts']
-- Normalizes to CP10K (normalize_total)
-- log1p transform
-- Saves log1p values to layers['logcounts']  (Seurat convention)
+- Normalizes to CP10K, log1p transform
+- Saves log1p values to layers['logcounts'] (Seurat convention)
 - HVG selection — top 2000 genes, flavor='seurat_v3' (pre-log1p on counts)
 - batch_key support for per-batch HVG selection
-- Input validation — rejects already-normalized data
-- Provenance stored in uns['omicsage_normalization'] — includes timestamp
+- Provenance stored in uns['omicsage_normalization']
 - 12 tests passing in tests/test_normalize.py
 
 ### ✅ Normalization Report (reports/normalization_report.py)
-- Self-contained HTML report (no Quarto dependency yet)
+- Self-contained HTML report
 - Figures: HVG scatter, library size violin, top 20 HVGs, gene detection rate
-- Summary table + provenance table from uns
-- Callable from notebook or CLI
 
 ### ✅ Dimensionality Reduction (pipeline/modules/qc/reduce.py)
-- Input: normalized AnnData (log1p in .X, HVGs flagged)
 - PCA on HVG subset only (n_comps=50, svd_solver='arpack')
 - Auto-select n_pcs via elbow detection (kneed) — falls back to variance threshold
-- Manual n_pcs override supported
-- Neighbor graph (sc.pp.neighbors, n_neighbors=15)
-- UMAP (always on)
-- t-SNE (optional, default off)
-- Provenance stored in uns['omicsage_reduce'] — includes timestamp
-- inplace=False default
+- Neighbor graph (sc.pp.neighbors, n_neighbors=15), UMAP (always), t-SNE (optional)
+- Provenance stored in uns['omicsage_reduce']
 - 12 tests passing in tests/test_reduce.py
 
 ### ✅ Dimensionality Reduction Report (reports/reduce_report.py)
-- Self-contained HTML report
-- Figures: scree plot (per-PC + cumulative), UMAP × QC metrics (2×2), PCA × QC, optional batch UMAP
-- Summary table + provenance table from uns
-- Callable from notebook or CLI
+- Figures: scree plot, UMAP × QC metrics (2×2), PCA × QC, optional batch UMAP
 
-### ✅ Leiden Clustering (pipeline/modules/qc/cluster.py)  ← NEW THIS SESSION
-- Input: reduced AnnData (obsm['X_pca'], obsp['connectivities'])
-- Leiden sweep across configurable resolution_range (default: [0.2, 0.4, 0.6, 0.8, 1.0])
-- Silhouette score computed per resolution on X_pca (subsampled above 10k cells)
-- Auto-select best resolution by silhouette score
-- best_resolution_override parameter to pin a resolution manually (recommended for annotation prep)
-- All resolution labels stored in obs[f'leiden_{res}'], convenience key obs['leiden'] at best resolution
-- Float dict keys stringified in uns for h5ad serialisation compatibility
-- Provenance stored in uns['omicsage_cluster'] — includes resolution_selection ("override" | "silhouette")
-- inplace=False default
+### ✅ Leiden Clustering (pipeline/modules/clustering/cluster.py)
+- Leiden sweep across configurable resolution_range
+- Silhouette score per resolution; best_resolution_override for manual pinning
+- obs['leiden_*'] per resolution + obs['leiden'] convenience key
+- Provenance stored in uns['omicsage_cluster']
 - 8 tests passing in tests/test_cluster.py
 
-### ✅ Clustering Report (reports/cluster_report.py)  ← NEW THIS SESSION
+### ✅ Clustering Report (reports/cluster_report.py)
+- Figures: UMAP grid per resolution, silhouette bar chart, cluster size distribution,
+  optional ground-truth cell_type UMAP
+
+### ✅ Cell-Type Annotation (pipeline/modules/annotation/annotate.py)
+- Methods: CellTypist (Immune_All_High + Immune_All_Low), marker gene scoring, majority vote
+- CellTypist models cached in data/references/celltypist/ (project-local)
+- obs columns: celltypist_coarse, celltypist_fine, cell_type_markers,
+  cell_type_groundtruth (preserved from obs['cell_type']), cell_type_vote, cell_type_confidence
+- Provenance stored in uns['omicsage_annotate']
+- 18 tests passing, 1 skipped in tests/test_annotate.py
+
+### ✅ Annotation Report (reports/annotate_report.py)
+- Figures: UMAP × consensus vote, UMAP × CellTypist fine, confidence distribution
+- Per-cluster table with all method labels and confidence scores
+
+### ✅ DEG (pipeline/modules/qc/deg.py)  ← NEW THIS SESSION
+- Input: annotated AnnData with obs['cell_type_vote'] and layers['logcounts']
+- Wilcoxon rank-sum via sc.tl.rank_genes_groups(), one-vs-rest per cell type
+- Fallback: tries obs['cell_type_vote'], falls back to obs['leiden'] with UserWarning
+- BH FDR correction; configurable min_logfc and max_pval_adj thresholds
+- Threshold filtering applied post-extraction (uns['rank_genes_groups'] always has full n_genes)
+- pts=True passed to scanpy — fraction expressing stored at no cost
+- Optional pairwise mode via pairwise_groups parameter
+- Warns for groups with < 10 cells (unreliable Wilcoxon)
+- deg_dict: results (per-group DataFrames), summary_df (top 5 per group), provenance, pairwise
+- Provenance stored in uns['omicsage_deg']
+- inplace=False default
+- 11 tests passing in tests/test_deg.py
+
+### ✅ DEG Report (reports/deg_report.py)  ← NEW THIS SESSION
 - Self-contained HTML report
-- Figures: UMAP grid per resolution (gold border on selected), silhouette bar chart,
-  cluster size distribution, optional ground-truth cell_type UMAP
-- Cell_type panel skipped gracefully when obs['cell_type'] absent
-- Legend placed outside axes (bbox_to_anchor) — scales with number of cell types
-- Summary table + provenance table from uns
-- Callable from notebook or CLI
+- Sections: run summary cards + per-group DEG counts, top DEGs table (rowspan, logFC coloured),
+  volcano plots (one per group, capped at max_volcano_groups=9), dot plot (sc.pl.dotplot)
+- All sections fail gracefully — one broken plot never kills the report
 
 ### ✅ Notebook (notebooks/phase1_qc.ipynb)  ← UPDATED THIS SESSION
-- Step 4 (Leiden clustering) section added — cells 54–63
-- Covers: load, run cluster with resolution sweep, sanity checks,
-  UMAP by best resolution + cell_type side-by-side,
-  ARI vs cell_type across all resolutions (Phase 1 milestone: ARI > 0.6),
-  report generation, save
-- best_resolution_override=0.8 set — rationale: over-cluster for annotation,
-  silhouette favours too few clusters on this dataset (9 vs 50+ ground-truth types)
+- Step 6 (DEG) section added — 9 cells
+- Covers: load annotated AnnData, run deg(), sanity checks, biological marker check
+  (CD3D → T cell, CD14 → Monocyte, MS4A1 → B cell), report generation, save
+- Output: data/processed/GSE194122_cite_deg.h5ad
+
+### ✅ MODULE_DOCS.md  ← UPDATED THIS SESSION
+- Modules 11–14 documented: annotate.py, annotate_report.py, deg.py, deg_report.py
+- Data flow diagram extended to DEG → GSEA
+- Tests table updated with accurate counts
 
 ## Total Tests Passing
-162 (pre-session) + 8 (cluster) = 170 expected after this session
-
-## Key Design Decision Made This Session
-Silhouette score is kept as a diagnostic metric but is NOT used as the sole
-selection criterion in practice. best_resolution_override lets the analyst
-pin a higher resolution before annotation — standard practice is to
-over-cluster slightly, then merge during annotation rather than split.
+~181 (170 pre-session + 11 new deg tests)
 
 ## What Is NOT Built Yet
-- annotate.py   — SingleR + LLM cell type annotation  ← NEXT
-- DEG module
-- GSEA module
-- Trajectory
+- GSEA module (blocked until deg.py tests confirmed passing on real data)
+- ScType-py + SingleR-py annotation (deferred — see docs/ANNOTATION_PLAN.md)
 - Harmony + scVI batch correction
 - scATAC module (Phase 4)
 - Spatial module (Phase 5)
@@ -113,11 +117,13 @@ over-cluster slightly, then merge during annotation rather than split.
 - Quarto reports (Phase 2)
 
 ## Processed Data Files
-- data/processed/GSE194122_cite_rna_qc.h5ad         ← QC-filtered RNA, raw counts in .X
-- data/processed/GSE194122_cite_adt_qc.h5ad         ← QC-filtered ADT
-- data/processed/GSE194122_multiome_rna_qc.h5ad     ← QC-filtered multiome RNA
-- data/processed/GSE194122_multiome_atac_qc.h5ad    ← QC-filtered ATAC (Phase 4)
-- data/processed/GSE166635_HCC1_qc.h5ad             ← QC-filtered HCC RNA
-- data/processed/GSE194122_cite_normalized.h5ad     ← output of normalize
-- data/processed/GSE194122_cite_reduced.h5ad        ← output of reduce
-- data/processed/GSE194122_cite_clustered.h5ad      ← output of cluster  ← NEW
+- data/processed/GSE194122_cite_rna_qc.h5ad
+- data/processed/GSE194122_cite_adt_qc.h5ad
+- data/processed/GSE194122_multiome_rna_qc.h5ad
+- data/processed/GSE194122_multiome_atac_qc.h5ad
+- data/processed/GSE166635_HCC1_qc.h5ad
+- data/processed/GSE194122_cite_normalized.h5ad
+- data/processed/GSE194122_cite_reduced.h5ad
+- data/processed/GSE194122_cite_clustered.h5ad
+- data/processed/GSE194122_cite_annotated.h5ad
+- data/processed/GSE194122_cite_deg.h5ad          ← NEW (written by notebook Step 6)

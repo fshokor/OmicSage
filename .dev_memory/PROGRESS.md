@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-06
+> Last updated: 2026-05-09
 
 ## Phase 0 — Foundation
 - [x] GitHub repo created
@@ -15,7 +15,7 @@
 
 ## Phase 1 — Core scRNA Pipeline
 - [x] Data ingestion: 10x MEX, H5, AnnData auto-detection
-- [x] QC module: MT%, genes/cell, SoupX ambient RNA, Scrublet doublets
+- [x] QC module: MT%, genes/cell, Scrublet doublets
 - [x] Modality-aware QC: MuData return, GEX/ADT/ATAC splitting
 - [x] Normalization: CP10K + log1p + HVG selection (seurat_v3)
 - [x] batch_key support for HVG selection
@@ -25,14 +25,19 @@
 - [x] Data-driven PC selection (elbow via kneed + variance fallback)
 - [x] Dimensionality reduction report (HTML, self-contained)
 - [x] Notebook Step 3 — dimensionality reduction section
-- [x] Leiden clustering with resolution sweep (cluster.py)  ← COMPLETED THIS SESSION
-- [x] Silhouette score per resolution + best_resolution_override  ← COMPLETED THIS SESSION
-- [x] Clustering report (HTML, self-contained)  ← COMPLETED THIS SESSION
-- [x] Notebook Step 4 — clustering section + ARI milestone check  ← COMPLETED THIS SESSION
+- [x] Leiden clustering with resolution sweep (cluster.py)
+- [x] Silhouette score per resolution + best_resolution_override
+- [x] Clustering report (HTML, self-contained)
+- [x] Notebook Step 4 — clustering section + ARI milestone check
+- [x] Cell-type annotation: CellTypist + marker scoring + majority vote (annotate.py)
+- [x] Annotation report (HTML, self-contained)
+- [x] Notebook Step 5 — annotation section + broad-match accuracy check
+- [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction (deg.py)  ← NEW
+- [x] DEG report: volcano plots + dot plot + summary table (deg_report.py)  ← NEW
+- [x] Notebook Step 6 — DEG section + canonical marker gene sanity check  ← NEW
 - [ ] Harmony + scVI batch correction
-- [ ] SingleR annotation  ← NEXT
-- [ ] DEG: Wilcoxon + pseudobulk
-- [ ] GSEA: GO/KEGG/Reactome
+- [ ] GSEA: GO/KEGG/Reactome  ← NEXT
+- [ ] Pseudobulk DEG (DESeq2-style)
 - [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper
 
 ## Phase 2 — Report Engine
