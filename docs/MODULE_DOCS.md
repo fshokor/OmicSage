@@ -1,10 +1,10 @@
-# OmicSage — QC Module: Script Reference
+# OmicSage — Module Reference
 
-> Location: `pipeline/modules/qc/`
+> Locations: `pipeline/modules/qc/` · `pipeline/modules/annotation/` · `reports/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-06 (session 2)
+> Last updated: 2026-05-09 (session 3)
 
-This document describes every script in the QC module — what it does,
+This document describes every script in the pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
 
 ---
@@ -366,16 +366,11 @@ axes of biological variation. UMAP then projects this into 2D for visualization.
 The neighbor graph (kNN) built on the PCA embedding is the foundation for
 Leiden clustering in the next step.
 
-Choosing n_pcs data-adaptively (rather than hardcoding 30) ensures the neighbor
-graph captures real biological variation without including noise PCs that would
-blur cluster boundaries.
-
 **Steps performed (in order)**
 
 1. Input validation — warns if raw counts are passed instead of normalized data
 2. PCA on HVG subset only (`use_highly_variable=True`, `svd_solver='arpack'`)
-3. Auto-select n_pcs via elbow detection (kneed) — fallback chain:
-   elbow → variance threshold (85%) → fixed (30) — each step logs a warning
+3. Auto-select n_pcs via elbow detection (kneed) — fallback chain: elbow → variance threshold (85%) → fixed (30)
 4. Neighbor graph (`sc.pp.neighbors`, `n_neighbors=15`, `n_pcs=selected`)
 5. UMAP (`sc.tl.umap`) — always computed
 6. t-SNE (`sc.tl.tsne`) — optional, default off (slow on large datasets)
@@ -415,29 +410,6 @@ blur cluster boundaries.
 | `"fixed"` | Always use `min(30, n_comps)` | Reproducibility / debugging |
 | manual `n_pcs=N` | Bypasses auto-selection entirely | Expert override |
 
-**Input**
-
-```
-adata  : AnnData   →  normalized AnnData (output of normalize())
-                       Must have log1p values in .X and HVGs flagged in var['highly_variable']
-```
-
-**Output**
-
-```
-adata_reduced.obsm['X_pca']     →  PCA embedding
-adata_reduced.obsm['X_umap']    →  UMAP embedding
-adata_reduced.obsm['X_tsne']    →  t-SNE embedding (if run_tsne=True)
-adata_reduced.obsp['connectivities']  →  kNN graph
-adata_reduced.obsp['distances']       →  kNN distances
-adata_reduced.uns['omicsage_reduce']  →  provenance record
-metrics  : dict                 →  n_cells, n_genes, n_hvg_used, n_comps_computed,
-                                    n_pcs_used, pc_selection_method,
-                                    cumulative_variance_explained,
-                                    variance_explained_per_pc, n_neighbors,
-                                    run_tsne, embeddings_computed
-```
-
 **Usage**
 
 ```python
@@ -460,10 +432,6 @@ adata_reduced, metrics = reduce(
     run_tsne=True,
     inplace=False,
 )
-
-print(metrics["n_pcs_used"])            # e.g. 18
-print(metrics["pc_selection_method"])   # "elbow"
-print(metrics["cumulative_variance_explained"])  # e.g. 0.81
 ```
 
 **Connects to**: `reduce_report.py` for the report, then `cluster.py` for Leiden clustering
@@ -476,14 +444,6 @@ print(metrics["cumulative_variance_explained"])  # e.g. 0.81
 
 Generates a self-contained HTML report for the dimensionality reduction step.
 Contains five figures and two summary tables. Callable from notebook or CLI.
-
-**Why it exists**
-
-The scree plot is the primary tool for validating PC selection. The QC overlays
-on UMAP detect whether major axes of variation are driven by biology or technical
-factors (sequencing depth, MT%, doublets). If UMAP structure is dominated by
-`total_counts` or `pct_counts_mt`, covariates should be regressed out before
-clustering.
 
 **Report contents**
 
@@ -508,19 +468,7 @@ run_reduce_report(
 )
 ```
 
-```bash
-python reports/reduce_report.py \
-    --input  data/processed/GSE194122_cite_normalized.h5ad \
-    --output data/processed/GSE194122_cite_reduced.h5ad \
-    --report reports/output/reduce_report.html \
-    --dataset GSE194122_CITE \
-    --batch-key batch
-```
-
 **Connects to**: `cluster.py` — pass `adata_reduced` to Leiden clustering
-
----
-
 
 ---
 
@@ -545,7 +493,7 @@ over-cluster slightly then merge during annotation, rather than to split.
 
 **Steps performed (in order)**
 
-1. Input validation — checks obsm['X_pca'] and obsp['connectivities'] are present
+1. Input validation — checks `obsm['X_pca']` and `obsp['connectivities']` are present
 2. Resolution sweep — runs `sc.tl.leiden` at each resolution in `resolution_range`
 3. Stores each result in `obs[f'leiden_{res}']`
 4. Computes silhouette score per resolution on X_pca (subsampled above 10k cells)
@@ -557,7 +505,7 @@ over-cluster slightly then merge during annotation, rather than to split.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `adata` | AnnData | required | Reduced AnnData — must have obsm['X_pca'] and obsp['connectivities'] |
+| `adata` | AnnData | required | Reduced AnnData — must have `obsm['X_pca']` and `obsp['connectivities']` |
 | `resolution_range` | list[float] | `[0.2, 0.4, 0.6, 0.8, 1.0]` | Leiden resolutions to sweep |
 | `best_resolution_override` | float | None | Pin a specific resolution; None = silhouette auto-select |
 | `pca_key` | str | `"X_pca"` | obsm key for silhouette scoring |
@@ -565,21 +513,14 @@ over-cluster slightly then merge during annotation, rather than to split.
 | `random_state` | int | 0 | Reproducibility seed |
 | `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
 
-**Input**
-
-```
-adata  : AnnData   →  reduced AnnData (output of reduce())
-                       Must have obsm['X_pca'] and obsp['connectivities']
-```
-
 **Output**
 
 ```
-adata.obs[f'leiden_{res}']         →  cluster labels at each resolution tested
-adata.obs['leiden']                →  labels at the selected resolution (convenience key)
-adata.uns['omicsage_cluster']      →  provenance record (string-keyed dicts for h5ad compat)
-metrics : dict                     →  resolutions, n_clusters, silhouette_scores,
-                                       best_resolution, best_silhouette, best_n_clusters
+adata.obs[f'leiden_{res}']    →  cluster labels at each resolution tested
+adata.obs['leiden']           →  labels at the selected resolution (convenience key)
+adata.uns['omicsage_cluster'] →  provenance record
+metrics : dict                →  resolutions, n_clusters, silhouette_scores,
+                                  best_resolution, best_silhouette, best_n_clusters
 ```
 
 **Usage**
@@ -596,19 +537,15 @@ adata_clustered, metrics = cluster(
     resolution_range=[0.2, 0.4, 0.6, 0.8, 1.0],
     best_resolution_override=0.8,
 )
-
-print(metrics["best_resolution"])    # 0.8
-print(metrics["best_n_clusters"])    # e.g. 25
-print(metrics["silhouette_scores"])  # {0.2: 0.21, 0.4: 0.18, ...}
 ```
 
 **Important note on resolution selection**
 
 Silhouette score optimises for geometric separation in PCA space and tends to
-select low resolutions (few, well-separated clusters). For annotation purposes
-it is usually better to over-cluster and merge than to under-cluster and split.
-Use `best_resolution_override` to pin a higher resolution when the dataset has
-many expected cell types (e.g. PBMC / BMMC datasets).
+select low resolutions. For annotation purposes it is usually better to
+over-cluster and merge than to under-cluster and split. Use
+`best_resolution_override` to pin a higher resolution when the dataset has many
+expected cell types (e.g. PBMC / BMMC datasets).
 
 **Connects to**: `cluster_report.py` for the report, then `annotate.py` for cell type annotation
 
@@ -619,14 +556,6 @@ many expected cell types (e.g. PBMC / BMMC datasets).
 **What it does**
 
 Generates a self-contained HTML report for the Leiden clustering step.
-Contains four figures and two summary tables. Callable from notebook or CLI.
-
-**Why it exists**
-
-Visualising clustering at multiple resolutions side-by-side is the fastest way
-to judge whether the sweep produced sensible results. The silhouette bar chart
-makes the auto-selection transparent. The cluster size distribution reveals
-imbalanced or degenerate clusters before annotation begins.
 
 **Report contents**
 
@@ -635,7 +564,7 @@ imbalanced or degenerate clusters before annotation begins.
 | UMAP grid (one panel per resolution) | Cluster assignments per resolution; gold border on the selected panel |
 | Silhouette bar chart | Score per resolution; orange bar = selected; value labels on each bar |
 | Cluster size distribution | Cell counts per cluster at best resolution, sorted descending; median line |
-| UMAP × ground-truth cell_type (optional) | Only rendered when `obs['cell_type']` is present; legend placed outside axes |
+| UMAP × ground-truth cell_type (optional) | Only rendered when `obs['cell_type']` is present |
 
 **Usage**
 
@@ -650,16 +579,335 @@ run_cluster_report(
 )
 ```
 
-```bash
-python reports/cluster_report.py \
-    --input  data/processed/GSE194122_cite_reduced.h5ad \
-    --output data/processed/GSE194122_cite_clustered.h5ad \
-    --report reports/output/cluster_report.html \
-    --dataset GSE194122_CITE \
-    --resolutions 0.2 0.4 0.6 0.8 1.0
+**Connects to**: `annotate.py` — pass `adata_clustered`
+
+---
+
+## 11. `annotate.py`
+
+**What it does**
+
+Assigns cell type labels to Leiden clusters using one or more automated
+methods, then combines them into a consensus label via majority vote.
+All methods operate at the cluster level (not per cell), so the result
+is consistent with the Leiden partition.
+
+**Why it exists**
+
+No single annotation method is universally reliable. CellTypist is strong on
+immune cell types but can conflate closely related states. Marker gene scoring
+is interpretable but depends on the quality of the gene list. Running both and
+taking the majority vote produces more robust annotations than either method
+alone — and makes method disagreements explicit through the confidence score.
+The module is also forward-compatible: ScType and SingleR slots are reserved
+and will plug into the existing vote table in Session B without changing the API.
+
+**Methods**
+
+| Method | Key | How it works | Status |
+|--------|-----|-------------|--------|
+| CellTypist | `"celltypist"` | Downloads `Immune_All_High.pkl` (coarse) and `Immune_All_Low.pkl` (fine); runs per-cell prediction then applies Leiden cluster majority voting | ✓ Implemented |
+| Marker scoring | `"markers"` | Computes mean log-normalised expression of each marker gene set per cluster; assigns the highest-scoring type | ✓ Implemented |
+| Majority vote | `"vote"` | 2-way consensus across CellTypist fine + markers; confidence = fraction of methods agreeing | ✓ Implemented |
+| ScType | `"sctype"` | Tissue-specific DB scoring via rpy2/R | Session B |
+| SingleR | `"singler"` | HumanPrimaryCellAtlasData() reference via rpy2/R | Session B |
+
+**Steps performed (in order)**
+
+1. Validate methods and prerequisites (`"vote"` requires `"celltypist"` and `"markers"`)
+2. Preserve ground-truth: copy `obs['cell_type']` → `obs['cell_type_groundtruth']` before any writes
+3. Run CellTypist — builds a CP10K log1p copy, downloads models to `data/references/celltypist/`, runs majority-vote prediction at cluster level; writes `obs['celltypist_coarse']` and `obs['celltypist_fine']`
+4. Run marker scoring — mean expression per cluster per marker set; writes `obs['cell_type_markers']`
+5. Run majority vote — combines all available method labels per cluster; writes `obs['cell_type_vote']` and `obs['cell_type_confidence']`
+6. Write provenance to `uns['omicsage_annotate']`
+
+**obs columns written**
+
+| Column | Source | Notes |
+|--------|--------|-------|
+| `celltypist_coarse` | CellTypist `Immune_All_High.pkl` majority vote | Broad immune categories |
+| `celltypist_fine` | CellTypist `Immune_All_Low.pkl` majority vote | Fine-grained immune subtypes |
+| `cell_type_markers` | Marker gene scoring | Best-scoring type per cluster |
+| `cell_type_groundtruth` | Copy of original `obs['cell_type']` | Only written if column exists; prevents ground-truth loss |
+| `cell_type_vote` | 2-way majority vote | Primary consensus label for downstream steps |
+| `cell_type_confidence` | Fraction of methods agreeing | 0.0–1.0; use to flag uncertain clusters |
+
+**Built-in marker sets** (`MARKER_SETS`)
+
+Covers immune (BMMC) and parenchymal (HCC) cell types:
+
+| Category | Cell types |
+|----------|-----------|
+| Myeloid | Macrophage, Monocyte, DC, pDC, Mast_cell |
+| Lymphoid | T_cell, CD8_T_cell, NK_ILC, B_cell, Plasma_cell |
+| Progenitors / erythroid | Progenitor, Erythroid, Platelet |
+| Non-immune / parenchymal | Hepatocyte, Fibroblast, Endothelial |
+
+Pass a custom dict via `marker_sets={"MyType": ["GENE1", "GENE2"]}` to override or extend.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Clustered AnnData — must have `obs[leiden_col]` and `layers['logcounts']` |
+| `methods` | list[str] | `["celltypist", "markers", "vote"]` | Methods to run |
+| `leiden_col` | str | `"leiden"` | obs column with cluster labels |
+| `celltypist_models` | list[str] | `["Immune_All_High.pkl", "Immune_All_Low.pkl"]` | CellTypist model filenames |
+| `celltypist_models_dir` | Path | `data/references/celltypist/` | Local model cache directory |
+| `marker_sets` | dict | `MARKER_SETS` | `{cell_type: [gene_list]}` |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Input**
+
+```
+adata  : AnnData   →  clustered AnnData (output of cluster())
+                       Must have obs['leiden'], layers['logcounts']
 ```
 
-**Connects to**: `annotate.py` — pass `adata_clustered` to SingleR annotation
+**Output**
+
+```
+adata_ann.obs['celltypist_coarse']     →  coarse CellTypist label per cell
+adata_ann.obs['celltypist_fine']       →  fine CellTypist label per cell
+adata_ann.obs['cell_type_markers']     →  marker-score label per cell
+adata_ann.obs['cell_type_groundtruth'] →  preserved ground-truth (if existed)
+adata_ann.obs['cell_type_vote']        →  consensus label per cell
+adata_ann.obs['cell_type_confidence']  →  confidence score per cell (0.0–1.0)
+adata_ann.uns['omicsage_annotate']     →  full provenance record
+ann_dict : dict                        →  marker_score_df, vote_df, provenance
+```
+
+**Usage**
+
+```python
+from pipeline.modules.annotation.annotate import annotate, MARKER_SETS
+
+# All three methods (recommended)
+adata_annotated, ann_dict = annotate(
+    adata_clustered,
+    methods=["celltypist", "markers", "vote"],
+    leiden_col="leiden",
+    inplace=False,
+)
+
+# Inspect per-cluster vote table
+print(ann_dict["vote_df"][["n_cells", "CellTypist", "Markers", "final_label", "confidence"]])
+
+# Marker scoring only (no internet required)
+adata_annotated, ann_dict = annotate(
+    adata_clustered,
+    methods=["markers"],
+)
+
+# Custom marker sets (e.g. for liver dataset)
+liver_markers = {
+    "Hepatocyte": ["ALB", "APOC3", "TTR"],
+    "T_cell":     ["CD3D", "CD3E"],
+}
+adata_annotated, ann_dict = annotate(
+    adata_clustered,
+    methods=["markers"],
+    marker_sets=liver_markers,
+)
+
+# Access consensus labels
+print(adata_annotated.obs["cell_type_vote"].value_counts())
+print(adata_annotated.obs["cell_type_confidence"].describe())
+```
+
+**Important implementation notes**
+
+- CellTypist models are downloaded to `data/references/celltypist/` (project-local), not `~/.celltypist/`. This keeps runs self-contained and reproducible.
+- The `CELLTYPIST_FOLDER` environment variable is set and then restored so the caller's environment is not polluted.
+- If CellTypist is not installed, the method is skipped with a `UserWarning` and the pipeline continues with marker scoring only.
+- `obs['cell_type_vote']` (not `obs['cell_type']`) is the output column — this avoids overwriting any existing ground-truth `cell_type` column from the dataset.
+- Session B will add ScType and SingleR to the vote table; the `vote` function already has reserved slots for both and will automatically upgrade from 2-way to 4-way consensus.
+
+**Connects to**: `annotate_report.py` for the report, then `deg.py` for differential expression
+
+---
+
+## 12. `annotate_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report for the cell type annotation step.
+Contains UMAP visualisations, per-cluster summary tables, and confidence
+distribution plots.
+
+**Report contents**
+
+| Section | What it shows |
+|---------|--------------|
+| Summary cards | Methods run, clusters annotated, unique cell types, median confidence |
+| UMAP × consensus vote | Cells coloured by `cell_type_vote` |
+| UMAP × CellTypist fine | Cells coloured by `celltypist_fine` (for comparison) |
+| Confidence distribution | Histogram of `cell_type_confidence` across all cells |
+| Per-cluster table | Cluster → final label, confidence, n_cells, all method labels |
+
+**Usage**
+
+```python
+from pipeline.modules.annotation.annotate_report import run_annotate_report
+
+run_annotate_report(
+    adata_annotated=adata_annotated,
+    annotation_dict=ann_dict,
+    report_path="reports/annotate_report.html",
+    dataset_name="GSE194122_CITE",
+)
+```
+
+**Connects to**: `deg.py` — pass `adata_annotated`
+
+---
+
+## 13. `deg.py`
+
+**What it does**
+
+Runs Wilcoxon rank-sum differential expression analysis across all annotated
+cell types, one-vs-rest. Returns both a tidy per-group DataFrame and a
+summary of the top 5 genes per group. Also supports optional pairwise
+comparisons between specific groups.
+
+**Why it exists**
+
+Identifying genes that distinguish each cell type from all others is the
+foundation for validating annotations (canonical marker genes should appear),
+understanding cell biology, and — in the next step — pathway enrichment.
+Performing DEG at the annotated cell-type level (rather than at the Leiden
+cluster level) produces biologically interpretable results that connect
+directly to the literature.
+
+**Steps performed (in order)**
+
+1. Resolve groupby column — tries `obs['cell_type_vote']`, falls back to `obs['leiden']` with a `UserWarning`
+2. Warn about groups with < 10 cells (unreliable Wilcoxon statistics)
+3. Set `adata.X = layers['logcounts']` when `use_raw=False` (default)
+4. Run `sc.tl.rank_genes_groups` — Wilcoxon, BH correction, `pts=True`
+5. Extract results into tidy DataFrames (one per group): `gene, score, pval, logfc, pval_adj`
+6. Apply logFC and pval_adj thresholds to filter to significant DEGs
+7. Optionally run pairwise comparisons for specified group pairs
+8. Build `summary_df` — top 5 significant DEGs per group in long format
+9. Write provenance to `uns['omicsage_deg']`
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Annotated AnnData — must have `layers['logcounts']` and `obs[groupby]` |
+| `groupby` | str | `"cell_type_vote"` | obs column to group cells by |
+| `leiden_col` | str | `"leiden"` | Fallback obs column if `groupby` is not present |
+| `method` | str | `"wilcoxon"` | DEG method — `"wilcoxon"` \| `"t-test"` \| `"logreg"` |
+| `min_logfc` | float | `0.25` | Minimum absolute log₂ fold-change threshold |
+| `max_pval_adj` | float | `0.05` | Maximum BH-corrected adjusted p-value threshold |
+| `n_genes` | int | `200` | Top genes to compute per group (before threshold filtering) |
+| `use_raw` | bool | False | Use `adata.raw` / `adata.X` instead of `layers['logcounts']` |
+| `pairwise_groups` | list[tuple] | None | List of `(group_a, group_b)` tuples for pairwise DEG |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Output**
+
+```
+adata_deg.uns['omicsage_deg']           →  provenance record
+adata_deg.uns['rank_genes_groups']      →  full scanpy output (all genes, all groups)
+
+deg_dict['results']    : dict           →  {group: DataFrame(gene, score, pval, logfc, pval_adj)}
+                                            — filtered to significant DEGs only
+deg_dict['summary_df'] : DataFrame      →  long-format top 5 DEGs per group
+                                            columns: group, rank, gene, logfc, pval_adj
+deg_dict['provenance'] : dict           →  same as uns['omicsage_deg']
+deg_dict['pairwise']   : dict           →  {(a, b): DataFrame} — only if pairwise_groups supplied
+```
+
+**Usage**
+
+```python
+from pipeline.modules.qc.deg import deg
+
+adata_deg, deg_dict = deg(
+    adata_annotated,
+    groupby="cell_type_vote",
+    method="wilcoxon",
+    min_logfc=0.25,
+    max_pval_adj=0.05,
+    n_genes=200,
+    inplace=False,
+)
+
+# Inspect significant DEGs for T cells
+print(deg_dict["results"]["T_cell"].head(10))
+
+# Top 5 DEGs per group (summary table)
+print(deg_dict["summary_df"])
+
+# Pairwise comparison
+adata_deg, deg_dict = deg(
+    adata_annotated,
+    pairwise_groups=[("T_cell", "B_cell"), ("Monocyte", "DC")],
+)
+print(deg_dict["pairwise"][("T_cell", "B_cell")].head())
+```
+
+**Important implementation notes**
+
+- Threshold filtering happens *after* extraction, not inside `rank_genes_groups`. This means `uns['rank_genes_groups']` always contains the full `n_genes` ranked list, while `deg_dict['results']` contains only significant hits. This lets you adjust thresholds without rerunning the test.
+- `pts=True` is always passed to `rank_genes_groups` — this adds `pts` (fraction of cells expressing) to `uns['rank_genes_groups']` at no cost, useful for downstream dot plots.
+- When `use_raw=False` (default), `adata.X` is temporarily set to `layers['logcounts']`. The copy guard (`inplace=False`) ensures the caller's matrix is not modified.
+- Pairwise results are written to separate `key_added` keys in `uns` so one-vs-rest results are never overwritten.
+
+**Connects to**: `deg_report.py` for the report, then `gsea.py` for pathway enrichment (blocked until `deg.py` tests pass)
+
+---
+
+## 14. `deg_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report from `deg()` output. All figures
+are embedded as base64 PNGs — no external files, opens in any browser.
+Sections are built independently so one failed plot never kills the report.
+
+**Report contents**
+
+| Section | What it shows |
+|---------|--------------|
+| Run summary | Stat cards (groups, method, thresholds, total significant DEGs) + per-group DEG counts table |
+| Top DEGs per group | Rowspan table — top 5 significant genes per group, ranked by adj. p-value; log₂FC coloured red/blue |
+| Volcano plots | One plot per group (capped at 9 by default); up/down/NS classification; top N genes labelled; threshold dashed lines |
+| Dot plot | `sc.pl.dotplot` — dot size = fraction expressing, colour = mean expression — top 5 DEGs per group |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | AnnData returned by `deg()` |
+| `deg_dict` | dict | required | `deg_dict` returned by `deg()` |
+| `output_path` | str | `"reports/output/deg_report.html"` | HTML output path |
+| `top_n_volcano` | int | 10 | Genes to label on each volcano plot |
+| `top_n_dotplot` | int | 5 | Top DEGs per group to include in dot plot |
+| `max_volcano_groups` | int | 9 | Max volcano plots rendered (avoids huge files for high-res clustering) |
+
+**Usage**
+
+```python
+from reports.deg_report import generate_deg_report
+
+report_path = generate_deg_report(
+    adata=adata_deg,
+    deg_dict=deg_dict,
+    output_path="reports/deg_report.html",
+    top_n_volcano=10,
+    top_n_dotplot=5,
+    max_volcano_groups=9,
+)
+print(f"Report → {report_path}")
+```
+
+**Connects to**: `gsea.py` — pass `deg_dict['results']` to pathway enrichment
+
+---
 
 ## Module Data Flow
 
@@ -681,22 +929,34 @@ Raw file (.h5ad / .h5 / MTX dir)
         │   normalize.py  → layers['counts'] + layers['logcounts'] + HVGs
         │       │                   │
         │       │                   ▼
-        │       │       normalization_report.py → reports/output/normalization_report.html
+        │       │       normalization_report.py → reports/normalization_report.html
         │       │
         │       ▼
         │   reduce.py     → obsm['X_pca'] + obsm['X_umap'] + obsp['connectivities']
         │       │                   │
         │       │                   ▼
-        │       │       reduce_report.py → reports/output/reduce_report.html
+        │       │       reduce_report.py → reports/reduce_report.html
         │       │
         │       ▼
         │   cluster.py    → obs['leiden_*'] + obs['leiden']
         │       │                   │
         │       │                   ▼
-        │       │       cluster_report.py → reports/output/cluster_report.html
+        │       │       cluster_report.py → reports/cluster_report.html
         │       │
         │       ▼
-        │   annotate.py   → obs['cell_type_singler']    ← NEXT STEP
+        │   annotate.py   → obs['cell_type_vote'] + obs['cell_type_confidence']
+        │       │                   │
+        │       │                   ▼
+        │       │       annotate_report.py → reports/annotate_report.html
+        │       │
+        │       ▼
+        │   deg.py        → deg_dict['results'] + uns['rank_genes_groups']
+        │       │                   │
+        │       │                   ▼
+        │       │       deg_report.py → reports/deg_report.html
+        │       │
+        │       ▼
+        │   gsea.py       → pathway enrichment (NEXT — blocked until deg tests pass)
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -706,33 +966,29 @@ Raw file (.h5ad / .h5 / MTX dir)
 
 ## Tests
 
-| Test file | What it covers |
-|-----------|---------------|
-| `tests/test_phase0_structure.py` | Repo structure, imports, config schema |
-| `tests/test_ingest.py` | Format detection, raw count extraction, all three loaders |
-| `tests/test_qc.py` | MT detection, metric computation, filtering, Scrublet, ground-truth validation, modality detection, MuData structure, ADT/ATAC preservation |
-| `tests/test_normalize.py` | Raw count preservation, normalization correctness, log1p, HVG selection, HVG count accuracy, batch_key, logcounts layer, provenance, mutation guard, input validation |
-| `tests/test_reduce.py` | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, elbow/variance/manual PC selection, no-HVG fallback |
-| `tests/test_cluster.py` | Leiden labels in obs, all resolutions computed, string labels, n_clusters bounds, silhouette scores, best resolution selection, provenance keys, inplace guard |
+| Test file | Module | Tests | What it covers |
+|-----------|--------|-------|---------------|
+| `tests/test_phase0_structure.py` | — | — | Repo structure, imports, config schema |
+| `tests/test_ingest.py` | `ingest.py` | — | Format detection, raw count extraction, all three loaders |
+| `tests/test_qc.py` | `qc.py` | — | MT detection, metrics, filtering, Scrublet, ground-truth validation, modality detection, MuData structure |
+| `tests/test_normalize.py` | `normalize.py` | 12 | Raw count preservation, normalization correctness, log1p, HVG selection, batch_key, logcounts layer, provenance, mutation guard |
+| `tests/test_reduce.py` | `reduce.py` | 12 | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, PC selection methods |
+| `tests/test_cluster.py` | `cluster.py` | 8 | Leiden labels, all resolutions computed, n_clusters bounds, silhouette scores, best resolution selection, provenance, inplace guard |
+| `tests/test_annotate.py` | `annotate.py` | 18 (+1 skip) | obs columns written, provenance keys, confidence range, marker scoring, vote consensus, inplace guard, ground-truth preservation |
+| `tests/test_deg.py` | `deg.py` | 11 | Return types, provenance keys, column names, pval range, per-group results, threshold filtering, inplace guard, small-group warning, leiden fallback |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 170 passed (approximate), 2 skipped
+# Expected: ~180 passed, 1–2 skipped
 ```
 
-Run just the reduce tests:
+Run a single module's tests:
 
 ```bash
-python -m pytest tests/test_reduce.py -v
-# Expected: 12 passed
-
-Run just the cluster tests:
-
-```bash
-python -m pytest tests/test_cluster.py -v
-# Expected: 8 passed
-```
+python -m pytest tests/test_deg.py -v      # 11 passed
+python -m pytest tests/test_annotate.py -v # 18 passed, 1 skipped
+python -m pytest tests/test_cluster.py -v  # 8 passed
 ```
