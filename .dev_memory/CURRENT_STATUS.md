@@ -52,8 +52,11 @@ Phase 1 — Core scRNA Pipeline
 - Leiden sweep across configurable resolution_range
 - Silhouette score per resolution; best_resolution_override for manual pinning
 - obs['leiden_*'] per resolution + obs['leiden'] convenience key
+- neighbors_key param — routes to Harmony graph when set
+- cluster_key param — stores results in obs['leiden_harmony'] (coexists with leiden)
+- compute_ari(adata, key_a, key_b) — ARI comparison between any two obs columns
 - Provenance stored in uns['omicsage_cluster']
-- 8 tests passing in tests/test_cluster.py
+- 16 tests passing in tests/test_cluster.py
 
 ### ✅ Clustering Report (reports/cluster_report.py)
 - Figures: UMAP grid per resolution, silhouette bar chart, cluster size distribution,
@@ -100,7 +103,7 @@ Phase 1 — Core scRNA Pipeline
 - Run summary, top pathways table, bar charts per group, bubble plot
 - Direction badges: ▲ Up / ▼ Down when direction="both"
 
-### ✅ Harmony Batch Correction (pipeline/modules/integration/harmony_correct.py) ← NEW
+### ✅ Harmony Batch Correction (pipeline/modules/integration/harmony_correct.py)
 - Harmony integration on obs[batch_key] (default: 'batch')
 - Corrected embedding stored in obsm['X_pca_harmony']
 - Original UMAP preserved as obsm['X_umap_precorrection'] before overwriting
@@ -108,45 +111,52 @@ Phase 1 — Core scRNA Pipeline
 - Neighbor graph recomputed on corrected embedding → uns['neighbors_harmony'],
   obsp['neighbors_harmony_connectivities'], obsp['neighbors_harmony_distances']
 - Provenance stored in uns['omicsage_harmony']
-  - umap_key: 'X_umap_harmony'
-  - umap_precorrection_key: 'X_umap_precorrection'
-- obs[batch_key] cast to str internally — safe with Categorical columns
-- 12 tests passing in tests/test_harmony.py
+- 13 tests passing in tests/test_harmony.py
 
 ### ✅ Harmony Report (reports/harmony_report.py)
-- Run summary: stat cards (cells, genes, batches, PCs, k, elapsed) + output key verification
-- Batch composition: bar chart + table (cells per batch, % of total)
-- UMAP embeddings: side-by-side pre-correction UMAP vs post-correction UMAP, coloured by batch
-  (both panels are UMAPs — X_umap_precorrection vs X_umap_harmony)
-  + separate UMAP coloured by Harmony PC1 value (shows correction depth)
-- Batch mixing metrics: per-cell same-batch neighbour fraction histogram,
-  mean/median/expected stats, normalised mixing score with interpretation note
-- Per-PC correction shift: bar chart of mean |X_pca − X_pca_harmony| per PC,
-  top 5 most-shifted PCs table
+- Run summary: stat cards + output key verification
+- Batch composition: bar chart + table
+- UMAP embeddings: side-by-side X_umap_precorrection vs X_umap_harmony, coloured by batch
+- Batch mixing metrics: per-cell same-batch neighbour fraction histogram
+- Per-PC correction shift: bar chart + top 5 most-shifted PCs table
 
-### ✅ Clustering on Harmony Graph (pipeline/modules/clustering/cluster.py) ← NEW
-- neighbors_key param — routes to obsp['neighbors_harmony_connectivities'] when set
-- cluster_key param — stores results in obs['leiden_harmony'] (default: 'leiden')
-- Per-resolution columns: leiden_harmony_0.4 etc. — coexist with leiden_* columns
-- compute_ari(adata, key_a, key_b) — ARI comparison between any two obs columns
-- Provenance updated: neighbors_key, obsp_key, cluster_key recorded in uns
-- 16 tests passing in tests/test_cluster.py (was 12)
+### ✅ Clustering on Harmony Graph (pipeline/modules/clustering/cluster.py)
+- neighbors_key param routes to obsp['neighbors_harmony_connectivities']
+- cluster_key param stores results in obs['leiden_harmony']
+- compute_ari() compares any two obs clustering columns
+- 16 tests passing (includes harmony-routing tests)
+
+### ✅ Pseudobulk DEG (pipeline/modules/downstream/pseudobulk_deg.py) ← NEW
+- Input: annotated AnnData with obs['cell_type_vote'], obs['batch'], layers['counts']
+- Aggregates raw counts per (cell_type, donor) into bulk-like matrices
+- Runs DESeq2 Wald tests via pydeseq2, one-vs-rest per cell type
+- min_cells param: drops (cell_type, donor) combos with too few cells
+- min_samples param: skips cell types with too few donor pseudo-samples (with UserWarning)
+- Output schema identical to deg.py deg_dict — results, summary_df, provenance, pairwise, skipped
+- Provenance stored in uns['omicsage_pseudobulk_deg']
+- 14 tests passing in tests/test_pseudobulk_deg.py
+
+### ✅ Pseudobulk DEG Report (reports/pseudobulk_deg_report.py) ← NEW
+- Dedicated report (not deg_report.py) — reads uns['omicsage_pseudobulk_deg'] natively
+- Extra sections vs deg_report: Skipped Groups table, pseudobulk-specific stat cards
+  (donor_key, counts_layer, min_cells, min_samples)
+- Same CSS/style as deg_report.py — consistent look across all reports
+- Sections: run summary • skipped groups • top DEGs table • volcano plots • dot plot
 
 ### ✅ Notebook (notebooks/phase1_qc.ipynb)
-- Step 8 (Harmony) — 9 cells: load, run harmony_correct(), sanity checks,
-  before/after UMAP plot (both UMAPs), HTML report, save
-- Step 9 (Clustering on Harmony) — 10 cells: pre-correction cluster(), post-correction
-  cluster(neighbors_key='neighbors_harmony'), compute_ari(), side-by-side UMAP,
-  ARI vs ground-truth, save GSE194122_cite_harmony_clustered.h5ad
+- Steps 1–9: all prior steps
+- Step 10 (Pseudobulk DEG) — 9 cells: imports, load, run pseudobulk_deg(),
+  sanity checks, biological sanity check (CD3D/CD14/MS4A1), HTML report via
+  generate_pseudobulk_deg_report(), save GSE194122_cite_pseudobulk_deg.h5ad
 
 ## Total Tests Passing
-~217 (201 pre-session + 4 harmony fix + 4 new cluster tests)
+~231 (217 pre-session + 14 new pseudobulk tests)
 
 ## What Is NOT Built Yet
-- Pseudobulk DEG (pydeseq2-based) ← NEXT
+- MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper ← NEXT
 - scVI batch correction → deferred to Phase 6 (MultiVI)
 - ScType-py + SingleR-py annotation (deferred — see docs/ANNOTATION_PLAN.md)
-- Pseudobulk DEG (DESeq2-style)
+- ADT QC + CLR normalization (mdata["adt"] path)
 - scATAC module (Phase 4)
 - Spatial module (Phase 5)
 - Multiome module (Phase 6)
@@ -167,4 +177,5 @@ Phase 1 — Core scRNA Pipeline
 - data/processed/GSE194122_cite_deg.h5ad
 - data/processed/GSE194122_cite_gsea.h5ad
 - data/processed/GSE194122_cite_harmony.h5ad
-- data/processed/GSE194122_cite_harmony_clustered.h5ad  ← NEW
+- data/processed/GSE194122_cite_harmony_clustered.h5ad
+- data/processed/GSE194122_cite_pseudobulk_deg.h5ad  ← NEW

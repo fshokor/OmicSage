@@ -1238,6 +1238,158 @@ print(f"Report → {report_path}")
 
 ---
 
+## 19. `pseudobulk_deg.py`
+
+**What it does**
+
+Aggregates raw counts per (cell_type, donor) into bulk-like pseudo-samples and
+runs DESeq2 Wald tests via `pydeseq2`, one-vs-rest per cell type. Complements
+the Wilcoxon results from `deg.py` — DESeq2 is more conservative but correctly
+controls for donor-level variation, making it the preferred method for publication
+figures and datasets with replicated donors.
+
+**Why it exists**
+
+The Wilcoxon test in `deg.py` treats every cell as an independent observation.
+With thousands of cells per cell type, this inflates statistical power dramatically
+and produces many false positives driven by cell number rather than biology
+(the "pseudo-replication" problem). Pseudobulk DEG aggregates cells from the same
+donor into a single sample, restoring biological replication as the unit of
+inference. DESeq2's negative binomial model then handles count noise correctly.
+
+**Steps performed (in order)**
+
+1. Validate obs columns (`groupby`, `donor_key`) and layers key (`counts_layer`)
+2. Cast `obs[donor_key]` and `obs[groupby]` to `str` — avoids Categorical/MultiIndex errors
+3. Extract raw counts matrix from `layers[counts_layer]` as dense float64
+4. Aggregate: sum counts per `(cell_type, donor)` combo; drop combos below `min_cells`
+5. For each cell type: check `n_target` ≥ `min_samples` and `n_rest` ≥ `min_samples`; skip with `UserWarning` if not
+6. Build `DeseqDataSet` with `condition` covariate (`target_ct` vs `"rest"`)
+7. Run `dds.deseq2()` + `DeseqStats(contrast=["condition", target_ct, "rest"])`
+8. Rename pydeseq2 columns → deg.py schema: `log2FoldChange→logfc`, `pvalue→pval`, `padj→pval_adj`, `stat→score`
+9. Drop NaN `padj` rows (low-count outliers excluded by DESeq2)
+10. Apply `min_logfc` / `max_pval_adj` thresholds; apply `exclude_gene_prefixes`
+11. Build `summary_df` (top 5 per group, long format) — identical schema to `deg.py`
+12. Write provenance to `uns['omicsage_pseudobulk_deg']`
+
+**Output schema — identical to `deg.py` deg_dict**
+
+| Key | Type | Contents |
+|-----|------|----------|
+| `results` | dict | `{group: DataFrame(gene, score, pval, logfc, pval_adj)}` — significant DEGs only |
+| `summary_df` | DataFrame | Long-format top 5 DEGs per group: group, rank, gene, logfc, pval_adj |
+| `provenance` | dict | Same metadata as `uns['omicsage_pseudobulk_deg']` |
+| `pairwise` | dict | `{}` — not implemented; kept for `deg_report.py` compatibility |
+| `skipped` | dict | `{group: reason}` — cell types skipped due to too few donor pseudo-samples |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Must have `obs[groupby]`, `obs[donor_key]`, `layers[counts_layer]` |
+| `groupby` | str | `"cell_type_vote"` | obs column for cell-type grouping |
+| `donor_key` | str | `"batch"` | obs column for donor identity |
+| `counts_layer` | str | `"counts"` | Layer with raw integer counts — do **not** pass `"logcounts"` |
+| `min_cells` | int | 10 | Minimum cells per (cell_type, donor) pseudo-sample |
+| `min_samples` | int | 3 | Minimum donor pseudo-samples per cell type (both target and rest groups) |
+| `min_logfc` | float | `0.25` | Minimum absolute log₂FC threshold |
+| `max_pval_adj` | float | `0.05` | Maximum BH-corrected adjusted p-value (DESeq2 padj) |
+| `n_top_genes` | int | 500 | Maximum significant genes to retain per group after thresholding |
+| `exclude_gene_prefixes` | list[str] | None | Gene prefixes to remove post-threshold e.g. `["RPL", "RPS", "MT-"]` |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Usage**
+
+```python
+from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
+
+adata_pb, pb_dict = pseudobulk_deg(
+    adata_annotated,
+    groupby="cell_type_vote",
+    donor_key="batch",
+    counts_layer="counts",
+    min_cells=10,
+    min_samples=3,
+    min_logfc=0.25,
+    max_pval_adj=0.05,
+    inplace=False,
+)
+
+# Check which groups were skipped
+print(pb_dict["skipped"])
+
+# Inspect significant DEGs for T cells
+print(pb_dict["results"]["T_cell"].head(10))
+
+# Top 5 DEGs per group
+print(pb_dict["summary_df"])
+```
+
+**Critical implementation notes**
+
+- `counts_layer` must hold raw **integer** counts — DESeq2 requires integers. Passing `"logcounts"` will produce silently wrong results because summing log-normalised values is not a valid bulk aggregation.
+- `obs[donor_key]` is cast to `str` internally — same Categorical/MultiIndex bug that affects Harmony and GSEA.
+- When `target_ct` is the target group, the rest group includes *all other cell types*. Both `n_target` and `n_rest` are checked independently against `min_samples`. If either fails, the cell type is skipped (not crashed).
+- pydeseq2 drops genes with zero total counts per comparison — the gene list in each result DataFrame may therefore differ slightly from the full `var_names`.
+- `uns['rank_genes_groups']` is NOT populated — pseudobulk DEG does not use scanpy's `rank_genes_groups`. The dot plot in `pseudobulk_deg_report.py` uses `layers['logcounts']` for display instead.
+- Dependency: `pip install pydeseq2`
+
+**Connects to**: `pseudobulk_deg_report.py` for the report
+
+---
+
+## 20. `pseudobulk_deg_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report from `pseudobulk_deg()` output. Identical
+CSS and page skeleton to `deg_report.py` — same dark-blue header, same stat cards,
+same volcano grid — with two additional sections not present in `deg_report.py`:
+a **Skipped Groups** table explaining why each cell type was excluded, and
+pseudobulk-specific stat cards (`donor_key`, `counts_layer`, `min_cells`, `min_samples`).
+
+Does **not** require or use `uns['rank_genes_groups']` — reads
+`uns['omicsage_pseudobulk_deg']` natively. The dot plot is rendered from
+`layers['logcounts']` directly.
+
+**Report contents**
+
+| Section | What it shows |
+|---------|--------------|
+| Run summary | Stat cards: groups tested, groups skipped, method, groupby, donor key, counts layer, min cells/samples, thresholds, total significant DEGs; per-group significant DEG counts table; prefix exclusion note (if applicable); pseudobulk method explanation note |
+| Skipped groups | Table of cell types that failed `min_samples` check + exact reason; "none skipped" confirmation when all passed |
+| Top DEGs per group | Rowspan table — top 5 significant genes per group, ranked by DESeq2 padj; Direction column (▲ Up / ▼ Down) + log₂FC coloured red/blue |
+| Volcano plots | One per group (default max 20, sorted by DEG count); same style as `deg_report.py` |
+| Dot plot | `sc.pl.dotplot` using `layers['logcounts']` for display — top 5 DEGs per group |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | AnnData returned by `pseudobulk_deg()` — must have `uns['omicsage_pseudobulk_deg']` |
+| `pb_dict` | dict | required | `pb_dict` returned by `pseudobulk_deg()` |
+| `output_path` | str | `"reports/pseudobulk_deg_report.html"` | HTML output path |
+| `top_n_volcano` | int | 10 | Genes to label on each volcano plot |
+| `top_n_dotplot` | int | 5 | Top DEGs per group in dot plot |
+| `max_volcano_groups` | int | 20 | Max volcano plots; excess sorted by DEG count |
+
+**Usage**
+
+```python
+from reports.pseudobulk_deg_report import generate_pseudobulk_deg_report
+
+report_path = generate_pseudobulk_deg_report(
+    adata=adata_pb,
+    pb_dict=pb_dict,
+    output_path="reports/pseudobulk_deg_report.html",
+)
+print(f"Report → {report_path}")
+```
+
+**Connects to**: (end of Phase 1 DEG branch) → HCC milestone benchmark
+
+---
+
 ## Module Data Flow
 
 ```
@@ -1304,7 +1456,15 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │         → compute_ari('leiden', 'leiden_harmony')
         │       │
         │       ▼
-        │   [pseudobulk_deg.py]  ← NEXT
+        │   pseudobulk_deg.py   → pb_dict['results'] (DESeq2 Wald, one-vs-rest)
+        │       │                   layers['counts'] aggregated per (cell_type, donor)
+        │       │                   uns['omicsage_pseudobulk_deg']
+        │       │                   │
+        │       │                   ▼
+        │       │       pseudobulk_deg_report.py → reports/pseudobulk_deg_report.html
+        │       │
+        │       ▼
+        │   [MILESTONE: Wang et al. 2025 HCC benchmark]  ← NEXT
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -1326,20 +1486,22 @@ Raw file (.h5ad / .h5 / MTX dir)
 | `tests/test_deg.py` | `deg.py` | 11 | Return types, provenance keys, column names, pval range, per-group results, threshold filtering, inplace guard, small-group warning, leiden fallback |
 | `tests/test_gsea.py` | `gsea.py` | 8 | Return types, provenance keys, output columns, pval range, group accounting, min_genes skip + warning, inplace guard, string gene_sets param — all Enrichr calls mocked (CI-safe) |
 | `tests/test_harmony.py` | `harmony_correct.py` | 13 | Embedding created, shape (n_cells × n_pcs), UMAP recomputed as X_umap_harmony, X_umap_precorrection preserved and unchanged, neighbors key stored, provenance keys + values, in-place modification, n_pcs capping, missing X_pca error, missing batch_key error, single-batch error, custom batch_key, two-batch correction |
+| `tests/test_pseudobulk_deg.py` | `pseudobulk_deg.py` | 14 | Return types, provenance keys, pb_dict schema matches deg_dict (results/summary_df/provenance/pairwise/skipped), result DataFrame columns, pval range, all groups accounted for (results ∪ skipped), threshold filtering (logfc + pval_adj), inplace guard, cell type with too few donors skipped + UserWarning issued, missing counts_layer error, missing groupby column error |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~217 passed, 1–2 skipped
+# Expected: ~231 passed, 1–2 skipped
 ```
 
 Run a single module's tests:
 
 ```bash
-python -m pytest tests/test_cluster.py -v    # 16 passed
-python -m pytest tests/test_harmony.py -v   # 13 passed
-python -m pytest tests/test_deg.py -v       # 11 passed
-python -m pytest tests/test_annotate.py -v  # 18 passed, 1 skipped
+python -m pytest tests/test_cluster.py -v           # 16 passed
+python -m pytest tests/test_harmony.py -v           # 13 passed
+python -m pytest tests/test_deg.py -v               # 11 passed
+python -m pytest tests/test_annotate.py -v          # 18 passed, 1 skipped
+python -m pytest tests/test_pseudobulk_deg.py -v    # 14 passed
 ```

@@ -45,19 +45,24 @@
 - [x] GSEA: exclude_gene_prefixes param (query list only, universe unchanged)
 - [x] GSEA report: bar charts + bubble plot + direction badges (gsea_report.py)
 - [x] Notebook Step 7 — GSEA section + immune pathway sanity check
-- [x] Harmony batch correction: harmony_correct.py  ← NEW
-- [x] Harmony: obsm['X_pca_harmony'] — corrected embedding  ← NEW
-- [x] Harmony: obsm['X_umap_precorrection'] — original UMAP preserved  ← NEW
-- [x] Harmony: obsm['X_umap_harmony'] — UMAP on corrected embedding  ← NEW
-- [x] Harmony: neighbors_harmony graph in uns + obsp  ← NEW
-- [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison (both UMAPs)
+- [x] Harmony batch correction: harmony_correct.py
+- [x] Harmony: obsm['X_pca_harmony'] — corrected embedding
+- [x] Harmony: obsm['X_umap_precorrection'] — original UMAP preserved
+- [x] Harmony: obsm['X_umap_harmony'] — UMAP on corrected embedding
+- [x] Harmony: neighbors_harmony graph in uns + obsp
+- [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison
 - [x] Notebook Step 8 — Harmony section (load, run, sanity checks, before/after UMAP, report, save)
 - [x] Notebook Step 9 — Clustering on harmony section + ARI comparison
 - [x] Clustering on harmony-corrected embedding (neighbors_key='neighbors_harmony')
 - [x] cluster.py: cluster_key param — obs['leiden_harmony'] coexists with obs['leiden']
 - [x] cluster.py: compute_ari() — ARI comparison between any two obs clustering columns
-- [ ] Pseudobulk DEG (pydeseq2-based, one-vs-rest per cell type)  ← NEXT
-- [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper
+- [x] Pseudobulk DEG: pydeseq2-based, one-vs-rest per cell type (pseudobulk_deg.py)  ← NEW
+- [x] Pseudobulk DEG: aggregate layers['counts'] per (cell_type, donor)  ← NEW
+- [x] Pseudobulk DEG: min_cells + min_samples filters with graceful skip + UserWarning  ← NEW
+- [x] Pseudobulk DEG: output schema identical to deg.py deg_dict  ← NEW
+- [x] Pseudobulk DEG report: dedicated report with skipped groups section (pseudobulk_deg_report.py)  ← NEW
+- [x] Notebook Step 10 — Pseudobulk DEG section + canonical marker gene sanity check  ← NEW
+- [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper  ← NEXT
 
 ## Phase 2 — Report Engine
 - [ ] Quarto QC report template
