@@ -42,7 +42,7 @@ def generate_deg_report(
     output_path: str = "reports/deg_report.html",
     top_n_volcano: int = 10,
     top_n_dotplot: int = 5,
-    max_volcano_groups: int = 9,
+    max_volcano_groups: int = 20,
 ) -> str:
     """
     Generate a self-contained HTML report for DEG results.
@@ -61,8 +61,10 @@ def generate_deg_report(
     top_n_dotplot : int
         Top N DEGs per group to include in the dot plot.
     max_volcano_groups : int
-        Maximum number of groups to render volcano plots for
-        (avoids enormous reports for high-resolution clustering).
+        Maximum number of groups to render volcano plots for.
+        Default raised to 20 — all groups rendered for typical datasets.
+        When the limit is exceeded, a visible note is added to the report
+        and the groups with the most DEGs are shown first.
 
     Returns
     -------
@@ -105,12 +107,14 @@ def generate_deg_report(
 # ---------------------------------------------------------------------------
 
 def _section_summary_stats(provenance: dict, results: dict) -> str:
-    n_groups     = provenance.get("n_groups", len(results))
-    method       = provenance.get("method", "wilcoxon")
-    groupby      = provenance.get("groupby", "—")
-    min_logfc    = provenance.get("min_logfc", "—")
-    max_pval_adj = provenance.get("max_pval_adj", "—")
-    timestamp    = provenance.get("timestamp", "—")
+    n_groups            = provenance.get("n_groups", len(results))
+    method              = provenance.get("method", "wilcoxon")
+    groupby             = provenance.get("groupby", "—")
+    min_logfc           = provenance.get("min_logfc", "—")
+    max_pval_adj        = provenance.get("max_pval_adj", "—")
+    n_genes             = provenance.get("n_genes", "—")
+    exclude_prefixes    = provenance.get("exclude_gene_prefixes", [])
+    timestamp           = provenance.get("timestamp", "—")
 
     total_sig = sum(len(df) for df in results.values())
     per_group_counts = {g: len(df) for g, df in results.items()}
@@ -119,12 +123,13 @@ def _section_summary_stats(provenance: dict, results: dict) -> str:
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
         for k, v in [
-            ("Groups tested",        n_groups),
-            ("Method",               method.capitalize()),
-            ("Grouped by",           groupby),
-            ("Min |log₂FC|",         min_logfc),
-            ("Max adj. p-value",     max_pval_adj),
-            ("Total significant DEGs", total_sig),
+            ("Groups tested",           n_groups),
+            ("Method",                  method.capitalize()),
+            ("Grouped by",              groupby),
+            ("Min |log₂FC|",            min_logfc),
+            ("Max adj. p-value",        max_pval_adj),
+            ("Genes computed / group",  n_genes),
+            ("Total significant DEGs",  total_sig),
         ]
     )
 
@@ -133,11 +138,22 @@ def _section_summary_stats(provenance: dict, results: dict) -> str:
         for group, count in sorted(per_group_counts.items())
     )
 
+    # Show excluded prefixes note if any were applied
+    exclude_note = ""
+    if exclude_prefixes:
+        prefix_str = ", ".join(exclude_prefixes)
+        exclude_note = (
+            f'<p class="timestamp">ℹ Gene prefix exclusion applied: '
+            f'<code>{prefix_str}</code> — these genes are excluded from '
+            f'results but were still used in fold-change computation.</p>'
+        )
+
     return f"""
     <section>
       <h2>Run Summary</h2>
       <p class="timestamp">Analysis run: {timestamp}</p>
       <div class="stat-grid">{stat_cards}</div>
+      {exclude_note}
       <h3>Significant DEGs per Group</h3>
       <table>
         <thead><tr><th>Group</th><th>Significant DEGs</th></tr></thead>
@@ -161,6 +177,7 @@ def _section_summary_table(summary_df: pd.DataFrame) -> str:
             current_group = row["group"]
 
         logfc_class = "pos-fc" if float(row["logfc"]) > 0 else "neg-fc"
+        direction   = "▲ Up" if float(row["logfc"]) > 0 else "▼ Down"
         pval_fmt    = f'{float(row["pval_adj"]):.2e}'
         logfc_fmt   = f'{float(row["logfc"]):.3f}'
 
@@ -168,6 +185,7 @@ def _section_summary_table(summary_df: pd.DataFrame) -> str:
             f"<tr>{group_cell}"
             f"<td>{int(row['rank'])}</td>"
             f"<td><strong>{row['gene']}</strong></td>"
+            f'<td class="{logfc_class}">{direction}</td>'
             f'<td class="{logfc_class}">{logfc_fmt}</td>'
             f"<td>{pval_fmt}</td></tr>"
         )
@@ -180,7 +198,7 @@ def _section_summary_table(summary_df: pd.DataFrame) -> str:
         <thead>
           <tr>
             <th>Group</th><th>Rank</th><th>Gene</th>
-            <th>log₂FC</th><th>Adj. p-value</th>
+            <th>Direction</th><th>log₂FC</th><th>Adj. p-value</th>
           </tr>
         </thead>
         <tbody>{rows}</tbody>
@@ -194,17 +212,27 @@ def _section_volcano_plots(
     results: dict,
     provenance: dict,
     top_n: int = 10,
-    max_groups: int = 9,
+    max_groups: int = 20,
 ) -> str:
-    groups = list(results.keys())
-    if len(groups) > max_groups:
-        warnings.warn(
-            f"Volcano plots: {len(groups)} groups found; rendering first {max_groups}. "
-            f"Set max_volcano_groups to override.",
-            UserWarning,
-            stacklevel=3,
+    all_groups = list(results.keys())
+    note_html  = ""
+
+    if len(all_groups) > max_groups:
+        # Show groups with the most DEGs first so the most informative
+        # groups are always included when truncation occurs
+        sorted_groups = sorted(
+            all_groups,
+            key=lambda g: len(results[g]),
+            reverse=True,
         )
-        groups = groups[:max_groups]
+        excluded = sorted(set(all_groups) - set(sorted_groups[:max_groups]))
+        groups = sorted_groups[:max_groups]
+        note_html = (
+            f'<p class="note">⚠ Showing {max_groups} of {len(all_groups)} groups '
+            f'(most DEGs first). Excluded: {", ".join(excluded)}</p>'
+        )
+    else:
+        groups = all_groups
 
     min_logfc    = float(provenance.get("min_logfc", 0.25))
     max_pval_adj = float(provenance.get("max_pval_adj", 0.05))
@@ -213,7 +241,10 @@ def _section_volcano_plots(
     for group in groups:
         df = results[group]
         if df.empty:
-            plots_html += f"<div class='volcano-wrap'><h3>{group}</h3><p>No significant DEGs.</p></div>"
+            plots_html += (
+                f"<div class='volcano-wrap'><h3>{group}</h3>"
+                "<p>No significant DEGs.</p></div>"
+            )
             continue
 
         img_b64 = _render_volcano(
@@ -237,6 +268,7 @@ def _section_volcano_plots(
         Dashed lines mark thresholds: |log₂FC| ≥ {min_logfc}, adj. p ≤ {max_pval_adj}.
         Top {top_n} genes by significance are labelled.
       </p>
+      {note_html}
       <div class="volcano-grid">{plots_html}</div>
     </section>
     """
@@ -258,8 +290,6 @@ def _section_dotplot(
             "</section>"
         )
 
-    # Collect top_n genes per group (from filtered results if available,
-    # otherwise from raw rank_genes_groups)
     gene_lists: dict[str, list[str]] = {}
     for group, df in results.items():
         if not df.empty:
@@ -281,7 +311,6 @@ def _section_dotplot(
                 seen.add(g)
                 all_genes.append(g)
 
-    # Filter to genes actually present in adata
     valid_genes = [g for g in all_genes if g in adata.var_names]
     if not valid_genes:
         return (
@@ -290,7 +319,6 @@ def _section_dotplot(
             "</section>"
         )
 
-    # Determine groupby from provenance
     groupby = adata.uns.get("omicsage_deg", {}).get("groupby", None)
     if groupby is None or groupby not in adata.obs.columns:
         return (
@@ -311,7 +339,10 @@ def _section_dotplot(
         )
         img_b64 = _fig_to_base64(fig)
         plt.close(fig)
-        img_html = f'<img src="data:image/png;base64,{img_b64}" alt="Dot plot top DEGs" style="max-width:100%;">'
+        img_html = (
+            f'<img src="data:image/png;base64,{img_b64}" '
+            'alt="Dot plot top DEGs" style="max-width:100%;">'
+        )
     except Exception as e:
         img_html = f"<p>Dot plot could not be rendered: {e}</p>"
 
@@ -339,16 +370,13 @@ def _render_volcano(
     top_n: int = 10,
 ) -> str:
     """Render a single volcano plot; return base64-encoded PNG string."""
-    # Work on a copy with safe numeric values
     plot_df = df.copy()
     plot_df["logfc"]    = pd.to_numeric(plot_df["logfc"],    errors="coerce").fillna(0.0)
     plot_df["pval_adj"] = pd.to_numeric(plot_df["pval_adj"], errors="coerce").fillna(1.0)
 
-    # Clip p=0 to a small value to avoid log(0)
     plot_df["pval_adj"] = plot_df["pval_adj"].clip(lower=1e-300)
     plot_df["neg_log_p"] = -np.log10(plot_df["pval_adj"])
 
-    # Classify points
     sig_up   = (plot_df["pval_adj"] <= max_pval_adj) & (plot_df["logfc"] >=  min_logfc)
     sig_down = (plot_df["pval_adj"] <= max_pval_adj) & (plot_df["logfc"] <= -min_logfc)
     ns       = ~(sig_up | sig_down)
@@ -361,12 +389,10 @@ def _render_volcano(
     ax.scatter(plot_df.loc[sig_down, "logfc"], plot_df.loc[sig_down, "neg_log_p"],
                s=10, color="#5282e0", alpha=0.7, label="Down", rasterized=True)
 
-    # Threshold lines
     ax.axhline(-np.log10(max_pval_adj), color="#888888", linestyle="--", linewidth=0.8)
     ax.axvline( min_logfc,              color="#888888", linestyle="--", linewidth=0.8)
     ax.axvline(-min_logfc,              color="#888888", linestyle="--", linewidth=0.8)
 
-    # Label top genes by significance
     top_genes = plot_df.nsmallest(top_n, "pval_adj")
     for _, row in top_genes.iterrows():
         ax.annotate(
@@ -455,7 +481,25 @@ def _render_page(title: str, sections: list[str], provenance: dict) -> str:
     }}
     section p {{ color: #444; margin-bottom: 12px; font-size: 0.9rem; }}
 
-    .timestamp {{ font-size: 0.8rem; color: #888; margin-bottom: 16px; }}
+    .timestamp {{ font-size: 0.8rem; color: #888; margin-bottom: 6px; }}
+
+    .note {{
+      font-size: 0.82rem;
+      color: #7a5c00;
+      background: #fffbe6;
+      border-left: 3px solid #f0c040;
+      padding: 8px 12px;
+      border-radius: 4px;
+      margin-bottom: 14px;
+    }}
+
+    code {{
+      font-family: "SFMono-Regular", Consolas, monospace;
+      background: #f0f2ff;
+      padding: 1px 5px;
+      border-radius: 3px;
+      font-size: 0.85em;
+    }}
 
     /* Stat cards */
     .stat-grid {{
@@ -506,9 +550,7 @@ def _render_page(title: str, sections: list[str], provenance: dict) -> str:
       padding-top: 10px;
     }}
     .pos-fc {{ color: #c0392b; font-weight: 600; }}
-    .neg-fc {{ color: #2980b9; font-weight: 600; }}
-
-    /* Volcano grid */
+    .neg-fc {{ color: #2980b9; font-weight: 600; }}    /* Volcano grid */
     .volcano-grid {{
       display: flex;
       flex-wrap: wrap;

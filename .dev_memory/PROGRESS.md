@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-09
+> Last updated: 2026-05-11
 
 ## Phase 0 — Foundation
 - [x] GitHub repo created
@@ -32,11 +32,20 @@
 - [x] Cell-type annotation: CellTypist + marker scoring + majority vote (annotate.py)
 - [x] Annotation report (HTML, self-contained)
 - [x] Notebook Step 5 — annotation section + broad-match accuracy check
-- [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction (deg.py)  ← NEW
-- [x] DEG report: volcano plots + dot plot + summary table (deg_report.py)  ← NEW
-- [x] Notebook Step 6 — DEG section + canonical marker gene sanity check  ← NEW
-- [ ] Harmony + scVI batch correction
-- [ ] GSEA: GO/KEGG/Reactome  ← NEXT
+- [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction (deg.py)
+- [x] DEG: rankby_abs=True — both up and downregulated genes returned  ← NEW
+- [x] DEG: exclude_gene_prefixes param (RPL/RPS/MT- filtering)  ← NEW
+- [x] DEG: n_genes default raised 200→500  ← NEW
+- [x] DEG report: volcano plots + dot plot + summary table (deg_report.py)
+- [x] DEG report: Direction column (▲/▼) in Top DEGs table  ← NEW
+- [x] DEG report: max_volcano_groups raised to 20 + truncation note  ← NEW
+- [x] Notebook Step 6 — DEG section + canonical marker gene sanity check
+- [x] GSEA: ORA via gseapy.enrichr — GO BP / KEGG / Reactome (gsea.py)  ← NEW
+- [x] GSEA: direction param — "up" | "down" | "both"  ← NEW
+- [x] GSEA: exclude_gene_prefixes param (query list only, universe unchanged)  ← NEW
+- [x] GSEA report: bar charts + bubble plot + direction badges (gsea_report.py)  ← NEW
+- [x] Notebook Step 7 — GSEA section + immune pathway sanity check  ← NEW
+- [ ] Harmony + scVI batch correction  ← NEXT
 - [ ] Pseudobulk DEG (DESeq2-style)
 - [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper
 

@@ -785,12 +785,22 @@ directly to the literature.
 1. Resolve groupby column — tries `obs['cell_type_vote']`, falls back to `obs['leiden']` with a `UserWarning`
 2. Warn about groups with < 10 cells (unreliable Wilcoxon statistics)
 3. Set `adata.X = layers['logcounts']` when `use_raw=False` (default)
-4. Run `sc.tl.rank_genes_groups` — Wilcoxon, BH correction, `pts=True`
+4. Run `sc.tl.rank_genes_groups` — Wilcoxon, `rankby_abs=True`, BH correction, `pts=True`
 5. Extract results into tidy DataFrames (one per group): `gene, score, pval, logfc, pval_adj`
 6. Apply logFC and pval_adj thresholds to filter to significant DEGs
-7. Optionally run pairwise comparisons for specified group pairs
-8. Build `summary_df` — top 5 significant DEGs per group in long format
-9. Write provenance to `uns['omicsage_deg']`
+7. Apply `exclude_gene_prefixes` post-filter (RPL/RPS/MT- etc.) — excluded genes still used in fold-change computation
+8. Optionally run pairwise comparisons for specified group pairs
+9. Build `summary_df` — top 5 significant DEGs per group in long format
+10. Write provenance to `uns['omicsage_deg']`
+
+**Why `rankby_abs=True` matters**
+
+Without this flag, `sc.tl.rank_genes_groups` returns only the top-ranked
+upregulated genes per group (ranked by raw score, always positive). Setting
+`rankby_abs=True` ranks by |score|, so both strongly upregulated and strongly
+downregulated genes appear in the results. This is required for volcano plots
+to show both directions and for GSEA `direction="down"` or `direction="both"`
+to have any genes to work with.
 
 **Parameters**
 
@@ -802,7 +812,8 @@ directly to the literature.
 | `method` | str | `"wilcoxon"` | DEG method — `"wilcoxon"` \| `"t-test"` \| `"logreg"` |
 | `min_logfc` | float | `0.25` | Minimum absolute log₂ fold-change threshold |
 | `max_pval_adj` | float | `0.05` | Maximum BH-corrected adjusted p-value threshold |
-| `n_genes` | int | `200` | Top genes to compute per group (before threshold filtering) |
+| `n_genes` | int | `500` | Top genes to compute per group (before threshold filtering) |
+| `exclude_gene_prefixes` | list[str] | None | Gene prefixes to remove from results e.g. `["RPL", "RPS", "MT-"]` |
 | `use_raw` | bool | False | Use `adata.raw` / `adata.X` instead of `layers['logcounts']` |
 | `pairwise_groups` | list[tuple] | None | List of `(group_a, group_b)` tuples for pairwise DEG |
 | `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
@@ -810,11 +821,11 @@ directly to the literature.
 **Output**
 
 ```
-adata_deg.uns['omicsage_deg']           →  provenance record
+adata_deg.uns['omicsage_deg']           →  provenance record (includes exclude_gene_prefixes, rankby_abs)
 adata_deg.uns['rank_genes_groups']      →  full scanpy output (all genes, all groups)
 
 deg_dict['results']    : dict           →  {group: DataFrame(gene, score, pval, logfc, pval_adj)}
-                                            — filtered to significant DEGs only
+                                            — filtered to significant DEGs only; prefix-excluded genes removed
 deg_dict['summary_df'] : DataFrame      →  long-format top 5 DEGs per group
                                             columns: group, rank, gene, logfc, pval_adj
 deg_dict['provenance'] : dict           →  same as uns['omicsage_deg']
@@ -824,15 +835,17 @@ deg_dict['pairwise']   : dict           →  {(a, b): DataFrame} — only if pai
 **Usage**
 
 ```python
-from pipeline.modules.qc.deg import deg
+from pipeline.modules.downstream.deg import deg
 
+# Standard run — both directions, ribosomal genes filtered
 adata_deg, deg_dict = deg(
     adata_annotated,
     groupby="cell_type_vote",
     method="wilcoxon",
     min_logfc=0.25,
     max_pval_adj=0.05,
-    n_genes=200,
+    n_genes=500,
+    exclude_gene_prefixes=["RPL", "RPS", "MT-"],
     inplace=False,
 )
 
@@ -852,12 +865,13 @@ print(deg_dict["pairwise"][("T_cell", "B_cell")].head())
 
 **Important implementation notes**
 
-- Threshold filtering happens *after* extraction, not inside `rank_genes_groups`. This means `uns['rank_genes_groups']` always contains the full `n_genes` ranked list, while `deg_dict['results']` contains only significant hits. This lets you adjust thresholds without rerunning the test.
-- `pts=True` is always passed to `rank_genes_groups` — this adds `pts` (fraction of cells expressing) to `uns['rank_genes_groups']` at no cost, useful for downstream dot plots.
-- When `use_raw=False` (default), `adata.X` is temporarily set to `layers['logcounts']`. The copy guard (`inplace=False`) ensures the caller's matrix is not modified.
-- Pairwise results are written to separate `key_added` keys in `uns` so one-vs-rest results are never overwritten.
+- `rankby_abs=True` is hardcoded — this is a deliberate design decision. Without it the volcano plots only show upregulated genes, which is misleading and breaks GSEA `direction="down"`.
+- Threshold filtering happens *after* extraction, not inside `rank_genes_groups`. This means `uns['rank_genes_groups']` always contains the full `n_genes` ranked list, while `deg_dict['results']` contains only significant hits.
+- `exclude_gene_prefixes` is applied *after* thresholding. Excluded genes still participate in the `rank_genes_groups` computation — removing them before would bias fold-changes for remaining genes.
+- `pts=True` is always passed — adds fraction-expressing data to `uns['rank_genes_groups']` at no cost, used by dot plots.
+- `n_genes=500` default prevents artificial capping. With the old 200 default, well-separated cell types (BMMC CITE-seq) returned exactly 200 genes because all computed genes passed thresholds.
 
-**Connects to**: `deg_report.py` for the report, then `gsea.py` for pathway enrichment (blocked until `deg.py` tests pass)
+**Connects to**: `deg_report.py` for the report, then `gsea.py` for pathway enrichment
 
 ---
 
@@ -873,9 +887,9 @@ Sections are built independently so one failed plot never kills the report.
 
 | Section | What it shows |
 |---------|--------------|
-| Run summary | Stat cards (groups, method, thresholds, total significant DEGs) + per-group DEG counts table |
-| Top DEGs per group | Rowspan table — top 5 significant genes per group, ranked by adj. p-value; log₂FC coloured red/blue |
-| Volcano plots | One plot per group (capped at 9 by default); up/down/NS classification; top N genes labelled; threshold dashed lines |
+| Run summary | Stat cards (groups, method, thresholds, n_genes computed, total significant DEGs) + per-group DEG counts table + prefix exclusion note (when applicable) |
+| Top DEGs per group | Rowspan table — top 5 significant genes per group, ranked by adj. p-value; Direction column (▲ Up / ▼ Down) + log₂FC coloured red/blue |
+| Volcano plots | One plot per group (default max 20, sorted by DEG count); up/down/NS classification; top N genes labelled; threshold dashed lines; visible note when truncation occurs |
 | Dot plot | `sc.pl.dotplot` — dot size = fraction expressing, colour = mean expression — top 5 DEGs per group |
 
 **Parameters**
@@ -887,7 +901,7 @@ Sections are built independently so one failed plot never kills the report.
 | `output_path` | str | `"reports/output/deg_report.html"` | HTML output path |
 | `top_n_volcano` | int | 10 | Genes to label on each volcano plot |
 | `top_n_dotplot` | int | 5 | Top DEGs per group to include in dot plot |
-| `max_volcano_groups` | int | 9 | Max volcano plots rendered (avoids huge files for high-res clustering) |
+| `max_volcano_groups` | int | 20 | Max volcano plots rendered; when exceeded, groups sorted by DEG count and a visible note lists excluded groups |
 
 **Usage**
 
@@ -898,14 +912,173 @@ report_path = generate_deg_report(
     adata=adata_deg,
     deg_dict=deg_dict,
     output_path="reports/deg_report.html",
-    top_n_volcano=10,
-    top_n_dotplot=5,
-    max_volcano_groups=9,
 )
 print(f"Report → {report_path}")
 ```
 
 **Connects to**: `gsea.py` — pass `deg_dict['results']` to pathway enrichment
+
+---
+
+## 15. `gsea.py`
+
+**What it does**
+
+Runs over-representation analysis (ORA) on DEG results using `gseapy.enrichr`.
+For each cell type group, builds a directional query gene list from the DEG
+results and queries the Enrichr API against configurable gene set libraries.
+Supports upregulated, downregulated, or both directions independently — which
+is critical for cancer data where tumour suppressors and activated oncogenes
+represent biologically distinct pathway perturbations.
+
+**Why it exists**
+
+DEG results answer "which genes are different?" — GSEA answers "which biological
+processes are different?" Pathway enrichment is the standard next step for
+biological interpretation, connecting gene lists to the literature automatically.
+Running up and down independently (rather than mixing both into one query)
+produces interpretable results: an "up" enrichment means this cell type
+*activates* this pathway, a "down" enrichment means it *suppresses* it.
+
+**Steps performed (in order)**
+
+1. Validate `direction` parameter and `gene_sets` names against Enrichr (warns, never crashes)
+2. Build gene universe from `adata.var_names` (all detected genes = background for Fisher test)
+3. For each group × direction: filter DEGs by `min_logfc`, `max_pval_adj`, `exclude_gene_prefixes` → build query gene list
+4. Skip groups with < `min_genes` query genes — warns, stores in `skipped`
+5. Run `gseapy.enrichr` per group × direction — derives Overlap count from Genes column (gseapy ≥1.0 dropped the Overlap column)
+6. Tag each result row with `Direction` column
+7. Build `summary_df` with top 3 terms per group (+ direction column when `direction="both"`)
+8. Write provenance to `uns['omicsage_gsea']`
+
+**`direction` parameter**
+
+| Value | Query genes used | Result keys | Use case |
+|-------|-----------------|-------------|----------|
+| `"up"` (default) | logfc ≥ +min_logfc | `{group}` | Cell type marker enrichment |
+| `"down"` | logfc ≤ -min_logfc | `{group}` | Suppressed pathways, tumour suppressor loss |
+| `"both"` | Both, independently | `{group}__up`, `{group}__down` | Complete pathway picture for cancer/disease data |
+
+**Key design decision — gene universe**
+
+`exclude_gene_prefixes` filters the *query list only*, never the gene universe
+(background). Removing genes from the background would artificially inflate
+enrichment scores for pathways containing those genes. This is the statistically
+correct approach for ORA.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | AnnData from `deg()` — `var_names` used as gene universe |
+| `deg_dict` | dict | required | `deg_dict` from `deg()` — must contain `'results'` key |
+| `gene_sets` | list[str] | GO BP 2023, KEGG 2021, Reactome 2022 | Enrichr library names — any valid Enrichr name accepted |
+| `min_logfc` | float | `0.25` | Minimum absolute log₂FC for query genes |
+| `max_pval_adj` | float | `0.05` | Maximum adj. p-value for query genes |
+| `top_n_genes` | int | None | Use top N DEGs per direction; None = use all passing filters |
+| `min_genes` | int | `5` | Skip group×direction if fewer query genes |
+| `organism` | str | `"human"` | Enrichr organism — `"human"` \| `"mouse"` \| etc. |
+| `direction` | str | `"up"` | `"up"` \| `"down"` \| `"both"` — see table above |
+| `exclude_gene_prefixes` | list[str] | None | Remove from query list only e.g. `["RPL", "RPS", "MT-"]` |
+| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
+
+**Output**
+
+```
+adata_gsea.uns['omicsage_gsea']  →  provenance (includes direction, gene_sets, organism)
+
+gsea_dict['results']    : dict   →  {group: DataFrame} for direction="up"/"down"
+                                     {group__up: DataFrame, group__down: DataFrame} for direction="both"
+                                     Each DataFrame: Term, Overlap, P-value, Adjusted P-value, Genes, Direction
+gsea_dict['summary_df'] : DataFrame  →  top 3 terms per group; gains 'direction' column when direction="both"
+gsea_dict['provenance'] : dict       →  same as uns['omicsage_gsea']
+gsea_dict['skipped']    : list       →  (group, direction) tuples skipped due to < min_genes DEGs
+```
+
+**Usage**
+
+```python
+from pipeline.modules.downstream.gsea import gsea
+
+# Standard immune data — upregulated pathways per cell type
+adata_gsea, gsea_dict = gsea(
+    adata_deg,
+    deg_dict=deg_dict,
+    gene_sets=["GO_Biological_Process_2023", "KEGG_2021_Human", "Reactome_2022"],
+    direction="up",
+    exclude_gene_prefixes=["RPL", "RPS", "MT-"],
+    inplace=False,
+)
+
+# Cancer data — full picture (activated + suppressed pathways)
+adata_gsea, gsea_dict = gsea(
+    adata_deg,
+    deg_dict=deg_dict,
+    direction="both",
+    gene_sets=["KEGG_2021_Human", "Reactome_2022", "DisGeNET"],
+)
+
+# Mouse dataset
+adata_gsea, gsea_dict = gsea(
+    adata_deg,
+    deg_dict=deg_dict,
+    gene_sets=["GO_Biological_Process_2023", "KEGG_2021_Mouse"],
+    organism="mouse",
+)
+
+# Inspect top pathways for T cells
+print(gsea_dict["results"]["Tcm/Naive helper T cells"].head(5))
+
+# For direction="both"
+print(gsea_dict["results"]["Classical monocytes__up"].head(5))
+print(gsea_dict["results"]["Classical monocytes__down"].head(5))
+```
+
+**Connects to**: `gsea_report.py` for the report
+
+---
+
+## 16. `gsea_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report from `gsea()` output. All plots are
+embedded as base64 PNGs. Handles both single-direction and `direction="both"`
+results automatically — direction badges appear in tables and the summary when
+running in "both" mode.
+
+**Report contents**
+
+| Section | What it shows |
+|---------|--------------|
+| Run summary | Stat cards (groups, gene sets, organism, sig. pathways) + query direction label + per-group sig. pathway counts table with direction badges (when applicable) |
+| Top pathways table | Top 5 pathways per group; Genes Matched count, adj. p-value, gene list; direction badge in group cell when direction="both" |
+| Bar charts | Top 10 pathways per group — horizontal bars sorted by −log₁₀(adj. p-value) |
+| Bubble plot | Pathway × group matrix; size = genes matched, colour = −log₁₀(adj. p-value); when n_groups > max_bubble_groups, selects top N by sig. pathway count (not hard skip); excluded groups listed in visible note |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `gsea_dict` | dict | required | `gsea_dict` returned by `gsea()` |
+| `output_path` | str | `"reports/gsea_report.html"` | HTML output path |
+| `top_n_table` | int | 5 | Pathways per group in top pathways table |
+| `top_n_bar` | int | 10 | Pathways per group in bar charts |
+| `max_bubble_groups` | int | 9 | Max groups in bubble plot — excess handled by top-N selection |
+
+**Usage**
+
+```python
+from reports.gsea_report import generate_gsea_report
+
+report_path = generate_gsea_report(
+    gsea_dict=gsea_dict,
+    output_path="reports/gsea_report.html",
+)
+print(f"Report → {report_path}")
+```
+
+**Connects to**: (end of Phase 1 core pipeline) → batch correction or downstream analysis
 
 ---
 
@@ -951,12 +1124,19 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │
         │       ▼
         │   deg.py        → deg_dict['results'] + uns['rank_genes_groups']
+        │       │           (rankby_abs=True — both directions)
         │       │                   │
         │       │                   ▼
         │       │       deg_report.py → reports/deg_report.html
         │       │
         │       ▼
-        │   gsea.py       → pathway enrichment (NEXT — blocked until deg tests pass)
+        │   gsea.py       → gsea_dict['results'] (direction: up | down | both)
+        │       │                   │
+        │       │                   ▼
+        │       │       gsea_report.py → reports/gsea_report.html
+        │       │
+        │       ▼
+        │   [harmony_correct.py]  ← NEXT
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -970,25 +1150,26 @@ Raw file (.h5ad / .h5 / MTX dir)
 |-----------|--------|-------|---------------|
 | `tests/test_phase0_structure.py` | — | — | Repo structure, imports, config schema |
 | `tests/test_ingest.py` | `ingest.py` | — | Format detection, raw count extraction, all three loaders |
-| `tests/test_qc.py` | `qc.py` | — | MT detection, metrics, filtering, Scrublet, ground-truth validation, modality detection, MuData structure |
+| `tests/test_qc.py` | `qc.py` | 42 | MT detection, metrics, filtering, Scrublet, ground-truth validation, modality detection, MuData structure |
 | `tests/test_normalize.py` | `normalize.py` | 12 | Raw count preservation, normalization correctness, log1p, HVG selection, batch_key, logcounts layer, provenance, mutation guard |
 | `tests/test_reduce.py` | `reduce.py` | 12 | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, PC selection methods |
 | `tests/test_cluster.py` | `cluster.py` | 8 | Leiden labels, all resolutions computed, n_clusters bounds, silhouette scores, best resolution selection, provenance, inplace guard |
 | `tests/test_annotate.py` | `annotate.py` | 18 (+1 skip) | obs columns written, provenance keys, confidence range, marker scoring, vote consensus, inplace guard, ground-truth preservation |
 | `tests/test_deg.py` | `deg.py` | 11 | Return types, provenance keys, column names, pval range, per-group results, threshold filtering, inplace guard, small-group warning, leiden fallback |
+| `tests/test_gsea.py` | `gsea.py` | 8 | Return types, provenance keys, output columns, pval range, group accounting, min_genes skip + warning, inplace guard, string gene_sets param — all Enrichr calls mocked (CI-safe) |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~180 passed, 1–2 skipped
+# Expected: ~189 passed, 1–2 skipped
 ```
 
 Run a single module's tests:
 
 ```bash
-python -m pytest tests/test_deg.py -v      # 11 passed
-python -m pytest tests/test_annotate.py -v # 18 passed, 1 skipped
-python -m pytest tests/test_cluster.py -v  # 8 passed
+python -m pytest tests/test_gsea.py -v      # 8 passed
+python -m pytest tests/test_deg.py -v       # 11 passed
+python -m pytest tests/test_annotate.py -v  # 18 passed, 1 skipped
 ```

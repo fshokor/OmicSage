@@ -7,7 +7,7 @@ Supports one-vs-rest (default) and pairwise modes.
 Results written to adata.uns['omicsage_deg'] and returned as deg_dict.
 
 Usage:
-    from pipeline.modules.qc.deg import deg
+    from pipeline.modules.downstream.deg import deg
 
     adata_deg, deg_dict = deg(
         adata_annotated,
@@ -16,7 +16,8 @@ Usage:
         method="wilcoxon",
         min_logfc=0.25,
         max_pval_adj=0.05,
-        n_genes=200,
+        n_genes=500,
+        exclude_gene_prefixes=["RPL", "RPS", "MT-"],
         use_raw=False,
         inplace=False,
     )
@@ -35,6 +36,18 @@ from anndata import AnnData
 
 
 # ---------------------------------------------------------------------------
+# Defaults
+# ---------------------------------------------------------------------------
+
+# Prefixes for genes that are statistically significant but biologically
+# uninformative for cell-type characterisation in most single-cell studies.
+# Ribosomal (RPL/RPS) and mitochondrial (MT-) genes dominate DEG lists in
+# many cell types and obscure meaningful markers. Users can override or
+# extend this list via the exclude_gene_prefixes parameter.
+_DEFAULT_EXCLUDE_PREFIXES: list[str] = []   # empty by default — opt-in
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -45,7 +58,8 @@ def deg(
     method: str = "wilcoxon",
     min_logfc: float = 0.25,
     max_pval_adj: float = 0.05,
-    n_genes: int = 200,
+    n_genes: int = 500,
+    exclude_gene_prefixes: Optional[list[str]] = None,
     use_raw: bool = False,
     pairwise_groups: Optional[list[tuple[str, str]]] = None,
     inplace: bool = False,
@@ -72,7 +86,21 @@ def deg(
     max_pval_adj : float
         Maximum adjusted p-value (BH FDR) threshold for filtering results.
     n_genes : int
-        Number of top genes to compute per group.
+        Number of top genes to compute per group via rank_genes_groups.
+        Default raised to 500 to avoid artificially capping DEG counts —
+        with 200 (old default) all computed genes often passed thresholds
+        in well-separated cell types, truncating the true significant set.
+        Pass None to compute all genes (slowest but most complete).
+    exclude_gene_prefixes : list of str, optional
+        Gene name prefixes to remove from results after thresholding.
+        These genes are still used in the rank_genes_groups computation
+        (removing them pre-computation would bias fold-changes), but are
+        filtered out of the returned DataFrames.
+        Common choices:
+          ["RPL", "RPS"]        — ribosomal proteins (dominate progenitors/T cells)
+          ["MT-"]               — mitochondrial genes (QC artefact)
+          ["RPL", "RPS", "MT-"] — both
+        Default: None (no filtering — all significant genes returned).
     use_raw : bool
         If False (default), uses adata.layers['logcounts'].
         If True, uses adata.raw or adata.X.
@@ -101,6 +129,11 @@ def deg(
     """
     if not inplace:
         adata = adata.copy()
+
+    # Normalise prefix list
+    if exclude_gene_prefixes is None:
+        exclude_gene_prefixes = []
+    exclude_gene_prefixes = [p.upper() for p in exclude_gene_prefixes]
 
     # ------------------------------------------------------------------
     # 1. Resolve groupby column
@@ -154,6 +187,9 @@ def deg(
         groupby=group_col,
         method=method,
         n_genes=n_genes,
+        rankby_abs=True,    # rank by |score| so both up- and down-regulated
+                            # genes are returned; without this scanpy only
+                            # returns the top upregulated genes per group
         corr_method="benjamini-hochberg",
         use_raw=use_raw,
         pts=True,           # compute fraction of cells expressing gene
@@ -168,6 +204,7 @@ def deg(
     for group in groups:
         df = _extract_group_results(adata, group, n_genes)
         df = _apply_thresholds(df, min_logfc, max_pval_adj)
+        df = _apply_prefix_exclusion(df, exclude_gene_prefixes, group)
         results[group] = df
 
     # ------------------------------------------------------------------
@@ -185,6 +222,7 @@ def deg(
                     reference=group_b,
                     method=method,
                     n_genes=n_genes,
+                    rankby_abs=True,
                     corr_method="benjamini-hochberg",
                     use_raw=use_raw,
                     key_added=f"rank_genes_pairwise_{group_a}_vs_{group_b}",
@@ -196,6 +234,7 @@ def deg(
                     key=f"rank_genes_pairwise_{group_a}_vs_{group_b}",
                 )
                 df = _apply_thresholds(df, min_logfc, max_pval_adj)
+                df = _apply_prefix_exclusion(df, exclude_gene_prefixes, group_a)
                 pairwise_results[pair_key] = df
             except Exception as e:
                 warnings.warn(
@@ -218,6 +257,8 @@ def deg(
         "min_logfc": min_logfc,
         "max_pval_adj": max_pval_adj,
         "n_genes": n_genes,
+        "rankby_abs": True,
+        "exclude_gene_prefixes": exclude_gene_prefixes,
         "n_groups": len(groups),
         "results_keys": groups,
         "scanpy_version": sc.__version__,
@@ -320,6 +361,45 @@ def _apply_thresholds(
     )
     filtered = df.loc[mask].copy()
     filtered = filtered.sort_values("pval_adj", ascending=True)
+    filtered = filtered.reset_index(drop=True)
+    return filtered
+
+
+def _apply_prefix_exclusion(
+    df: pd.DataFrame,
+    exclude_prefixes: list[str],
+    group: str,
+) -> pd.DataFrame:
+    """
+    Remove genes whose names start with any of the given prefixes.
+
+    Filtering is applied AFTER thresholding so that excluded genes still
+    contribute to the rank_genes_groups computation (removing them before
+    would bias fold-changes for remaining genes). Only the returned
+    DataFrames are affected — adata.uns['rank_genes_groups'] is unchanged.
+
+    Warns once per group if any genes were removed, so the user can
+    see what was filtered in the logs.
+    """
+    if not exclude_prefixes or df.empty:
+        return df
+
+    mask_keep = ~df["gene"].str.upper().apply(
+        lambda g: any(g.startswith(p) for p in exclude_prefixes)
+    )
+    n_removed = (~mask_keep).sum()
+
+    if n_removed > 0:
+        removed_genes = df.loc[~mask_keep, "gene"].tolist()
+        warnings.warn(
+            f"Group '{group}': excluded {n_removed} gene(s) matching prefixes "
+            f"{exclude_prefixes}: {removed_genes[:10]}"
+            f"{'...' if len(removed_genes) > 10 else ''}",
+            UserWarning,
+            stacklevel=3,
+        )
+
+    filtered = df.loc[mask_keep].copy()
     filtered = filtered.reset_index(drop=True)
     return filtered
 
