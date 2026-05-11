@@ -21,3 +21,4 @@ click>=8.1
 scikit-misc>=0.3
 kneed>=0.8.5
 celltypist>=1.6
+gseapy>=1.1.0

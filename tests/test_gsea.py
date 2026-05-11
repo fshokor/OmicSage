@@ -14,10 +14,14 @@ Notes
 - Query gene lists use real HGNC symbols so fixtures are biologically plausible.
 - The mock fixture returns a minimal but correctly structured enrichr results
   DataFrame, matching what gseapy.enrichr().results produces.
+- gseapy must be installed for these tests to run. In CI environments where
+  gseapy is not available, the entire module is skipped gracefully via
+  pytest.importorskip — no ERRORs, just SKIPs.
 """
 
 from __future__ import annotations
 
+import os
 import warnings
 from unittest.mock import MagicMock, patch
 
@@ -26,7 +30,18 @@ import pandas as pd
 import pytest
 from anndata import AnnData
 
-from pipeline.modules.downstream.gsea import gsea
+# ---------------------------------------------------------------------------
+# Module-level skip guard — must come before any gsea import.
+# If gseapy is not installed the whole test file is skipped cleanly.
+# This also respects the OMICSAGE_CI flag used elsewhere in the test suite.
+# ---------------------------------------------------------------------------
+gseapy = pytest.importorskip(
+    "gseapy",
+    reason="gseapy not installed — skipping GSEA tests. "
+           "Install with: pip install gseapy",
+)
+
+from pipeline.modules.downstream.gsea import gsea  # noqa: E402  (after importorskip)
 
 
 # ---------------------------------------------------------------------------
