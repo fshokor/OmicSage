@@ -10,7 +10,7 @@ All tests use lightweight synthetic AnnData fixtures so they run in seconds
 with no disk I/O.  Fixtures are pre-reduced (X_pca in obsm, connectivities
 in obsp) to match the expected input contract of cluster().
 
-Test inventory (12 tests)
+Test inventory (16 tests)
 --------------------------
  1. test_leiden_clusters_in_obs
  2. test_all_resolutions_computed
@@ -18,12 +18,17 @@ Test inventory (12 tests)
  4. test_n_clusters_reasonable
  5. test_silhouette_scores_computed
  6. test_best_resolution_selected_silhouette
+ 6b. test_delta_elbow_selects_after_largest_jump
  7. test_best_resolution_selected_expected_count
  8. test_stability_scores_computed
  9. test_delta_computed
 10. test_params_stored_in_uns
 11. test_original_not_mutated
 12. test_override_validated
+13. test_neighbors_key_uses_harmony_graph
+14. test_cluster_key_stored_separately
+15. test_compute_ari_identical_clusterings
+16. test_missing_harmony_connectivities_raises
 """
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ import scipy.sparse as sp
 import scanpy as sc
 from anndata import AnnData
 
-from pipeline.modules.clustering.cluster import cluster, _res_key
+from pipeline.modules.clustering.cluster import cluster, compute_ari, _res_key
 
 # ---------------------------------------------------------------------------
 # Fixtures
@@ -76,7 +81,7 @@ def test_leiden_clusters_in_obs():
     adata_clustered, _ = cluster(_make_reduced_adata(), resolution_range=resolutions)
 
     for res in resolutions:
-        key = _res_key(res)
+        key = _res_key("leiden", res)
         assert key in adata_clustered.obs.columns, f"obs['{key}'] missing"
 
     assert "leiden" in adata_clustered.obs.columns, "obs['leiden'] convenience key missing"
@@ -93,7 +98,7 @@ def test_all_resolutions_computed():
 
     assert set(metrics["resolutions"]) == set(resolutions)
     for res in resolutions:
-        assert _res_key(res) in adata_clustered.obs.columns
+        assert _res_key("leiden", res) in adata_clustered.obs.columns
 
     # Duplicate resolutions must not produce two columns
     _, metrics_dup = cluster(_make_reduced_adata(), resolution_range=[0.5, 0.5, 0.5])
@@ -107,7 +112,7 @@ def test_all_resolutions_computed():
 def test_cluster_labels_are_strings():
     """Leiden labels must be strings — Scanpy convention."""
     adata_clustered, _ = cluster(_make_reduced_adata(), resolution_range=[0.5])
-    labels = adata_clustered.obs[_res_key(0.5)].values
+    labels = adata_clustered.obs[_res_key("leiden", 0.5)].values
     assert all(isinstance(lbl, str) for lbl in labels), (
         f"Non-string labels found: {set(type(l).__name__ for l in labels)}"
     )
@@ -165,7 +170,7 @@ def test_best_resolution_selected_silhouette():
         f"Unexpected selection_reason: {metrics['selection_reason']}"
     )
     # obs['leiden'] must match obs at the selected resolution
-    best_key = _res_key(metrics["best_resolution"])
+    best_key = _res_key("leiden", metrics["best_resolution"])
     np.testing.assert_array_equal(
         adata_clustered.obs["leiden"].values,
         adata_clustered.obs[best_key].values,
@@ -331,8 +336,8 @@ def test_params_stored_in_uns():
         "silhouette_scores", "stability_scores",
         "best_resolution", "best_n_clusters", "best_silhouette", "best_stability",
         "selection_reason", "n_clusters_expected",
-        "pca_key", "connectivities_key", "random_state",
-        "scanpy_version", "omicsage_module", "omicsage_version", "timestamp",
+        "pca_key", "connectivities_key", "neighbors_key", "obsp_key", "cluster_key",
+        "random_state", "scanpy_version", "omicsage_module", "omicsage_version", "timestamp",
     ]
     for key in required_keys:
         assert key in record, f"uns['omicsage_cluster'] missing key: '{key}'"
@@ -340,7 +345,10 @@ def test_params_stored_in_uns():
     assert record["random_state"] == 0
     assert record["pca_key"] == "X_pca"
     assert record["connectivities_key"] == "connectivities"
-    assert record["omicsage_module"] == "pipeline.modules.qc.cluster"
+    assert record["neighbors_key"] is None           # default run — no harmony
+    assert record["obsp_key"] == "connectivities"    # resolved from default
+    assert record["cluster_key"] == "leiden"
+    assert record["omicsage_module"] == "pipeline.modules.clustering.cluster"
     assert record["omicsage_version"] == "0.1.0"
     assert isinstance(record["timestamp"], str) and len(record["timestamp"]) > 0
     assert isinstance(record["scanpy_version"], str) and len(record["scanpy_version"]) > 0
@@ -395,3 +403,122 @@ def test_override_validated():
     adata = _make_reduced_adata()
     with pytest.raises(ValueError, match="best_resolution_override"):
         cluster(adata, resolution_range=[0.2, 0.4], best_resolution_override=0.9)
+
+
+# ---------------------------------------------------------------------------
+# Test 13
+# ---------------------------------------------------------------------------
+
+def test_neighbors_key_uses_harmony_graph():
+    """
+    When neighbors_key='neighbors_harmony' is passed, cluster() must use
+    obsp['neighbors_harmony_connectivities'] and record this in uns provenance.
+    """
+    adata = _make_reduced_adata()
+
+    # Simulate what harmony_correct() produces: copy the default connectivity
+    # matrix under the harmony key so cluster() has something to read.
+    adata.obsp["neighbors_harmony_connectivities"] = adata.obsp["connectivities"].copy()
+    adata.obsp["neighbors_harmony_distances"]      = adata.obsp["distances"].copy()
+    adata.uns["neighbors_harmony"] = adata.uns["neighbors"].copy()
+
+    adata_out, metrics = cluster(
+        adata,
+        neighbors_key="neighbors_harmony",
+        cluster_key="leiden_harmony",
+        resolution_range=[0.5],
+    )
+
+    # Correct obs column names
+    assert "leiden_harmony" in adata_out.obs.columns, \
+        "obs['leiden_harmony'] not created"
+    assert _res_key("leiden_harmony", 0.5) in adata_out.obs.columns, \
+        f"obs['{_res_key('leiden_harmony', 0.5)}'] not created"
+
+    # Provenance must record the harmony graph was used
+    prov = adata_out.uns["omicsage_cluster"]
+    assert prov["neighbors_key"] == "neighbors_harmony"
+    assert prov["obsp_key"] == "neighbors_harmony_connectivities"
+    assert prov["cluster_key"] == "leiden_harmony"
+
+
+# ---------------------------------------------------------------------------
+# Test 14
+# ---------------------------------------------------------------------------
+
+def test_cluster_key_stored_separately():
+    """
+    Running cluster() twice with different cluster_key values must produce
+    two independent obs columns — neither overwrites the other.
+    """
+    adata = _make_reduced_adata()
+
+    # First run — default graph, default key
+    adata, _ = cluster(adata, resolution_range=[0.5], cluster_key="leiden", inplace=True)
+
+    # Simulate harmony graph (same matrix is fine — we're testing key isolation)
+    adata.obsp["neighbors_harmony_connectivities"] = adata.obsp["connectivities"].copy()
+    adata.uns["neighbors_harmony"] = adata.uns["neighbors"].copy()
+
+    # Second run — harmony graph, harmony key
+    adata, _ = cluster(
+        adata,
+        resolution_range=[0.5],
+        neighbors_key="neighbors_harmony",
+        cluster_key="leiden_harmony",
+        inplace=True,
+    )
+
+    assert "leiden" in adata.obs.columns, \
+        "obs['leiden'] was removed by the second cluster() call"
+    assert "leiden_harmony" in adata.obs.columns, \
+        "obs['leiden_harmony'] not created by second cluster() call"
+
+    # Both per-resolution columns must also exist
+    assert _res_key("leiden", 0.5) in adata.obs.columns
+    assert _res_key("leiden_harmony", 0.5) in adata.obs.columns
+
+
+# ---------------------------------------------------------------------------
+# Test 15
+# ---------------------------------------------------------------------------
+
+def test_compute_ari_identical_clusterings():
+    """
+    ARI of a column against itself must be 1.0.
+    ARI of two independent random clusterings must be < 1.0.
+    ARI raises KeyError when a column is missing.
+    """
+    adata = _make_reduced_adata()
+    adata, _ = cluster(adata, resolution_range=[0.4, 0.8], inplace=True)
+
+    # Self-comparison — perfect agreement
+    ari_self = compute_ari(adata, "leiden", "leiden")
+    assert ari_self == 1.0, f"ARI(leiden, leiden) should be 1.0, got {ari_self}"
+
+    # Two different resolutions — should not be perfect (they differ on at least some cells)
+    key_04 = _res_key("leiden", 0.4)
+    key_08 = _res_key("leiden", 0.8)
+    ari_diff = compute_ari(adata, key_04, key_08)
+    assert isinstance(ari_diff, float)
+    assert -1.0 <= ari_diff <= 1.0, f"ARI outside [-1, 1]: {ari_diff}"
+
+    # Missing column must raise KeyError
+    with pytest.raises(KeyError, match="nonexistent"):
+        compute_ari(adata, "leiden", "nonexistent")
+
+
+# ---------------------------------------------------------------------------
+# Test 16
+# ---------------------------------------------------------------------------
+
+def test_missing_harmony_connectivities_raises():
+    """
+    Passing neighbors_key='neighbors_harmony' when the corresponding obsp
+    key does not exist must raise a KeyError with a helpful message.
+    """
+    adata = _make_reduced_adata()
+    # Do NOT add neighbors_harmony_connectivities — it should be absent
+
+    with pytest.raises(KeyError, match="neighbors_harmony_connectivities"):
+        cluster(adata, neighbors_key="neighbors_harmony")

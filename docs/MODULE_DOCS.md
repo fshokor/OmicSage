@@ -2,7 +2,7 @@
 
 > Locations: `pipeline/modules/qc/` · `pipeline/modules/annotation/` · `reports/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-09 (session 3)
+> Last updated: 2026-05-11 (session 4)
 
 This document describes every script in the pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -1082,6 +1082,162 @@ print(f"Report → {report_path}")
 
 ---
 
+
+## 17. `harmony_correct.py`
+
+**What it does**
+
+Runs Harmony batch integration on the PCA embedding produced by `reduce.py`.
+Iteratively adjusts cell coordinates so that cells from different batches
+intermix correctly while preserving biological variation. Recomputes the
+neighbor graph and UMAP on the corrected embedding. Preserves the original
+UMAP under a new key so before/after comparisons are always possible.
+
+**Why it exists**
+
+When a dataset spans multiple donors, sites, or sequencing runs, technical
+batch effects can dominate the first principal components, causing cells to
+cluster by batch rather than biology. Harmony is the standard, fast,
+scalable correction method for scRNA-seq — it operates on the PCA embedding
+(not the raw counts), is reversible, and integrates naturally into the
+scanpy/AnnData workflow.
+
+**Steps performed (in order)**
+
+1. Validate inputs — checks `obsm['X_pca']` exists and `obs[batch_key]` has ≥ 2 unique values
+2. Cap `n_pcs` at available PCA dimensions; logs a warning if capping occurs
+3. Run `harmonypy.run_harmony` on the first `n_pcs` components of `X_pca`
+4. Store corrected embedding in `obsm['X_pca_harmony']` — shape (n_cells × n_pcs)
+5. Preserve existing `obsm['X_umap']` → `obsm['X_umap_precorrection']` (if present)
+6. Recompute neighbor graph on corrected embedding → `uns['neighbors_harmony']`,
+   `obsp['neighbors_harmony_connectivities']`, `obsp['neighbors_harmony_distances']`
+7. Recompute UMAP on corrected graph → `obsm['X_umap_harmony']`
+8. Write provenance to `uns['omicsage_harmony']`
+
+**obsm / obsp layout after harmony_correct()**
+
+| Slot | Contents |
+|------|----------|
+| `obsm['X_pca']` | Original PCA — **unchanged** |
+| `obsm['X_pca_harmony']` | Harmony-corrected embedding (n_cells × n_pcs) |
+| `obsm['X_umap_precorrection']` | Original UMAP preserved for comparison |
+| `obsm['X_umap_harmony']` | UMAP recomputed on corrected embedding (n_cells × 2) |
+| `obsp['neighbors_harmony_connectivities']` | kNN connectivity matrix on corrected embedding |
+| `obsp['neighbors_harmony_distances']` | kNN distance matrix on corrected embedding |
+| `uns['omicsage_harmony']` | Full provenance record |
+
+**Important: `X_umap` is NOT overwritten.** The original UMAP from `reduce.py`
+is preserved as `X_umap_precorrection`. The new UMAP is stored as `X_umap_harmony`.
+This is a deliberate design decision — silently overwriting `X_umap` would make
+before/after comparisons impossible and break any module that expects the
+pre-correction UMAP.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | Reduced AnnData — must have `obsm['X_pca']` and `obs[batch_key]` |
+| `batch_key` | str | `"batch"` | `obs` column encoding the batch variable |
+| `n_pcs` | int | 50 | PCs to pass to Harmony — capped at available dimensions |
+| `n_neighbors` | int | 15 | *k* for neighbor graph on corrected embedding |
+| `umap_min_dist` | float | 0.3 | `min_dist` for UMAP |
+| `random_state` | int | 0 | Reproducibility seed |
+| `max_iter_harmony` | int | 50 | Maximum Harmony iterations |
+| `theta` | float | 2.0 | Harmony diversity penalty — higher = stronger correction |
+| `copy` | bool | False | If True, return a copy; otherwise modify in place |
+
+**Usage**
+
+```python
+from pipeline.modules.integration.harmony_correct import harmony_correct
+
+# Standard run on GSE194122 (10 donors = 10 batches)
+adata = harmony_correct(
+    adata,
+    batch_key="batch",
+    n_pcs=50,
+    n_neighbors=15,
+    umap_min_dist=0.3,
+    random_state=0,
+)
+
+# Access outputs
+print(adata.obsm["X_pca_harmony"].shape)      # (n_cells, 50)
+print(adata.obsm["X_umap_harmony"].shape)     # (n_cells, 2)
+print(adata.obsm["X_umap_precorrection"].shape) # (n_cells, 2) — original UMAP
+
+# Provenance
+import json
+print(json.dumps(adata.uns["omicsage_harmony"], indent=2))
+```
+
+**Known implementation notes**
+
+- `obs[batch_key]` is cast to `str` internally — safe when the column is a
+  pandas `Categorical` (avoids `NotImplementedError: isna is not defined for MultiIndex`)
+- `ho.Z_corr` from `harmonypy` is already `(n_cells, n_pcs)` — do **not** transpose;
+  earlier versions of this module incorrectly used `.T` which caused shape errors
+- `neighbors_key="neighbors_harmony"` keeps the uncorrected graph intact in
+  `obsp['connectivities']` — allows direct before/after comparison
+- Dependency: `pip install harmonypy`
+
+**Connects to**: `harmony_report.py` for the report, then clustering on `neighbors_harmony`
+
+---
+
+## 18. `harmony_report.py`
+
+**What it does**
+
+Generates a self-contained HTML report from `harmony_correct()` output.
+Verifies output keys, visualises batch mixing before and after correction,
+computes a quantitative mixing score, and profiles how much each PC was
+shifted by the correction. All plots are embedded as base64 PNGs.
+Matches the style of `gsea_report.py`.
+
+**Report contents**
+
+| Section | What it shows |
+|---------|--------------|
+| Run summary | Stat cards (cells, genes, batches, PCs corrected, k, elapsed) + output key verification table (✓ / ✗ MISSING) + run parameters (`batch_key`, `theta`, `max_iter`, `umap_min_dist`) |
+| Batch composition | Horizontal bar chart of cells per batch + table with cell count and % of total |
+| UMAP embeddings | Side-by-side: raw PCA PC1–PC2 (before, coloured by batch) vs corrected UMAP (after, coloured by batch); second panel: UMAP coloured by Harmony PC1 value (shows correction depth) |
+| Batch mixing metrics | Histogram of per-cell same-batch neighbour fraction; mean / median / expected (= 1/n_batches) stats; normalised mixing score (0–1) with colour-coded interpretation note |
+| Per-PC correction shift | Bar chart of mean `|X_pca − X_pca_harmony|` per PC; top 5 most-shifted PCs table |
+
+**Mixing score interpretation**
+
+| Score | Meaning |
+|-------|---------|
+| ≥ 0.8 | ✓ Batches are well integrated |
+| 0.5–0.8 | ⚠ Integration is moderate — consider increasing `theta` |
+| < 0.5 | ✗ Batches are poorly integrated — check `batch_key` or try higher `theta` |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adata` | AnnData | required | AnnData returned by `harmony_correct()` |
+| `output_path` | str | `"reports/harmony_report.html"` | HTML output path |
+| `top_n_pcs` | int | 20 | PCs to show in the per-PC shift chart |
+| `max_batches_bar` | int | 20 | Max batches labelled individually in the composition bar chart |
+
+**Usage**
+
+```python
+from reports.harmony_report import generate_harmony_report
+
+report_path = generate_harmony_report(
+    adata=adata,
+    output_path="reports/harmony_report.html",
+)
+print(f"Report → {report_path}")
+```
+
+**Connects to**: clustering on `neighbors_harmony` graph — next step in pipeline
+
+---
+
 ## Module Data Flow
 
 ```
@@ -1136,7 +1292,14 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │       gsea_report.py → reports/gsea_report.html
         │       │
         │       ▼
-        │   [harmony_correct.py]  ← NEXT
+        │   harmony_correct.py  → obsm['X_pca_harmony'] + obsm['X_umap_harmony']
+        │       │                     obsm['X_umap_precorrection'] preserved
+        │       │                   │
+        │       │                   ▼
+        │       │       harmony_report.py → reports/harmony_report.html
+        │       │
+        │       ▼
+        │   [clustering on corrected graph]  ← NEXT
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -1157,13 +1320,14 @@ Raw file (.h5ad / .h5 / MTX dir)
 | `tests/test_annotate.py` | `annotate.py` | 18 (+1 skip) | obs columns written, provenance keys, confidence range, marker scoring, vote consensus, inplace guard, ground-truth preservation |
 | `tests/test_deg.py` | `deg.py` | 11 | Return types, provenance keys, column names, pval range, per-group results, threshold filtering, inplace guard, small-group warning, leiden fallback |
 | `tests/test_gsea.py` | `gsea.py` | 8 | Return types, provenance keys, output columns, pval range, group accounting, min_genes skip + warning, inplace guard, string gene_sets param — all Enrichr calls mocked (CI-safe) |
+| `tests/test_harmony.py` | `harmony_correct.py` | 12 | Embedding created, shape (n_cells × n_pcs), UMAP recomputed as X_umap_harmony, X_umap_precorrection preserved, neighbors key stored, provenance keys + values, in-place modification, n_pcs capping, missing X_pca error, missing batch_key error, single-batch error, custom batch_key, two-batch correction |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~189 passed, 1–2 skipped
+# Expected: ~201 passed, 1–2 skipped
 ```
 
 Run a single module's tests:

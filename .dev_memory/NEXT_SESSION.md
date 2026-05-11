@@ -1,31 +1,31 @@
 ## Session Context
 Date: 2026-05-11
 Phase: 1 — Core scRNA Pipeline
-Last thing completed: GSEA module — gsea.py, test_gsea.py (8 tests), gsea_report.py,
-                      notebook Step 7, all four memory files updated.
-                      Also fixed and improved deg.py and deg_report.py significantly.
+Last thing completed: Harmony batch correction — harmony_correct.py, test_harmony.py
+                      (12 tests), harmony_report.py, notebook Step 8 (7 cells),
+                      all four memory files updated.
 File last worked on: .dev_memory/ (memory file updates)
 
 ## Today's Goal
-Batch correction — implement harmony_correct.py (Harmony integration on
-obs['batch'] or user-specified batch_key, corrected embedding stored in
-obsm['X_pca_harmony'], neighbor graph + UMAP recomputed on corrected embedding).
-ONE goal — do not start annotation improvements or ADT/ATAC modules this session.
+Clustering on harmony-corrected embedding — re-run cluster.py using
+neighbors_key='neighbors_harmony' so Leiden uses the corrected graph.
+Store results under a new obs column (e.g. obs['leiden_harmony']) and
+compare ARI with the pre-correction clustering.
+ONE goal — do not start scVI, pseudobulk DEG, or ADT/ATAC modules this session.
 
-## Step 1 — Verify DEG + GSEA modules still work
+## Step 1 — Verify all prior tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
-python -m pytest tests/test_deg.py tests/test_gsea.py -v
-# Expected: 11 + 8 = 19 passed
+python -m pytest tests/test_deg.py tests/test_gsea.py tests/test_harmony.py -v
+# Expected: 11 + 8 + 12 = 31 passed
 ```
 
-## Step 2 — Check harmony-pytorch is installed
+## Step 2 — Run harmony on the real data if not already done
 ```bash
-conda activate omicsage
-pip show harmonypy
-# If missing:
-pip install harmonypy --break-system-packages
+# Open notebooks/phase1_qc.ipynb and run Step 8 cells
+# Input:  data/processed/GSE194122_cite_gsea.h5ad
+# Output: data/processed/GSE194122_cite_harmony.h5ad
 ```
 
 ## Known Issues Carried Forward
@@ -39,42 +39,38 @@ pip install harmonypy --break-system-packages
 - obs['cell_type_vote'] is the consensus column (not obs['cell_type'])
 - obs['cell_type_groundtruth'] holds the preserved publication ground-truth
 - rpy2 NOT used — do not attempt R integration
-- gseapy.enrichr returns NO Overlap column in v1.1.3 — derived from Genes column (count of semicolon-separated genes)
-- deg.py requires rankby_abs=True in rank_genes_groups — without it only upregulated genes appear in results
-- deg.py n_genes default is 500 (not 200) — old 200 caused artificial cap on well-separated cell types
+- gseapy.enrichr returns NO Overlap column in v1.1.3 — derived from Genes column
+- deg.py requires rankby_abs=True in rank_genes_groups
+- deg.py n_genes default is 500 (not 200)
 - gsea.py direction="both" stores results under "{group}__up" / "{group}__down" keys
+- harmonypy ho.Z_corr is (n_cells, n_pcs) — do NOT transpose
+- harmony_correct() stores X_umap_harmony (not X_umap) and preserves
+  original UMAP as X_umap_precorrection
+- obs[batch_key] must be cast .astype(str) before pandas .map() or
+  .value_counts() — Categorical + MultiIndex causes NotImplementedError
+- reports/figures/ directory must be created before plt.savefig()
+  (use Path("reports/figures").mkdir(parents=True, exist_ok=True))
+- sc.pl.umap() reads obsm['X_umap'] by default — temporarily set
+  adata.obsm["X_umap"] = adata.obsm["X_umap_harmony"] before calling it
 
 ## Deferred Work (do not start this session)
+- scVI batch correction (alternative to Harmony — evaluate after clustering)
 - ScType-py + SingleR-py annotation → docs/ANNOTATION_PLAN.md
 - ADT and ATAC QC modules
 - Pseudobulk DEG (DESeq2-style)
 
 ## Files Modified This Session
 ### New files
-- pipeline/modules/downstream/gsea.py            ← CREATED
-- tests/test_gsea.py                             ← CREATED
-- reports/gsea_report.py                         ← CREATED
+- pipeline/modules/integration/harmony_correct.py  ← CREATED
+- pipeline/modules/integration/__init__.py          ← CREATED
+- tests/test_harmony.py                             ← CREATED
+- reports/harmony_report.py                         ← CREATED
 
-### Updated files (significant changes)
-- pipeline/modules/downstream/deg.py
-    ← n_genes default 200→500
-    ← rankby_abs=True added to rank_genes_groups (fixes volcano showing up-only)
-    ← exclude_gene_prefixes param added (RPL/RPS/MT- filtering)
-    ← _apply_prefix_exclusion() helper added
-    ← provenance updated with new keys
-- reports/deg_report.py
-    ← max_volcano_groups default 9→20
-    ← volcano truncation now sorted by DEG count (most informative first) + visible note
-    ← Direction column added to Top DEGs table (▲ Up / ▼ Down)
-    ← n_genes stat card added to Run Summary
-    ← exclude_prefixes info note added to Run Summary
-    ← .note CSS class added (amber warning box)
-
-### Notebook
-- notebooks/phase1_qc.ipynb  ← Step 7 GSEA section added (9 cells)
+### Updated files
+- notebooks/phase1_qc.ipynb  ← Step 8 Harmony section added (7 cells)
 
 ### Memory files
-- .dev_memory/MODULE_DOCS.md  ← Modules 13–16 updated/added
+- .dev_memory/MODULE_DOCS.md  ← Modules 17–18 added, data flow updated
 - .dev_memory/CURRENT_STATUS.md ← Updated
 - .dev_memory/NEXT_SESSION.md ← Updated (this file)
 - .dev_memory/PROGRESS.md ← Updated
@@ -83,14 +79,20 @@ pip install harmonypy --break-system-packages
 ```bash
 cd ~/OmicSage
 conda activate omicsage
-python -m pytest tests/test_deg.py tests/test_gsea.py -v
-# Expected: 19 passed
+python -m pytest tests/test_harmony.py -v
+# Expected: 12 passed
 ```
 
 ## Relevant Context — GSE194122 Data Chain
-- data/processed/GSE194122_cite_annotated.h5ad   ← input for deg()
-- data/processed/GSE194122_cite_deg.h5ad         ← input for gsea()
-- data/processed/GSE194122_cite_gsea.h5ad        ← output written this session
+- data/processed/GSE194122_cite_gsea.h5ad      ← input for harmony_correct()
+- data/processed/GSE194122_cite_harmony.h5ad   ← output written this session
+
+## Key obsm keys after harmony_correct()
+- obsm['X_pca']                →  original PCA (unchanged)
+- obsm['X_pca_harmony']        →  Harmony-corrected PCA embedding
+- obsm['X_umap_precorrection'] →  original UMAP preserved before correction
+- obsm['X_umap_harmony']       →  UMAP recomputed on corrected embedding
+- obsp['neighbors_harmony_connectivities'] / ['neighbors_harmony_distances']
 
 ## Conda Environment
 Name: omicsage
@@ -98,4 +100,4 @@ Activate: conda activate omicsage
 Python: 3.11.15
 Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata,
                    ipykernel, jupyter, scikit-misc, kneed>=0.8.5, celltypist,
-                   gseapy 1.1.3, rpy2 3.6.7 (installed but NOT used)
+                   gseapy 1.1.3, harmonypy, rpy2 3.6.7 (installed but NOT used)

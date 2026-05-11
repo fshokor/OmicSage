@@ -71,61 +71,70 @@ Phase 1 — Core scRNA Pipeline
 - Figures: UMAP × consensus vote, UMAP × CellTypist fine, confidence distribution
 - Per-cluster table with all method labels and confidence scores
 
-### ✅ DEG (pipeline/modules/downstream/deg.py) ← UPDATED THIS SESSION
+### ✅ DEG (pipeline/modules/downstream/deg.py)
 - Input: annotated AnnData with obs['cell_type_vote'] and layers['logcounts']
 - Wilcoxon rank-sum via sc.tl.rank_genes_groups(), one-vs-rest per cell type
-- rankby_abs=True — returns both up- and downregulated genes (critical fix)
-- n_genes default raised 200→500 — prevents artificial cap on significant DEGs
+- rankby_abs=True — returns both up- and downregulated genes
+- n_genes default 500 — prevents artificial cap on significant DEGs
 - exclude_gene_prefixes param — post-filters RPL/RPS/MT- without biasing fold-changes
 - Fallback: tries obs['cell_type_vote'], falls back to obs['leiden'] with UserWarning
 - BH FDR correction; configurable min_logfc and max_pval_adj thresholds
-- Optional pairwise mode via pairwise_groups parameter
-- deg_dict: results (per-group DataFrames), summary_df (top 5 per group), provenance, pairwise
 - Provenance stored in uns['omicsage_deg']
 - 11 tests passing in tests/test_deg.py
 
-### ✅ DEG Report (reports/deg_report.py) ← UPDATED THIS SESSION
-- max_volcano_groups default raised 9→20 — all cell types rendered by default
-- Volcano truncation note now visible in report + sorted by DEG count
-- Direction column added to Top DEGs table (▲ Up red / ▼ Down blue)
-- n_genes stat card added to Run Summary
-- exclude_prefixes info note displayed when prefix filtering was applied
+### ✅ DEG Report (reports/deg_report.py)
+- max_volcano_groups default 20; truncation note + sorted by DEG count
+- Direction column in Top DEGs table (▲ Up red / ▼ Down blue)
+- n_genes stat card in Run Summary; exclude_prefixes info note
 
-### ✅ GSEA (pipeline/modules/downstream/gsea.py) ← NEW THIS SESSION
+### ✅ GSEA (pipeline/modules/downstream/gsea.py)
 - Input: deg_dict['results'] + adata (for gene universe)
 - ORA via gseapy.enrichr (Fisher exact + BH correction)
-- Gene sets: GO Biological Process 2023, KEGG 2021 Human, Reactome 2022 (configurable)
-- direction param: "up" (default) | "down" | "both"
-  - "up"  : upregulated query genes only
-  - "down": downregulated query genes only (for suppressed pathways in cancer etc.)
-  - "both": two independent ORA queries per group; results keyed as {group}__up / {group}__down
-- exclude_gene_prefixes param: filters query list only, gene universe unchanged (statistically correct)
-- Gene set name validation against Enrichr at runtime — warns on bad names, never crashes
-- Overlap column derived from Genes column (gseapy ≥1.0 dropped Overlap natively)
-- Graceful skip for groups with < min_genes DEGs — warns, never crashes
+- Gene sets: GO Biological Process 2023, KEGG 2021 Human, Reactome 2022
+- direction param: "up" | "down" | "both"
+- exclude_gene_prefixes param: filters query list only, universe unchanged
 - Provenance stored in uns['omicsage_gsea']
 - 8 tests passing in tests/test_gsea.py (all Enrichr calls mocked — CI-safe)
 
-### ✅ GSEA Report (reports/gsea_report.py) ← NEW THIS SESSION
-- Run summary: groups tested, direction mode, gene sets queried, total sig. pathways
-- Top pathways table per group (rowspan, Genes Matched count, adj. p-value, gene list)
-- Direction badges: ▲ Up (red pill) / ▼ Down (blue pill) when direction="both"
-- Bar charts per group — top 10 pathways by −log₁₀(adj. p-value)
-- Bubble plot — pathway × group, size = genes matched, colour = −log₁₀(adj. p-value)
-  - When n_groups > max_bubble_groups: selects top N by significant pathway count (not hard skip)
-  - Excluded groups listed in visible note
+### ✅ GSEA Report (reports/gsea_report.py)
+- Run summary, top pathways table, bar charts per group, bubble plot
+- Direction badges: ▲ Up / ▼ Down when direction="both"
 
-### ✅ Notebook (notebooks/phase1_qc.ipynb) ← UPDATED THIS SESSION
-- Step 7 (GSEA) section added — 9 cells
-- Covers: load GSE194122_cite_deg.h5ad, re-run deg() to recover deg_dict,
-  run gsea(), sanity check (T cell activation, phagocytosis, B cell signalling),
-  generate HTML report, save GSE194122_cite_gsea.h5ad
+### ✅ Harmony Batch Correction (pipeline/modules/integration/harmony_correct.py) ← NEW
+- Harmony integration on obs[batch_key] (default: 'batch')
+- Corrected embedding stored in obsm['X_pca_harmony']
+- Original UMAP preserved as obsm['X_umap_precorrection'] before overwriting
+- Post-correction UMAP stored as obsm['X_umap_harmony'] (not X_umap)
+- Neighbor graph recomputed on corrected embedding → uns['neighbors_harmony'],
+  obsp['neighbors_harmony_connectivities'], obsp['neighbors_harmony_distances']
+- Provenance stored in uns['omicsage_harmony']
+  - umap_key: 'X_umap_harmony'
+  - umap_precorrection_key: 'X_umap_precorrection'
+- obs[batch_key] cast to str internally — safe with Categorical columns
+- 12 tests passing in tests/test_harmony.py
+
+### ✅ Harmony Report (reports/harmony_report.py) ← NEW
+- Run summary: stat cards (cells, genes, batches, PCs, k, elapsed) + output key verification
+- Batch composition: bar chart + table (cells per batch, % of total)
+- UMAP embeddings: side-by-side raw PCA (before) vs corrected UMAP (after), coloured by batch
+  + separate UMAP coloured by Harmony PC1 value (shows correction depth)
+- Batch mixing metrics: per-cell same-batch neighbour fraction histogram,
+  mean/median/expected stats, normalised mixing score with interpretation note
+- Per-PC correction shift: bar chart of mean |X_pca − X_pca_harmony| per PC,
+  top 5 most-shifted PCs table
+
+### ✅ Notebook (notebooks/phase1_qc.ipynb)
+- Step 8 (Harmony) section added — 7 cells
+- Covers: load GSE194122_cite_gsea.h5ad, check batch column, run harmony_correct(),
+  side-by-side PCA before vs UMAP after (using X_umap_precorrection and X_umap_harmony),
+  cell-type UMAP on corrected embedding, generate HTML report, save output
 
 ## Total Tests Passing
-~189 (181 pre-session + 8 new gsea tests)
+~201 (189 pre-session + 12 new harmony tests)
 
 ## What Is NOT Built Yet
-- Harmony + scVI batch correction ← NEXT
+- Clustering on harmony-corrected embedding ← NEXT
+- scVI batch correction (alternative to Harmony)
 - ScType-py + SingleR-py annotation (deferred — see docs/ANNOTATION_PLAN.md)
 - Pseudobulk DEG (DESeq2-style)
 - scATAC module (Phase 4)
@@ -146,4 +155,5 @@ Phase 1 — Core scRNA Pipeline
 - data/processed/GSE194122_cite_clustered.h5ad
 - data/processed/GSE194122_cite_annotated.h5ad
 - data/processed/GSE194122_cite_deg.h5ad
-- data/processed/GSE194122_cite_gsea.h5ad          ← NEW (written by notebook Step 7)
+- data/processed/GSE194122_cite_gsea.h5ad
+- data/processed/GSE194122_cite_harmony.h5ad   ← NEW (written by notebook Step 8)

@@ -1,9 +1,11 @@
 """
-pipeline/modules/qc/cluster.py
+pipeline/modules/clustering/cluster.py
 OmicSage — Leiden clustering module
 
-Input  : reduced AnnData (output of reduce.py)
-         Required: obsm['X_pca'], obsp['connectivities']
+Input  : reduced AnnData (output of reduce.py or harmony_correct.py)
+         Required: obsm[pca_key], obsp[connectivities_key]
+         For Harmony-corrected clustering pass neighbors_key='neighbors_harmony'
+         which resolves to obsp['neighbors_harmony_connectivities'].
 Output : (adata_clustered, metrics_dict)
 
 Resolution selection strategy (in priority order)
@@ -16,6 +18,21 @@ Resolution selection strategy (in priority order)
 4. silhouette argmax          — fallback when nothing else is specified
 
 Provenance is stored in adata.uns['omicsage_cluster'].
+
+Harmony workflow example
+------------------------
+    # Pre-correction clustering (uses raw kNN graph)
+    adata, metrics = cluster(adata)
+
+    # Post-correction clustering (uses Harmony-corrected kNN graph)
+    adata, metrics_h = cluster(
+        adata,
+        neighbors_key='neighbors_harmony',
+        cluster_key='leiden_harmony',
+    )
+
+    # Compare the two
+    ari = compute_ari(adata, 'leiden', 'leiden_harmony')
 """
 
 from __future__ import annotations
@@ -29,7 +46,7 @@ from typing import Optional
 import numpy as np
 import scanpy as sc
 from anndata import AnnData
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, adjusted_rand_score
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +65,8 @@ def cluster(
     n_clusters_expected: Optional[int] = None,
     pca_key: str = "X_pca",
     connectivities_key: str = "connectivities",
+    neighbors_key: Optional[str] = None,
+    cluster_key: str = "leiden",
     random_state: int = 0,
     inplace: bool = False,
 ) -> tuple[AnnData, dict]:
@@ -58,7 +77,7 @@ def cluster(
     ----------
     adata : AnnData
         Reduced AnnData produced by reduce().  Must contain:
-          - obsm[pca_key]               PCA embedding
+          - obsm[pca_key]               PCA embedding (for silhouette scoring)
           - obsp[connectivities_key]    kNN connectivity graph
     resolution_range : list of float
         Leiden resolutions to sweep.  Default: [0.2, 0.4, 0.6, 0.8, 1.0].
@@ -74,6 +93,18 @@ def cluster(
         Key in adata.obsm to use for silhouette scoring.
     connectivities_key : str
         Key in adata.obsp for the Leiden adjacency matrix.
+        Ignored when neighbors_key is set.
+    neighbors_key : str, optional
+        When provided, the connectivity matrix is read from
+        ``obsp[f'{neighbors_key}_connectivities']``.  Use
+        ``'neighbors_harmony'`` to cluster on the Harmony-corrected graph.
+        When None (default), falls back to ``obsp[connectivities_key]``
+        (original behaviour, fully backward-compatible).
+    cluster_key : str
+        Base name for the obs column that stores the selected clustering.
+        Default ``'leiden'``.  Use ``'leiden_harmony'`` for the
+        Harmony-corrected run so both results coexist in obs.
+        Per-resolution columns are named ``f'{cluster_key}_{res:.4g}'``.
     random_state : int
         Reproducibility seed.
     inplace : bool
@@ -83,21 +114,27 @@ def cluster(
     -------
     adata_out : AnnData
         AnnData with the following additions:
-          - obs[f'leiden_{res}']      cluster labels for every resolution
-          - obs['leiden']             labels at the selected resolution
-          - uns['omicsage_cluster']   provenance record
+          - obs[f'{cluster_key}_{res}']  cluster labels for every resolution
+          - obs[cluster_key]             labels at the selected resolution
+          - uns['omicsage_cluster']      provenance record
     metrics : dict
         resolutions, n_clusters, n_clusters_delta, silhouette_scores,
         stability_scores, best_resolution, best_n_clusters,
         best_silhouette, selection_reason
     """
     _validate_inputs(adata, pca_key, connectivities_key, best_resolution_override,
-                     resolution_range)
+                     resolution_range, neighbors_key)
 
     if not inplace:
         adata = adata.copy()
 
     resolution_range = sorted(set(resolution_range))
+
+    # Resolve which connectivity matrix to use
+    if neighbors_key is not None:
+        obsp_key = f"{neighbors_key}_connectivities"
+    else:
+        obsp_key = connectivities_key
 
     logger.info(
         "Running Leiden clustering — %d cells, %d resolutions: %s",
@@ -120,11 +157,11 @@ def cluster(
         )
 
     for res in resolution_range:
-        obs_key = _res_key(res)
+        obs_key = _res_key(cluster_key, res)
         sc.tl.leiden(
             adata,
             resolution=res,
-            adjacency=adata.obsp[connectivities_key],
+            adjacency=adata.obsp[obsp_key],
             key_added=obs_key,
             random_state=random_state,
             flavor="igraph",
@@ -182,7 +219,7 @@ def cluster(
         n_clusters_expected=n_clusters_expected,
     )
 
-    adata.obs["leiden"] = adata.obs[_res_key(best_res)].copy()
+    adata.obs[cluster_key] = adata.obs[_res_key(cluster_key, best_res)].copy()
 
     logger.info(
         "Selected resolution: %.2f  (%d clusters, silhouette=%.4f, reason='%s')",
@@ -224,9 +261,12 @@ def cluster(
         "n_clusters_expected": n_clusters_expected,
         "pca_key":             pca_key,
         "connectivities_key":  connectivities_key,
+        "neighbors_key":       neighbors_key,
+        "obsp_key":            obsp_key,
+        "cluster_key":         cluster_key,
         "random_state":        random_state,
         "scanpy_version":      importlib.metadata.version("scanpy"),
-        "omicsage_module":     "pipeline.modules.qc.cluster",
+        "omicsage_module":     "pipeline.modules.clustering.cluster",
         "omicsage_version":    "0.1.0",
         "timestamp":           datetime.now(timezone.utc).isoformat(),
     }
@@ -237,6 +277,49 @@ def cluster(
     )
 
     return adata, metrics
+
+
+def compute_ari(
+    adata: AnnData,
+    key_a: str,
+    key_b: str,
+) -> float:
+    """Compute Adjusted Rand Index between two obs clustering columns.
+
+    ARI = 1.0  → perfect agreement
+    ARI = 0.0  → random (chance-level) agreement
+    ARI < 0.0  → worse than random
+
+    Parameters
+    ----------
+    adata : AnnData
+        Must contain ``obs[key_a]`` and ``obs[key_b]``.
+    key_a : str
+        First clustering column (e.g. ``'leiden'``).
+    key_b : str
+        Second clustering column (e.g. ``'leiden_harmony'``).
+
+    Returns
+    -------
+    float
+        ARI score rounded to 4 decimal places.
+
+    Raises
+    ------
+    KeyError
+        If either key is missing from adata.obs.
+    """
+    for key in (key_a, key_b):
+        if key not in adata.obs.columns:
+            raise KeyError(
+                f"obs['{key}'] not found. "
+                f"Available columns: {list(adata.obs.columns)}"
+            )
+    labels_a = adata.obs[key_a].astype(str).values
+    labels_b = adata.obs[key_b].astype(str).values
+    ari = float(adjusted_rand_score(labels_a, labels_b))
+    logger.info("ARI(%s, %s) = %.4f", key_a, key_b, ari)
+    return round(ari, 4)
 
 
 # ---------------------------------------------------------------------------
@@ -401,9 +484,17 @@ def _select_by_stability(
 # Internal helpers
 # ---------------------------------------------------------------------------
 
-def _res_key(res: float) -> str:
-    """Convert a float resolution to a clean obs column name."""
-    return f"leiden_{res:.4g}"
+def _res_key(cluster_key: str, res: float) -> str:
+    """Convert a cluster_key + float resolution to a clean obs column name.
+
+    Examples
+    --------
+    >>> _res_key('leiden', 0.4)
+    'leiden_0.4'
+    >>> _res_key('leiden_harmony', 0.4)
+    'leiden_harmony_0.4'
+    """
+    return f"{cluster_key}_{res:.4g}"
 
 
 def _validate_inputs(
@@ -412,15 +503,24 @@ def _validate_inputs(
     connectivities_key: str,
     best_resolution_override: Optional[float],
     resolution_range: list[float],
+    neighbors_key: Optional[str],
 ) -> None:
     if pca_key not in adata.obsm:
         raise KeyError(
             f"adata.obsm['{pca_key}'] not found. Run reduce() before cluster()."
         )
-    if connectivities_key not in adata.obsp:
-        raise KeyError(
-            f"adata.obsp['{connectivities_key}'] not found. Run reduce() before cluster()."
-        )
+    if neighbors_key is not None:
+        obsp_key = f"{neighbors_key}_connectivities"
+        if obsp_key not in adata.obsp:
+            raise KeyError(
+                f"adata.obsp['{obsp_key}'] not found. "
+                f"Run harmony_correct() with key_added='{neighbors_key}' before cluster()."
+            )
+    else:
+        if connectivities_key not in adata.obsp:
+            raise KeyError(
+                f"adata.obsp['{connectivities_key}'] not found. Run reduce() before cluster()."
+            )
     if adata.n_obs < 2:
         raise ValueError("AnnData must contain at least 2 cells.")
     if best_resolution_override is not None:

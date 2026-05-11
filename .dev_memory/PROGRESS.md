@@ -33,19 +33,27 @@
 - [x] Annotation report (HTML, self-contained)
 - [x] Notebook Step 5 — annotation section + broad-match accuracy check
 - [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction (deg.py)
-- [x] DEG: rankby_abs=True — both up and downregulated genes returned  ← NEW
-- [x] DEG: exclude_gene_prefixes param (RPL/RPS/MT- filtering)  ← NEW
-- [x] DEG: n_genes default raised 200→500  ← NEW
+- [x] DEG: rankby_abs=True — both up and downregulated genes returned
+- [x] DEG: exclude_gene_prefixes param (RPL/RPS/MT- filtering)
+- [x] DEG: n_genes default raised 200→500
 - [x] DEG report: volcano plots + dot plot + summary table (deg_report.py)
-- [x] DEG report: Direction column (▲/▼) in Top DEGs table  ← NEW
-- [x] DEG report: max_volcano_groups raised to 20 + truncation note  ← NEW
+- [x] DEG report: Direction column (▲/▼) in Top DEGs table
+- [x] DEG report: max_volcano_groups raised to 20 + truncation note
 - [x] Notebook Step 6 — DEG section + canonical marker gene sanity check
-- [x] GSEA: ORA via gseapy.enrichr — GO BP / KEGG / Reactome (gsea.py)  ← NEW
-- [x] GSEA: direction param — "up" | "down" | "both"  ← NEW
-- [x] GSEA: exclude_gene_prefixes param (query list only, universe unchanged)  ← NEW
-- [x] GSEA report: bar charts + bubble plot + direction badges (gsea_report.py)  ← NEW
-- [x] Notebook Step 7 — GSEA section + immune pathway sanity check  ← NEW
-- [ ] Harmony + scVI batch correction  ← NEXT
+- [x] GSEA: ORA via gseapy.enrichr — GO BP / KEGG / Reactome (gsea.py)
+- [x] GSEA: direction param — "up" | "down" | "both"
+- [x] GSEA: exclude_gene_prefixes param (query list only, universe unchanged)
+- [x] GSEA report: bar charts + bubble plot + direction badges (gsea_report.py)
+- [x] Notebook Step 7 — GSEA section + immune pathway sanity check
+- [x] Harmony batch correction: harmony_correct.py  ← NEW
+- [x] Harmony: obsm['X_pca_harmony'] — corrected embedding  ← NEW
+- [x] Harmony: obsm['X_umap_precorrection'] — original UMAP preserved  ← NEW
+- [x] Harmony: obsm['X_umap_harmony'] — UMAP on corrected embedding  ← NEW
+- [x] Harmony: neighbors_harmony graph in uns + obsp  ← NEW
+- [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison  ← NEW
+- [x] Notebook Step 8 — Harmony section + before/after UMAP visualisation  ← NEW
+- [ ] Clustering on harmony-corrected embedding (neighbors_key='neighbors_harmony')  ← NEXT
+- [ ] scVI batch correction (alternative/complement to Harmony)
 - [ ] Pseudobulk DEG (DESeq2-style)
 - [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper
 
