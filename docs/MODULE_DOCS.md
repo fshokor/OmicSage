@@ -2,7 +2,7 @@
 
 > Locations: `pipeline/modules/qc/` · `pipeline/modules/annotation/` · `reports/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-11 (session 4)
+> Last updated: 2026-05-11 (session 5)
 
 This document describes every script in the pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -1299,7 +1299,12 @@ Raw file (.h5ad / .h5 / MTX dir)
         │       │       harmony_report.py → reports/harmony_report.html
         │       │
         │       ▼
-        │   [clustering on corrected graph]  ← NEXT
+        │   cluster.py (neighbors_key='neighbors_harmony')
+        │       │         → obs['leiden_harmony'] + obs['leiden_harmony_<res>']
+        │       │         → compute_ari('leiden', 'leiden_harmony')
+        │       │
+        │       ▼
+        │   [pseudobulk_deg.py]  ← NEXT
         │
         ├── mdata["adt"]  → ADT QC + CLR normalization (future phase)
         └── mdata["atac"] → ATAC QC (Phase 4)
@@ -1316,24 +1321,25 @@ Raw file (.h5ad / .h5 / MTX dir)
 | `tests/test_qc.py` | `qc.py` | 42 | MT detection, metrics, filtering, Scrublet, ground-truth validation, modality detection, MuData structure |
 | `tests/test_normalize.py` | `normalize.py` | 12 | Raw count preservation, normalization correctness, log1p, HVG selection, batch_key, logcounts layer, provenance, mutation guard |
 | `tests/test_reduce.py` | `reduce.py` | 12 | PCA/UMAP shapes, HVG-only PCA, neighbor graph, provenance, inplace guard, t-SNE optional, PC selection methods |
-| `tests/test_cluster.py` | `cluster.py` | 8 | Leiden labels, all resolutions computed, n_clusters bounds, silhouette scores, best resolution selection, provenance, inplace guard |
+| `tests/test_cluster.py` | `cluster.py` | 16 | Leiden labels, all resolutions computed, n_clusters bounds, silhouette scores, best resolution selection, provenance (incl. neighbors_key/cluster_key), inplace guard, neighbors_key harmony routing, cluster_key isolation, compute_ari, missing harmony connectivities error |
 | `tests/test_annotate.py` | `annotate.py` | 18 (+1 skip) | obs columns written, provenance keys, confidence range, marker scoring, vote consensus, inplace guard, ground-truth preservation |
 | `tests/test_deg.py` | `deg.py` | 11 | Return types, provenance keys, column names, pval range, per-group results, threshold filtering, inplace guard, small-group warning, leiden fallback |
 | `tests/test_gsea.py` | `gsea.py` | 8 | Return types, provenance keys, output columns, pval range, group accounting, min_genes skip + warning, inplace guard, string gene_sets param — all Enrichr calls mocked (CI-safe) |
-| `tests/test_harmony.py` | `harmony_correct.py` | 12 | Embedding created, shape (n_cells × n_pcs), UMAP recomputed as X_umap_harmony, X_umap_precorrection preserved, neighbors key stored, provenance keys + values, in-place modification, n_pcs capping, missing X_pca error, missing batch_key error, single-batch error, custom batch_key, two-batch correction |
+| `tests/test_harmony.py` | `harmony_correct.py` | 13 | Embedding created, shape (n_cells × n_pcs), UMAP recomputed as X_umap_harmony, X_umap_precorrection preserved and unchanged, neighbors key stored, provenance keys + values, in-place modification, n_pcs capping, missing X_pca error, missing batch_key error, single-batch error, custom batch_key, two-batch correction |
 
 Run all tests:
 
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~201 passed, 1–2 skipped
+# Expected: ~217 passed, 1–2 skipped
 ```
 
 Run a single module's tests:
 
 ```bash
-python -m pytest tests/test_gsea.py -v      # 8 passed
+python -m pytest tests/test_cluster.py -v    # 16 passed
+python -m pytest tests/test_harmony.py -v   # 13 passed
 python -m pytest tests/test_deg.py -v       # 11 passed
 python -m pytest tests/test_annotate.py -v  # 18 passed, 1 skipped
 ```

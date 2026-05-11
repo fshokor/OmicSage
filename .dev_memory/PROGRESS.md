@@ -50,11 +50,13 @@
 - [x] Harmony: obsm['X_umap_precorrection'] — original UMAP preserved  ← NEW
 - [x] Harmony: obsm['X_umap_harmony'] — UMAP on corrected embedding  ← NEW
 - [x] Harmony: neighbors_harmony graph in uns + obsp  ← NEW
-- [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison  ← NEW
-- [x] Notebook Step 8 — Harmony section + before/after UMAP visualisation  ← NEW
-- [ ] Clustering on harmony-corrected embedding (neighbors_key='neighbors_harmony')  ← NEXT
-- [ ] scVI batch correction (alternative/complement to Harmony)
-- [ ] Pseudobulk DEG (DESeq2-style)
+- [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison (both UMAPs)
+- [x] Notebook Step 8 — Harmony section (load, run, sanity checks, before/after UMAP, report, save)
+- [x] Notebook Step 9 — Clustering on harmony section + ARI comparison
+- [x] Clustering on harmony-corrected embedding (neighbors_key='neighbors_harmony')
+- [x] cluster.py: cluster_key param — obs['leiden_harmony'] coexists with obs['leiden']
+- [x] cluster.py: compute_ari() — ARI comparison between any two obs clustering columns
+- [ ] Pseudobulk DEG (pydeseq2-based, one-vs-rest per cell type)  ← NEXT
 - [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper
 
 ## Phase 2 — Report Engine
@@ -91,6 +93,7 @@
 - [ ] Spatial report template
 
 ## Phase 6 — Multiome Integration
+- [ ] scVI / MultiVI batch correction (replaces Harmony for multiome)
 - [ ] WNN joint embedding
 - [ ] MOFA+ integration
 - [ ] SCENIC+ GRN inference

@@ -113,28 +113,38 @@ Phase 1 — Core scRNA Pipeline
 - obs[batch_key] cast to str internally — safe with Categorical columns
 - 12 tests passing in tests/test_harmony.py
 
-### ✅ Harmony Report (reports/harmony_report.py) ← NEW
+### ✅ Harmony Report (reports/harmony_report.py)
 - Run summary: stat cards (cells, genes, batches, PCs, k, elapsed) + output key verification
 - Batch composition: bar chart + table (cells per batch, % of total)
-- UMAP embeddings: side-by-side raw PCA (before) vs corrected UMAP (after), coloured by batch
+- UMAP embeddings: side-by-side pre-correction UMAP vs post-correction UMAP, coloured by batch
+  (both panels are UMAPs — X_umap_precorrection vs X_umap_harmony)
   + separate UMAP coloured by Harmony PC1 value (shows correction depth)
 - Batch mixing metrics: per-cell same-batch neighbour fraction histogram,
   mean/median/expected stats, normalised mixing score with interpretation note
 - Per-PC correction shift: bar chart of mean |X_pca − X_pca_harmony| per PC,
   top 5 most-shifted PCs table
 
+### ✅ Clustering on Harmony Graph (pipeline/modules/clustering/cluster.py) ← NEW
+- neighbors_key param — routes to obsp['neighbors_harmony_connectivities'] when set
+- cluster_key param — stores results in obs['leiden_harmony'] (default: 'leiden')
+- Per-resolution columns: leiden_harmony_0.4 etc. — coexist with leiden_* columns
+- compute_ari(adata, key_a, key_b) — ARI comparison between any two obs columns
+- Provenance updated: neighbors_key, obsp_key, cluster_key recorded in uns
+- 16 tests passing in tests/test_cluster.py (was 12)
+
 ### ✅ Notebook (notebooks/phase1_qc.ipynb)
-- Step 8 (Harmony) section added — 7 cells
-- Covers: load GSE194122_cite_gsea.h5ad, check batch column, run harmony_correct(),
-  side-by-side PCA before vs UMAP after (using X_umap_precorrection and X_umap_harmony),
-  cell-type UMAP on corrected embedding, generate HTML report, save output
+- Step 8 (Harmony) — 9 cells: load, run harmony_correct(), sanity checks,
+  before/after UMAP plot (both UMAPs), HTML report, save
+- Step 9 (Clustering on Harmony) — 10 cells: pre-correction cluster(), post-correction
+  cluster(neighbors_key='neighbors_harmony'), compute_ari(), side-by-side UMAP,
+  ARI vs ground-truth, save GSE194122_cite_harmony_clustered.h5ad
 
 ## Total Tests Passing
-~201 (189 pre-session + 12 new harmony tests)
+~217 (201 pre-session + 4 harmony fix + 4 new cluster tests)
 
 ## What Is NOT Built Yet
-- Clustering on harmony-corrected embedding ← NEXT
-- scVI batch correction (alternative to Harmony)
+- Pseudobulk DEG (pydeseq2-based) ← NEXT
+- scVI batch correction → deferred to Phase 6 (MultiVI)
 - ScType-py + SingleR-py annotation (deferred — see docs/ANNOTATION_PLAN.md)
 - Pseudobulk DEG (DESeq2-style)
 - scATAC module (Phase 4)
@@ -156,4 +166,5 @@ Phase 1 — Core scRNA Pipeline
 - data/processed/GSE194122_cite_annotated.h5ad
 - data/processed/GSE194122_cite_deg.h5ad
 - data/processed/GSE194122_cite_gsea.h5ad
-- data/processed/GSE194122_cite_harmony.h5ad   ← NEW (written by notebook Step 8)
+- data/processed/GSE194122_cite_harmony.h5ad
+- data/processed/GSE194122_cite_harmony_clustered.h5ad  ← NEW
