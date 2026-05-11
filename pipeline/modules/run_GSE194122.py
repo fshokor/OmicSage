@@ -20,6 +20,12 @@ Processed files → data/processed/GSE194122/
 Reports         → reports/GSE194122/
 """
 
+import sys
+import io
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+from datetime import datetime
+import argparse
 import os
 import sys
 import warnings
@@ -83,7 +89,7 @@ def step1_qc() -> Path:
     pass_rate = 100 * metrics["n_cells_output"] / metrics["n_cells_input"]
     print(
         f"[step 1] QC — {metrics['n_cells_output']:,} cells kept"
-        f" ({pass_rate:.1f}%)  →  {out}"
+        f" ({pass_rate:.1f}%)  ->  {out}"
     )
     return out
 
@@ -119,7 +125,7 @@ def step2_normalize(qc_path: Path) -> Path:
     )
 
     adata_norm.write_h5ad(out)
-    print(f"[step 2] Normalize — HVGs={metrics['n_hvgs']}  →  {out}")
+    print(f"[step 2] Normalize — HVGs={metrics['n_hvg_selected']}  ->  {out}")
     return out
 
 
@@ -158,7 +164,7 @@ def step3_reduce(norm_path: Path) -> Path:
     print(
         f"[step 3] Reduce — {prov['n_pcs_used']} PCs"
         f" ({prov['cumulative_variance_explained_by_selected_pcs']*100:.1f}% var)"
-        f"  →  {out}"
+        f"  ->  {out}"
     )
     return out
 
@@ -194,7 +200,7 @@ def step4_cluster(reduced_path: Path) -> Path:
     print(
         f"[step 4] Cluster — res={metrics['best_resolution']}"
         f"  {metrics['best_n_clusters']} clusters  ({metrics['selection_reason']})"
-        f"  →  {out}"
+        f"  ->  {out}"
     )
     return out
 
@@ -234,7 +240,7 @@ def step5_annotate(clustered_path: Path) -> Path:
     print(
         f"[step 5] Annotate — {n_types} consensus types"
         f"  methods={prov['methods_run']}"
-        f"  →  {out}"
+        f"  ->  {out}"
     )
     return out
 
@@ -273,7 +279,7 @@ def step6_deg(annotated_path: Path) -> tuple[Path, dict]:
     total_sig = sum(len(df) for df in deg_dict["results"].values())
     print(
         f"[step 6] DEG — {len(deg_dict['results'])} groups"
-        f"  {total_sig:,} significant DEGs  →  {out}"
+        f"  {total_sig:,} significant DEGs  ->  {out}"
     )
     return out, deg_dict
 
@@ -316,7 +322,7 @@ def step7_gsea(deg_path: Path, deg_dict: dict) -> Path:
     prov = gsea_dict["provenance"]
     print(
         f"[step 7] GSEA — {prov['n_groups_tested']} groups tested"
-        f"  {prov['n_groups_skipped']} skipped  →  {out}"
+        f"  {prov['n_groups_skipped']} skipped  ->  {out}"
     )
     return out
 
@@ -354,7 +360,7 @@ def step8_harmony(gsea_path: Path) -> Path:
     prov = adata.uns["omicsage_harmony"]
     print(
         f"[step 8] Harmony — {prov['n_batches']} batches corrected"
-        f"  {prov['elapsed_seconds']:.1f}s  →  {out}"
+        f"  {prov['elapsed_seconds']:.1f}s  ->  {out}"
     )
     return out
 
@@ -395,7 +401,7 @@ def step9_cluster_harmony(harmony_path: Path) -> Path:
         f"[step 9] Cluster (Harmony)"
         f"  pre={metrics_pre['best_n_clusters']} clusters"
         f"  post={metrics_post['best_n_clusters']} clusters"
-        f"  ARI={ari:.4f}  →  {out}"
+        f"  ARI={ari:.4f}  ->  {out}"
     )
 
     adata.write_h5ad(out)
@@ -442,35 +448,67 @@ def step10_pseudobulk(annotated_path: Path) -> Path:
     print(
         f"[step 10] Pseudobulk DEG — {prov['n_groups']} groups tested"
         f"  {prov['n_skipped']} skipped"
-        f"  {total_sig:,} significant DEGs  →  {out}"
+        f"  {total_sig:,} significant DEGs  ->  {out}"
     )
     return out
+
+def _load_deg(annotated_path: Path) -> tuple[Path, dict]:
+    """Re-run deg() to recover deg_dict when skipping step 6."""
+    from pipeline.modules.downstream.deg import deg
+    adata = sc.read_h5ad(annotated_path)
+    _, deg_dict = deg(
+        adata,
+        groupby="cell_type_vote",
+        method="wilcoxon",
+        min_logfc=0.25,
+        max_pval_adj=0.05,
+        n_genes=500,
+        inplace=False,
+    )
+    return PROCESSED / "06_deg.h5ad", deg_dict
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
+    
+    start_time = datetime.now()
+    parser = argparse.ArgumentParser()
+    parser.add_argument(
+        "--from-step", type=int, default=1, metavar="N",
+        help="Resume from step N (1-10). Steps before N must already be cached."
+    )
+    args = parser.parse_args()
+    start = args.from_step
     print("=" * 60)
     print("OmicSage — GSE194122 CITE-seq BMMC pipeline")
     print("=" * 60)
 
-    qc_path        = step1_qc()
-    norm_path      = step2_normalize(qc_path)
-    reduced_path   = step3_reduce(norm_path)
-    clustered_path = step4_cluster(reduced_path)
-    annotated_path = step5_annotate(clustered_path)
-    deg_path, deg_dict = step6_deg(annotated_path)
-    gsea_path      = step7_gsea(deg_path, deg_dict)
-    harmony_path   = step8_harmony(gsea_path)
-    _              = step9_cluster_harmony(harmony_path)
-    _              = step10_pseudobulk(annotated_path)
+    qc_path        = step1_qc()        if start <= 1  else PROCESSED / "01_qc.h5ad"
+    norm_path      = step2_normalize(qc_path)  if start <= 2  else PROCESSED / "02_normalized.h5ad"
+    reduced_path   = step3_reduce(norm_path)   if start <= 3  else PROCESSED / "03_reduced.h5ad"
+    clustered_path = step4_cluster(reduced_path) if start <= 4 else PROCESSED / "04_clustered.h5ad"
+    annotated_path = step5_annotate(clustered_path) if start <= 5 else PROCESSED / "05_annotated.h5ad"
+    deg_path, deg_dict = step6_deg(annotated_path) if start <= 6 else _load_deg(annotated_path)
+    gsea_path      = step7_gsea(deg_path, deg_dict) if start <= 7 else PROCESSED / "07_gsea.h5ad"
+    harmony_path   = step8_harmony(gsea_path)  if start <= 8  else PROCESSED / "08_harmony.h5ad"
+    _              = step9_cluster_harmony(harmony_path) if start <= 9 else None
+    _              = step10_pseudobulk(annotated_path)   if start <= 10 else None
+
+    end_time = datetime.now()
+    elapsed  = end_time - start_time
+    hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
 
     print()
     print("=" * 60)
     print("Pipeline complete.")
     print(f"Processed files : {PROCESSED}")
     print(f"Reports         : {REPORTS}")
+    print(f"Started         : {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Finished        : {end_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print(f"Elapsed         : {hours:02d}h {minutes:02d}m {seconds:02d}s")
     print("=" * 60)
 
 

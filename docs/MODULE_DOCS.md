@@ -1505,3 +1505,94 @@ python -m pytest tests/test_deg.py -v               # 11 passed
 python -m pytest tests/test_annotate.py -v          # 18 passed, 1 skipped
 python -m pytest tests/test_pseudobulk_deg.py -v    # 14 passed
 ```
+
+---
+
+## 21. `run_GSE194122.py`
+
+**What it does**
+
+Master pipeline script for the GSE194122 BMMC CITE-seq dataset (NeurIPS 2021).
+Runs all 10 Phase 1 steps in order by calling the individual pipeline modules.
+Each step reads the previous step's output file, calls its module, saves the
+result, and generates the corresponding HTML report.
+
+**Location**: `pipeline/modules/run_GSE194122.py`
+
+**Output directories**
+
+| Directory | Contents |
+|-----------|----------|
+| `data/processed/GSE194122/` | One `.h5ad` file per step (`01_qc.h5ad` → `10_pseudobulk_deg.h5ad`) |
+| `reports/GSE194122/` | One HTML report per step (`01_qc_report.html` → `10_pseudobulk_deg_report.html`) |
+
+**Steps**
+
+| Step | File saved | Report saved |
+|------|-----------|-------------|
+| 1. QC | `01_qc.h5ad` + `01_qc_adt.h5ad` | `01_qc_report.html` |
+| 2. Normalize | `02_normalized.h5ad` | `02_normalization_report.html` |
+| 3. Reduce | `03_reduced.h5ad` | `03_reduce_report.html` |
+| 4. Cluster | `04_clustered.h5ad` | `04_cluster_report.html` |
+| 5. Annotate | `05_annotated.h5ad` | `05_annotate_report.html` |
+| 6. DEG | `06_deg.h5ad` | `06_deg_report.html` |
+| 7. GSEA | `07_gsea.h5ad` | `07_gsea_report.html` |
+| 8. Harmony | `08_harmony.h5ad` | `08_harmony_report.html` |
+| 9. Cluster (Harmony) | `09_harmony_clustered.h5ad` | — |
+| 10. Pseudobulk DEG | `10_pseudobulk_deg.h5ad` | `10_pseudobulk_deg_report.html` |
+
+**Caching behaviour**
+
+Steps 1–5, 8, and 9 are cached: if the output `.h5ad` already exists the step
+is skipped entirely and the cached path is returned. Steps 6, 7, and 10 always
+re-run so reports stay fresh when parameters change.
+
+**`--from-step` flag**
+
+Resume from any step without rerunning earlier ones. Steps before the chosen
+start point must already have their `.h5ad` output on disk.
+
+```bash
+# Full run
+python pipeline/modules/run_GSE194122.py
+
+# Resume from step 3 (steps 1 and 2 already cached)
+python pipeline/modules/run_GSE194122.py --from-step 3
+```
+
+**Step 10 reads from step 5, not step 9** — pseudobulk DEG needs
+`obs['cell_type_vote']`, `obs['batch']`, and `layers['counts']` which live on
+the annotated file. Harmony does not add or modify these columns.
+
+**Logging**
+
+Redirect all output to a log file using `>>` (append) so previous runs are
+preserved. Use `run.bat` as a wrapper for automatic separators and UTF-8
+encoding on Windows:
+
+```bat
+@echo off
+set PYTHONUTF8=1
+echo. >> logs\GSE194122.log
+echo ======================================================== >> logs\GSE194122.log
+echo RERUN from step %1 -- %date% %time% >> logs\GSE194122.log
+echo ======================================================== >> logs\GSE194122.log
+python pipeline\modules\run_GSE194122.py --from-step %1 >> logs\GSE194122.log 2>&1
+```
+
+```bat
+run.bat 3
+```
+
+**Timing**
+
+The script prints start time, end time, and elapsed time (`HHh MMm SSs`) at
+the end of every run so log files record exactly how long each run took.
+
+**Known issues**
+
+- Unicode characters (`→`, `✓`) in report modules cause `UnicodeEncodeError`
+  on Windows (cp1252 terminal). Set `PYTHONUTF8=1` before running or replace
+  Unicode symbols with ASCII equivalents in the report modules.
+- `metrics['n_hvgs']` does not exist — the correct key is `metrics['n_hvg_selected']`
+  (fixed in current version of the script).
