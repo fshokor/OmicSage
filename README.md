@@ -38,8 +38,8 @@ OmicSage is an open-source platform that covers the full single-cell multi-omics
 │  cluster interpretation, PubMed RAG, narratives     │
 ├─────────────────────────────────────────────────────┤
 │  LAYER 2: Report Engine (ALWAYS ON)                 │
-│  Quarto + python-pptx → HTML/PDF reports +          │
-│  PowerPoint slides after every analysis step        │
+│  Per-step HTML reports + combined tabbed report      │
+│  → 00_combined_report.html after every pipeline run  │
 ├─────────────────────────────────────────────────────┤
 │  LAYER 1: Core Pipeline (ALWAYS ON)                 │
 │  Nextflow DSL2 → QC → normalize → integrate →       │
@@ -141,7 +141,7 @@ export ANTHROPIC_API_KEY=sk-ant-...
 |-------|-------|------------|
 | 0 ✅ | Foundation — repo, Docker, CI/CD | 1-2 |
 | 1 🔧 | Core scRNA-seq pipeline | 2-6 |
-| 2 | Report engine (Quarto + PowerPoint) | 6-9 |
+| 2 ✅ | Report engine — combined tabbed HTML report | 6-9 |
 | 3 | AI layer (BioChatter integration) | 9-13 |
 | 4 | scATAC-seq module | 13-16 |
 | 5 | Spatial transcriptomics | 16-19 |

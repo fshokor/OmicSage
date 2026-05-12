@@ -1,8 +1,8 @@
 # OmicSage — Current Status
-> Last updated: 2026-05-12 (session 7)
+> Last updated: 2026-05-12 (session 9)
 
 ## Phase
-Phase 2 — Report Engine (Phase 1 complete ✅)
+Phase 3 — AI Layer (Phase 2 complete ✅)
 
 ## What Is Built and Tested Right Now
 
@@ -138,19 +138,41 @@ Phase 2 — Report Engine (Phase 1 complete ✅)
 - config/schema.yaml — platform master schema
 - config/runs/GSE194122.yaml, GSE166635.yaml, GSE194122_multiome.yaml
 
-## Phase 2 — What Is Being Built Next
-- Quarto report templates (HTML + PDF) replacing hand-coded HTML reports
-- python-pptx slide deck generator
-- Auto-methods text from provenance metadata
-- Goal: one command → complete PDF report + PowerPoint slides
+### ✅ Combined Report (reports/combined_report.py)
+- Reads all step HTML reports from reports_dir after pipeline run
+- Extracts <main> content from each and assembles into one tabbed HTML file
+- Tabs: QC · Normalize · Reduce · Cluster · Annotate · DEG · GSEA · Harmony · Pseudobulk
+- Only shows tabs for reports that actually exist (partial runs work fine)
+- Progress bar in header shows pipeline completion percentage
+- Keyboard navigation (left/right arrow keys between tabs)
+- Zero changes to any existing report generators
+- Wired into run_pipeline.py — auto-generates at end of every run
+- Output: 00_combined_report.html (sorts to top of folder)
+- No new dependencies — stdlib only
+
+### ✅ MILESTONE: Phase 2 Complete
+- Full pipeline run on GSE166635 HCC generates 00_combined_report.html automatically
+- 7 tabs confirmed working in browser
+- One command → one complete analysis record
+
+## Phase 3 — What Is Being Built Next
+- BioChatter integration (AI middleware)
+- QC threshold suggester (first feature — reads metrics, suggests thresholds + reasoning)
+- Cluster interpreter (marker genes → LLM → cell type label)
+- PubMed RAG tied to DEG results
+- Narrative generator for combined report
+- All LLM calls audit-logged to logs/llm/ in JSONL format
+- ai_features: false in config disables AI layer — pipeline runs without API key
 
 ## Total Tests Passing
 ~231
 
 ## What Is NOT Built Yet
-- Phase 2: Quarto report templates ← NEXT
-- Phase 2: python-pptx slide deck generator
-- Phase 2: auto-methods text + figure captioning
+- Phase 3: BioChatter integration ← NEXT
+- Phase 3: QC threshold suggester
+- Phase 3: Cluster interpreter
+- Phase 3: PubMed RAG + narrative generator
+- Phase 3: PDF/slides via AI layer (absorbed from Phase 2)
 - scVI batch correction → deferred to Phase 6
 - ScType-py + SingleR-py annotation
 - ADT QC + CLR normalization

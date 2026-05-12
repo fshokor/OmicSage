@@ -1,26 +1,24 @@
 ## Session Context
-Date: 2026-05-12
-Phase: 2 — Report Engine
-Last thing completed: Phase 1 MILESTONE — full pipeline run on GSE166635 HCC
-                      Wang et al. 2025 key findings reproduced.
-                      Phase 1 is complete.
-File last worked on: config/runs/GSE166635.yaml
+Date: next session
+Phase: 3 — AI Layer
+Last thing completed: Phase 2 MILESTONE — combined tabbed HTML report
+                      (00_combined_report.html) generating automatically
+                      at end of every pipeline run. Tested on GSE166635.
+                      Phase 2 is complete.
+File last worked on: reports/combined_report.py + run_pipeline.py
 
 ## Today's Goal
-Phase 2 kickoff — decide the report engine approach and build the first
-Quarto report template (QC report).
+Phase 3 kickoff — BioChatter integration.
 
 The question to answer at session start:
-  Do we replace the existing hand-coded HTML reports with Quarto,
-  or do we keep HTML for interactive use and add Quarto as a separate
-  PDF/pptx layer on top?
+  What is the smallest useful AI feature to build first?
 
-Recommended: keep HTML reports (they work, they're fast, no dependency),
-add Quarto as an additional rendering layer that reads the same data and
-produces PDF + PowerPoint. One command triggers both.
+Recommended: QC threshold suggester — reads QC metrics from the h5ad,
+calls an LLM, returns suggested min_genes / max_genes / max_mt_pct with
+reasoning. Standalone function, no UI needed yet. One session, one function.
 
-ONE goal — decide the approach and build ONE template (QC or normalization).
-Do not build all templates in one session.
+ONE goal — decide the Phase 3 build order and implement the first AI feature.
+Do not build more than one AI feature per session.
 
 ## Step 1 — Verify all tests still pass
 ```bash
@@ -30,31 +28,29 @@ python -m pytest tests/ -v
 # Expected: ~231 passed, 1-2 skipped
 ```
 
-## Step 2 — Quarto setup check
+## Step 2 — Verify Phase 2 milestone still works
 ```bash
-quarto check
-# If not installed: https://quarto.org/docs/get-started/
-# Quarto needs to be installed separately (not via conda)
+python run_pipeline.py --config config/runs/GSE194122.yaml --step qc
+# Should cache and print: [combined_report] N tabs → reports/GSE194122/00_combined_report.html
 ```
 
-## Step 3 — Decide report engine approach before writing any code
-Options:
-  A. Quarto .qmd templates that read .h5ad files directly via Python chunks
-     → most flexible, best PDF output, requires Quarto + pandoc
-  B. python-pptx only — generate slides from the existing HTML figures
-     → simpler, no new dependencies, slides only (no PDF)
-  C. Both: Quarto for PDF, python-pptx for slides, HTML stays as-is
-     → most complete, most work
+## Step 3 — Decide Phase 3 build order before writing any code
+Suggested order:
+  1. QC threshold suggester (ai/threshold_suggester.py)
+     → reads QC metrics, returns suggested thresholds + reasoning
+  2. Cluster interpreter (ai/cluster_interpreter.py)
+     → marker genes → LLM → cell type label + evidence
+  3. PubMed RAG tied to DEG results (via BioChatter)
+  4. Narrative generator for combined report
+  5. Multi-LLM support (Claude / GPT-4o / local Ollama)
+  Milestone: AI narrative groundedness score > 0.85
 
-Recommended: C — but build Quarto QC template first this session,
-python-pptx in the next session.
-
-## Phase 2 Plan (across multiple sessions)
-Session 1 (this): Quarto QC report template
-Session 2: Quarto analysis report template (clustering + annotation + DEG)
-Session 3: python-pptx slide deck generator
-Session 4: auto-methods text from provenance metadata
-Milestone: biologist receives PDF + slides from one command
+## Phase 3 Notes
+- Use BioChatter as the AI middleware — do NOT build LLM routing from scratch
+- All LLM calls must be audit-logged to logs/llm/ in JSONL format
+- ai_features: false in config must disable the AI layer completely
+- Pipeline must still run and reports must still generate without any API key
+- Start with Claude API (ANTHROPIC_API_KEY) — add Ollama support later
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`
@@ -70,13 +66,8 @@ Milestone: biologist receives PDF + slides from one command
 - GSE166635 pseudobulk is DISABLED — only 2 samples
 
 ## Files Modified Last Session
-- run_pipeline.py                          ← generic runner (validation bug fixed)
-- pipeline/modules/qc/ingest.py            ← multi-sample MTX support
-- config/schema.yaml                       ← updated
-- config/runs/GSE194122.yaml               ← new
-- config/runs/GSE166635.yaml               ← new
-- config/runs/GSE194122_multiome.yaml      ← new
-- .dev_memory/MODULE_DOCS.md               ← section 21 replaced
+- reports/combined_report.py               ← new combined tabbed report generator
+- run_pipeline.py                          ← wired in combined report at end of main()
 - .dev_memory/CURRENT_STATUS.md            ← updated
 - .dev_memory/NEXT_SESSION.md              ← updated (this file)
 - .dev_memory/PROGRESS.md                  ← updated
@@ -85,8 +76,8 @@ Milestone: biologist receives PDF + slides from one command
 ```bash
 cd ~/OmicSage
 conda activate omicsage
-python run_pipeline.py --config config/runs/GSE194122.yaml --step qc
-# Should use cached 01_qc.h5ad and print: [qc] cached → ...
+python run_pipeline.py --config config/runs/GSE166635.yaml --step qc
+# Should cache and auto-generate reports/GSE166635/00_combined_report.html
 ```
 
 ## Conda Environment
@@ -96,4 +87,4 @@ Python: 3.11.15
 Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata,
                    ipykernel, jupyter, scikit-misc, kneed>=0.8.5, celltypist,
                    gseapy 1.1.3, harmonypy, pydeseq2
-New dependency needed: quarto (install separately from quarto.org)
+New dependency needed: biochatter (pip install biochatter)

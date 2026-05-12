@@ -713,6 +713,14 @@ def main():
         else:
             STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg)
 
+    # ── combined report ────────────────────────────────────────────────────
+    from reports.combined_report import generate_combined_report
+    generate_combined_report(
+        reports_dir=reports_dir,
+        dataset_name=dataset_name,
+        output_path=reports_dir / "00_combined_report.html",
+    )
+
     # ── footer ─────────────────────────────────────────────────────────────────
     end_time = datetime.now()
     elapsed  = end_time - start_time

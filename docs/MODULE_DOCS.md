@@ -1,8 +1,8 @@
 # OmicSage — Module Reference
 
 > Locations: `pipeline/modules/qc/` · `pipeline/modules/annotation/` · `reports/`
-> Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-12 (session 6)
+> Phase: 2 — Report Engine
+> Last updated: 2026-05-12 (session 8)
 
 This document describes every script in the pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -1705,3 +1705,115 @@ python run_pipeline.py --config configs\GSE194122.yaml >> logs\GSE194122.log 2>&
 
 The runner prints start time, end time, and elapsed time (`HHh MMm SSs`) at
 the end of every run.
+
+---
+
+## 22. `reports/combined_report.py`
+
+**What it does**
+
+Assembles all individual step HTML reports into a single self-contained
+tabbed HTML file. Each pipeline step gets one tab. Only tabs for reports
+that actually exist on disk are shown — partial runs produce a partial
+combined report without errors.
+
+**Why it exists**
+
+After a full pipeline run, the `reports/<dataset>/` directory contains
+up to 9 separate HTML files. A biologist or collaborator has no obvious
+entry point and must open each file individually. `combined_report.py`
+provides a single file that is the complete analysis record, with a
+progress bar showing how much of the pipeline has been run.
+
+**Design decisions**
+
+- Zero changes to existing report generators — the combiner reads their
+  output after the fact rather than modifying how they write
+- Extracts `<main>` content from each step report; falls back to `<body>`
+  minus header/footer if no `<main>` tag is present
+- Step-specific CSS (volcano grid sizing, dot plot widths, etc.) is
+  preserved by extracting and re-embedding `<style>` blocks
+- No new dependencies — uses only Python stdlib (`re`, `datetime`, `pathlib`)
+
+**Tab registry** (in display order)
+
+| Filename | Tab label |
+|----------|-----------|
+| `01_qc_report.html` | QC |
+| `02_normalization_report.html` | Normalize |
+| `03_reduce_report.html` | Reduce |
+| `04_cluster_report.html` | Cluster |
+| `05_annotate_report.html` | Annotate |
+| `06_deg_report.html` | DEG |
+| `07_gsea_report.html` | GSEA |
+| `08_harmony_report.html` | Harmony |
+| `10_pseudobulk_deg_report.html` | Pseudobulk |
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `reports_dir` | Path | required | Directory containing step HTML reports |
+| `dataset_name` | str | `"OmicSage Analysis"` | Shown in report header |
+| `output_path` | Path | `reports_dir / "00_combined_report.html"` | Output path |
+
+**Output**
+
+```
+00_combined_report.html   →  single self-contained tabbed HTML file
+                              sorts to top of folder due to "00_" prefix
+```
+
+**Header features**
+
+- Dataset name + generation timestamp
+- Progress bar: `N of 9 pipeline steps complete` + percentage
+- Step labels listed inline
+
+**Navigation features**
+
+- Click any tab to switch panels
+- Left/right arrow keys navigate between tabs
+- Tab button scrolls into view on mobile (many tabs case)
+
+**Usage — called automatically by run_pipeline.py**
+
+```python
+from reports.combined_report import generate_combined_report
+
+generate_combined_report(
+    reports_dir=Path("reports/GSE166635"),
+    dataset_name="GSE166635 — HCC",
+)
+# → reports/GSE166635/00_combined_report.html
+```
+
+**Usage — standalone rebuild from existing reports**
+
+```bash
+python -m reports.combined_report \
+  --reports-dir reports/GSE166635 \
+  --dataset-name "GSE166635 — HCC"
+
+# Custom output path:
+python -m reports.combined_report \
+  --reports-dir reports/GSE166635 \
+  --dataset-name "GSE166635 — HCC" \
+  --output reports/GSE166635/combined.html
+```
+
+**Wiring into run_pipeline.py**
+
+Add at the end of `main()`, just before the footer print block:
+
+```python
+from reports.combined_report import generate_combined_report
+generate_combined_report(
+    reports_dir=reports_dir,
+    dataset_name=dataset_name,
+    output_path=reports_dir / "00_combined_report.html",
+)
+```
+
+**Connects to**: all step report generators — reads their output files,
+produces no `.h5ad` output of its own.

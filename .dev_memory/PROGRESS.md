@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-12 (session 7 — Phase 1 complete, Phase 2 starting)
+> Last updated: 2026-05-12 (session 9 — Phase 2 complete, Phase 3 starting)
 
 ## Phase 0 — Foundation
 - [x] GitHub repo created
@@ -45,22 +45,20 @@
 - [x] Per-dataset run configs: GSE194122, GSE166635, GSE194122_multiome ← NEW
 - [x] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper ← DONE
 
-## Phase 2 — Report Engine ← CURRENT PHASE
-- [ ] Quarto QC report template ← NEXT
-- [ ] Quarto analysis report template
-- [ ] python-pptx slide deck generator
-- [ ] Auto-figure captioning
-- [ ] Auto-methods text
-- [ ] MILESTONE: Biologist receives complete PDF + slides from one command
+## Phase 2 — Report Engine ✅ COMPLETE
+- [x] Architectural decision: keep HTML, defer Quarto + pptx to Phase 3 AI layer
+- [x] Combined tabbed report (reports/combined_report.py)
+- [x] Wired into run_pipeline.py — auto-generates at end of every run
+- [x] MILESTONE: 00_combined_report.html generated automatically — 7 tabs, tested on GSE166635
 
-## Phase 3 — AI Layer
-- [ ] BioChatter integration
-- [ ] QC threshold suggestion
-- [ ] Cluster interpretation
-- [ ] PubMed RAG
-- [ ] Narrative generator
-- [ ] AI audit log
-- [ ] Multi-LLM support
+## Phase 3 — AI Layer ← CURRENT PHASE
+- [ ] BioChatter integration ← NEXT
+- [ ] QC threshold suggester (ai/threshold_suggester.py)
+- [ ] Cluster interpreter (ai/cluster_interpreter.py)
+- [ ] PubMed RAG tied to DEG results
+- [ ] Narrative generator for combined report (+ PDF/slides output)
+- [ ] AI audit log (logs/llm/ JSONL)
+- [ ] Multi-LLM support (Claude / GPT-4o / local Ollama)
 - [ ] MILESTONE: AI narrative groundedness score > 0.85
 
 ## Phase 4 — scATAC Module
