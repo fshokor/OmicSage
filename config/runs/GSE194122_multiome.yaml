@@ -1,0 +1,145 @@
+# OmicSage — Dataset Configuration
+# Dataset  : GSE194122 BMMC Multiome (NeurIPS 2021)
+# Modality : Multiome (RNA + ATAC) — RNA side only in Phase 1
+# Samples  : 69,249 cells × 129,921 features (RNA genes + ATAC peaks mixed)
+# Run      : python run_pipeline.py --config config/runs/GSE194122_multiome.yaml
+#
+# Key differences from GSE194122 CITE-seq
+# -----------------------------------------
+# - Multiome input: qc.py auto-detects and splits RNA vs ATAC features
+#   RNA QC proceeds normally; ATAC stored in mdata["atac"] but not analyzed (Phase 4)
+# - Same donor/batch structure as CITE-seq (same NeurIPS 2021 study)
+# - Pseudobulk enabled — same 10+ donors as CITE-seq
+# - Slightly tighter max_genes — multiome RNA libraries tend to be shallower
+#   than dedicated scRNA-seq; adjust after inspecting QC report
+#
+# Phase status
+# ------------
+# RNA pipeline : fully supported (Phase 1)
+# ATAC pipeline: deferred to Phase 4
+#   mdata["atac"] is created by qc.py and saved as 01_qc_atac.h5ad
+#   but no downstream ATAC analysis runs until Phase 4 modules are built
+#
+# First run workflow
+# ------------------
+# 1. Run QC only and inspect the report:
+#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --step qc
+#    → open reports/GSE194122_multiome/01_qc_report.html
+#    → adjust thresholds if needed, then continue
+#
+# 2. Run through clustering:
+#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --from-step normalize --to-step cluster
+#    → open reports/GSE194122_multiome/04_cluster_report.html
+#    → set resolution_override, then continue
+#
+# 3. Continue from annotation:
+#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --from-step annotate
+
+dataset:
+  id: GSE194122_multiome
+  name: "BMMC Multiome RNA (NeurIPS 2021)"
+  modality: multiome
+  organism: human
+
+paths:
+  raw_input: data/benchmark/GSE194122_multiome_raw_only.h5ad
+  processed_dir: data/processed/GSE194122_multiome
+  reports_dir: reports/GSE194122_multiome
+
+steps:
+
+  qc:
+    enabled: true
+    params:
+      # Multiome RNA libraries are shallower than dedicated scRNA-seq.
+      # max_genes is tighter than HCC but looser than CITE-seq.
+      # INSPECT the QC report after first run and adjust if needed.
+      min_genes: 200
+      max_genes: 4000       # multiome RNA tends to be shallower — adjust up if too many cells lost
+      max_mt_pct: 10.0      # BMMC immune cells — stricter than tumour tissue
+      remove_doublets: true
+
+  normalize:
+    enabled: true
+    params:
+      batch_key: batch      # same donor/batch structure as CITE-seq
+      target_sum: 10000
+      n_top_genes: 2000
+      hvg_flavor: seurat
+
+  reduce:
+    enabled: true
+    params:
+      n_comps: 50
+      n_pcs_method: elbow
+      n_pcs: null
+      n_neighbors: 15
+
+  cluster:
+    enabled: true
+    params:
+      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+      # resolution_override: 0.8   # uncomment after inspecting cluster report
+
+  annotate:
+    enabled: true
+    params:
+      methods: [celltypist, markers, vote]
+      leiden_col: leiden
+      celltypist_models:
+        - Immune_All_High.pkl
+        - Immune_All_Low.pkl
+
+  deg:
+    enabled: true
+    params:
+      groupby: cell_type_vote
+      method: wilcoxon
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      n_genes: 500
+      top_n_volcano: 10
+      top_n_dotplot: 5
+      max_volcano_groups: 9
+
+  gsea:
+    enabled: true
+    params:
+      gene_sets:
+        - GO_Biological_Process_2023
+        - KEGG_2021_Human
+        - Reactome_2022
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      min_genes: 5
+      organism: human
+      top_n_table: 5
+      top_n_bar: 10
+
+  harmony:
+    enabled: true
+    params:
+      batch_key: batch      # same 10+ donors as CITE-seq
+      n_pcs: 50
+      n_neighbors: 15
+      umap_min_dist: 0.3
+      random_state: 0
+
+  cluster_harmony:
+    enabled: true
+    params:
+      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0]
+
+  pseudobulk:
+    enabled: true           # same donor structure as CITE-seq — valid
+    params:
+      groupby: cell_type_vote
+      donor_key: batch
+      counts_layer: counts
+      min_cells: 10
+      min_samples: 3
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      top_n_volcano: 10
+      top_n_dotplot: 5
+      max_volcano_groups: 11
