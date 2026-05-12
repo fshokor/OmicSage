@@ -1,51 +1,29 @@
 """
-OmicSage — Leiden Clustering Report
-reports/cluster_report.py
-
-Generates a self-contained HTML report for the Leiden clustering step.
-Produces the same figures that would go in the notebook, but saves them
-to disk and wraps them in a portable HTML file — no Quarto needed yet.
+OmicSage -- Leiden Clustering Report
+pipeline/modules/clustering/cluster_report.py
 
 Usage
 -----
-    # From CLI:
-    conda activate omicsage
-    python reports/cluster_report.py \
-        --input  data/processed/GSE194122_cite_reduced.h5ad \
-        --output data/processed/GSE194122_cite_clustered.h5ad \
-        --report reports/cluster_report.html \
-        --dataset GSE194122_CITE
-
-    # From notebook:
-    from reports.cluster_report import run_cluster_report
+    from pipeline.modules.clustering.cluster_report import run_cluster_report
     run_cluster_report(
         adata_clustered=adata_clustered,
         metrics=metrics,
-        report_path="reports/cluster_report.html",
+        report_path="reports/GSE194122/04_cluster_report.html",
         dataset_name="GSE194122_CITE",
     )
-
-Figures produced
-----------------
-1. UMAP coloured by each Leiden resolution tested
-2. Silhouette score vs resolution bar chart (selected resolution highlighted)
-3. Cluster size distribution at the best resolution
-4. UMAP coloured by ground-truth cell_type (if present in obs)
 """
 
 from __future__ import annotations
 
-import argparse
 import base64
 import io
 import logging
-import sys
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
 import matplotlib
-matplotlib.use("Agg")   # non-interactive backend — safe for scripts
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 import matplotlib.ticker as ticker
 import numpy as np
@@ -54,12 +32,12 @@ from anndata import AnnData
 
 logger = logging.getLogger(__name__)
 
+
 # ---------------------------------------------------------------------------
-# Figure helpers — each returns a base64-encoded PNG string
+# Figure helpers — plotting logic unchanged from original
 # ---------------------------------------------------------------------------
 
 def _fig_to_b64(fig: plt.Figure) -> str:
-    """Encode a matplotlib figure as a base64 PNG for embedding in HTML."""
     buf = io.BytesIO()
     fig.savefig(buf, format="png", dpi=130, bbox_inches="tight")
     plt.close(fig)
@@ -68,11 +46,6 @@ def _fig_to_b64(fig: plt.Figure) -> str:
 
 
 def _plot_umap_resolutions(adata_clustered: AnnData, metrics: dict) -> str:
-    """
-    Grid of UMAP plots coloured by each Leiden resolution tested.
-    The best (auto-selected) resolution is marked with a gold border.
-    Falls back gracefully when X_umap is absent.
-    """
     if "X_umap" not in adata_clustered.obsm:
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.text(0.5, 0.5, "UMAP not computed", ha="center", va="center",
@@ -81,90 +54,60 @@ def _plot_umap_resolutions(adata_clustered: AnnData, metrics: dict) -> str:
         return _fig_to_b64(fig)
 
     resolutions = metrics["resolutions"]
-    best_res = metrics["best_resolution"]
-    umap = adata_clustered.obsm["X_umap"]
-
+    best_res    = metrics["best_resolution"]
+    umap        = adata_clustered.obsm["X_umap"]
     n = len(resolutions)
     ncols = min(3, n)
     nrows = int(np.ceil(n / ncols))
-
-    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows),
-                              squeeze=False)
-    axes_flat = axes.flatten()
+    fig, axes = plt.subplots(nrows, ncols, figsize=(5.5 * ncols, 4.5 * nrows), squeeze=False)
+    axes_flat  = axes.flatten()
 
     for idx, res in enumerate(resolutions):
-        ax = axes_flat[idx]
+        ax      = axes_flat[idx]
         obs_key = f"leiden_{res:.4g}"
-
         if obs_key not in adata_clustered.obs.columns:
             ax.text(0.5, 0.5, f"leiden_{res:.4g}\nnot found",
                     ha="center", va="center", transform=ax.transAxes)
-            ax.axis("off")
-            continue
-
-        labels = adata_clustered.obs[obs_key].astype("category")
-        unique_labels = labels.cat.categories.tolist()
-        n_clusters = len(unique_labels)
-        cmap = plt.get_cmap("tab20", max(n_clusters, 1))
-        color_map = {lbl: cmap(i) for i, lbl in enumerate(unique_labels)}
-        colors = [color_map[lbl] for lbl in labels]
-
-        ax.scatter(umap[:, 0], umap[:, 1], c=colors, s=1.5,
-                   alpha=0.6, rasterized=True)
-        ax.set_title(
-            f"resolution = {res:.2g}  ({n_clusters} clusters)",
-            fontsize=10, fontweight="bold",
-        )
-        ax.set_xlabel("UMAP 1", fontsize=8)
-        ax.set_ylabel("UMAP 2", fontsize=8)
-        ax.set_xticks([])
-        ax.set_yticks([])
+            ax.axis("off"); continue
+        labels   = adata_clustered.obs[obs_key].astype("category")
+        cats     = labels.cat.categories.tolist()
+        cmap_    = plt.get_cmap("tab20", max(len(cats), 1))
+        col_map  = {l: cmap_(i) for i, l in enumerate(cats)}
+        ax.scatter(umap[:, 0], umap[:, 1], c=[col_map[l] for l in labels],
+                   s=1.5, alpha=0.6, rasterized=True)
+        ax.set_title(f"resolution = {res:.2g}  ({len(cats)} clusters)",
+                     fontsize=10, fontweight="bold")
+        ax.set_xlabel("UMAP 1", fontsize=8); ax.set_ylabel("UMAP 2", fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
         ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
-
-        # Gold border on the best resolution panel
         if res == best_res:
             for spine in ax.spines.values():
-                spine.set_visible(True)
-                spine.set_edgecolor("#E0A800")
-                spine.set_linewidth(2.5)
-            ax.set_title(
-                f"★ resolution = {res:.2g}  ({n_clusters} clusters)  [selected]",
-                fontsize=10, fontweight="bold", color="#B8860B",
-            )
+                spine.set_visible(True); spine.set_edgecolor("#e0a800"); spine.set_linewidth(2.5)
+            ax.set_title(f"* resolution = {res:.2g}  ({len(cats)} clusters)  [selected]",
+                         fontsize=10, fontweight="bold", color="#b8860b")
 
-    # Hide any unused axes
     for idx in range(n, len(axes_flat)):
         axes_flat[idx].set_visible(False)
-
-    fig.suptitle("UMAP — Leiden Clustering across Resolutions",
+    fig.suptitle("UMAP -- Leiden Clustering across Resolutions",
                  fontsize=14, fontweight="bold", y=1.01)
     fig.tight_layout()
     return _fig_to_b64(fig)
 
 
 def _plot_silhouette_bar(metrics: dict) -> str:
-    """
-    Bar chart of silhouette score per resolution (primary axis) with
-    n_clusters overlaid as a line on the secondary axis.
-    The selected resolution bar is highlighted in orange.
-    """
     resolutions = metrics["resolutions"]
     scores      = [metrics["silhouette_scores"][r] for r in resolutions]
     n_clusters  = [metrics["n_clusters"][r] for r in resolutions]
     best_res    = metrics["best_resolution"]
-
-    colors = ["#E07B3A" if r == best_res else "#4C78A8" for r in resolutions]
+    colors      = ["#e07b3a" if r == best_res else "#4C78A8" for r in resolutions]
 
     fig, ax1 = plt.subplots(figsize=(max(6, len(resolutions) * 1.4), 4))
-    x = np.arange(len(resolutions))
-
-    # Primary axis — silhouette bars
+    x    = np.arange(len(resolutions))
     bars = ax1.bar(x, scores, color=colors, width=0.6, alpha=0.80, edgecolor="white")
     for bar, score in zip(bars, scores):
         ypos = bar.get_height() + 0.005 if score >= 0 else bar.get_height() - 0.02
         ax1.text(bar.get_x() + bar.get_width() / 2, ypos,
                  f"{score:.3f}", ha="center", va="bottom", fontsize=8)
-
     ax1.set_xticks(x)
     ax1.set_xticklabels([f"{r:.2g}" for r in resolutions], fontsize=10)
     ax1.set_xlabel("Leiden Resolution", fontsize=11)
@@ -172,131 +115,106 @@ def _plot_silhouette_bar(metrics: dict) -> str:
     ax1.axhline(0, color="#bbb", linewidth=0.8, linestyle="--")
     ax1.spines[["top"]].set_visible(False)
 
-    # Secondary axis — n_clusters line
     ax2 = ax1.twinx()
-    ax2.plot(x, n_clusters, color="#2CA02C", marker="o", linewidth=2,
+    ax2.plot(x, n_clusters, color="#2ca02c", marker="o", linewidth=2,
              markersize=5, label="n clusters", zorder=5)
     for xi, nc in zip(x, n_clusters):
         ax2.text(xi, nc + max(n_clusters) * 0.03, str(nc),
-                 ha="center", va="bottom", fontsize=8, color="#2CA02C")
-    ax2.set_ylabel("Number of Clusters", fontsize=11, color="#2CA02C")
+                 ha="center", va="bottom", fontsize=8, color="#2ca02c")
+    ax2.set_ylabel("Number of Clusters", fontsize=11, color="#2ca02c")
     ax2.spines[["top"]].set_visible(False)
-    ax2.tick_params(axis="y", labelcolor="#2CA02C")
+    ax2.tick_params(axis="y", labelcolor="#2ca02c")
 
-    # n_clusters_expected reference line
     n_expected = metrics.get("n_clusters_expected")
     if n_expected is not None:
-        ax2.axhline(n_expected, color="#D62728", linewidth=1.2, linestyle=":",
+        ax2.axhline(n_expected, color="#d62728", linewidth=1.2, linestyle=":",
                     label=f"Expected: {n_expected}")
         ax2.text(len(resolutions) - 0.5, n_expected,
-                 f" expected={n_expected}", va="center",
-                 fontsize=8, color="#D62728")
+                 f" expected={n_expected}", va="center", fontsize=8, color="#d62728")
 
     selection_reason = metrics.get("selection_reason", "")
     ax1.set_title(
-        f"Silhouette Score & Cluster Count vs Resolution"
+        f"Silhouette Score & Cluster Count vs Resolution\n"
         f"Selected: res={best_res:.2g}  |  reason: {selection_reason}",
         fontsize=12, fontweight="bold",
     )
-
     from matplotlib.patches import Patch
     from matplotlib.lines import Line2D
     legend_elements = [
-        Patch(facecolor="#E07B3A", label=f"Selected (res={best_res:.2g})"),
+        Patch(facecolor="#e07b3a", label=f"Selected (res={best_res:.2g})"),
         Patch(facecolor="#4C78A8", label="Other resolutions"),
-        Line2D([0], [0], color="#2CA02C", marker="o", label="n clusters"),
+        Line2D([0], [0], color="#2ca02c", marker="o", label="n clusters"),
     ]
     if n_expected is not None:
         legend_elements.append(
-            Line2D([0], [0], color="#D62728", linestyle=":", label=f"Expected ({n_expected})")
+            Line2D([0], [0], color="#d62728", linestyle=":", label=f"Expected ({n_expected})")
         )
     ax1.legend(handles=legend_elements, frameon=False, fontsize=8, loc="upper left")
-
     fig.tight_layout()
     return _fig_to_b64(fig)
 
 
-
 def _plot_resolution_selection(metrics: dict) -> str:
-    """
-    Four-panel resolution selection diagnostic:
-      Top-left  : n_clusters vs resolution (with expected count line if set)
-      Top-right : cluster count delta (new clusters added at each step)
-      Bottom-left : stability score vs resolution
-      Bottom-right: silhouette score vs resolution
-    Selected resolution is marked with a vertical dashed line on every panel.
-    """
-    resolutions  = metrics["resolutions"]
-    n_clust      = [metrics["n_clusters"][r] for r in resolutions]
-    deltas       = [metrics["n_clusters_delta"][r] for r in resolutions]
-    stability    = [metrics["stability_scores"][r] for r in resolutions]
-    silhouette   = [metrics["silhouette_scores"][r] for r in resolutions]
-    best_res     = metrics["best_resolution"]
-    best_idx     = resolutions.index(best_res)
-    n_expected   = metrics.get("n_clusters_expected")
-    reason       = metrics.get("selection_reason", "")
-
-    x      = np.arange(len(resolutions))
-    xlbls  = [f"{r:.2g}" for r in resolutions]
-    vline_kw = dict(color="#E07B3A", linewidth=1.8, linestyle="--", alpha=0.8)
+    resolutions = metrics["resolutions"]
+    n_clust     = [metrics["n_clusters"][r] for r in resolutions]
+    deltas      = [metrics["n_clusters_delta"][r] for r in resolutions]
+    stability   = [metrics["stability_scores"][r] for r in resolutions]
+    silhouette  = [metrics["silhouette_scores"][r] for r in resolutions]
+    best_res    = metrics["best_resolution"]
+    best_idx    = resolutions.index(best_res)
+    n_expected  = metrics.get("n_clusters_expected")
+    reason      = metrics.get("selection_reason", "")
+    x           = np.arange(len(resolutions))
+    xlbls       = [f"{r:.2g}" for r in resolutions]
+    vline_kw    = dict(color="#e07b3a", linewidth=1.8, linestyle="--", alpha=0.8)
 
     fig, axes = plt.subplots(2, 2, figsize=(13, 8))
     fig.suptitle(
-        f"Resolution Selection Diagnostics  —  selected={best_res:.2g}  "
+        f"Resolution Selection Diagnostics  --  selected={best_res:.2g}  "
         f"({metrics['best_n_clusters']} clusters, reason='{reason}')",
         fontsize=13, fontweight="bold",
     )
 
-    # Panel 1 — n_clusters
     ax = axes[0, 0]
-    ax.plot(x, n_clust, color="#1F77B4", marker="o", linewidth=2, markersize=6)
+    ax.plot(x, n_clust, color="#1f77b4", marker="o", linewidth=2, markersize=6)
     ax.axvline(best_idx, **vline_kw, label=f"Selected (res={best_res:.2g})")
     if n_expected is not None:
-        ax.axhline(n_expected, color="#D62728", linewidth=1.2, linestyle=":",
+        ax.axhline(n_expected, color="#d62728", linewidth=1.2, linestyle=":",
                    label=f"Expected ({n_expected})")
-        ax.legend(frameon=False, fontsize=8)
-    else:
-        ax.legend(frameon=False, fontsize=8)
+    ax.legend(frameon=False, fontsize=8)
     for xi, nc in zip(x, n_clust):
-        ax.text(xi, nc + max(n_clust) * 0.03, str(nc),
-                ha="center", va="bottom", fontsize=8)
+        ax.text(xi, nc + max(n_clust) * 0.03, str(nc), ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x); ax.set_xticklabels(xlbls)
     ax.set_title("Number of Clusters", fontsize=11, fontweight="bold")
     ax.set_xlabel("Resolution"); ax.set_ylabel("n clusters")
     ax.spines[["top", "right"]].set_visible(False)
 
-    # Panel 2 — delta
     ax = axes[0, 1]
-    delta_colors = ["#AEC7E8" if r != best_res else "#E07B3A" for r in resolutions]
+    delta_colors = ["#aec7e8" if r != best_res else "#e07b3a" for r in resolutions]
     ax.bar(x, deltas, color=delta_colors, width=0.6, alpha=0.85, edgecolor="white")
     ax.axvline(best_idx, **vline_kw)
     for xi, d in zip(x, deltas):
         ax.text(xi, d + max(deltas) * 0.03 if d >= 0 else d - max(deltas) * 0.05,
-                f"+{d}" if d > 0 else str(d),
-                ha="center", va="bottom", fontsize=8)
+                f"+{d}" if d > 0 else str(d), ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x); ax.set_xticklabels(xlbls)
-    ax.set_title("Cluster Count Delta (new clusters per step)",
-                 fontsize=11, fontweight="bold")
-    ax.set_xlabel("Resolution"); ax.set_ylabel("Δ n clusters")
+    ax.set_title("Cluster Count Delta (new clusters per step)", fontsize=11, fontweight="bold")
+    ax.set_xlabel("Resolution"); ax.set_ylabel("delta n clusters")
     ax.spines[["top", "right"]].set_visible(False)
 
-    # Panel 3 — stability
     ax = axes[1, 0]
-    stab_colors = ["#98DF8A" if r != best_res else "#E07B3A" for r in resolutions]
+    stab_colors = ["#98df8a" if r != best_res else "#e07b3a" for r in resolutions]
     ax.bar(x, stability, color=stab_colors, width=0.6, alpha=0.85, edgecolor="white")
     ax.axvline(best_idx, **vline_kw)
     for xi, s in zip(x, stability):
         ax.text(xi, s + 0.01, f"{s:.2f}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x); ax.set_xticklabels(xlbls)
     ax.set_ylim(0, 1.15)
-    ax.set_title("Stability Score  (1 = plateau, lower = rapid growth)",
-                 fontsize=11, fontweight="bold")
+    ax.set_title("Stability Score  (1 = plateau)", fontsize=11, fontweight="bold")
     ax.set_xlabel("Resolution"); ax.set_ylabel("Stability")
     ax.spines[["top", "right"]].set_visible(False)
 
-    # Panel 4 — silhouette
     ax = axes[1, 1]
-    sil_colors = ["#FFBB78" if r != best_res else "#E07B3A" for r in resolutions]
+    sil_colors = ["#ffbb78" if r != best_res else "#e07b3a" for r in resolutions]
     ax.bar(x, silhouette, color=sil_colors, width=0.6, alpha=0.85, edgecolor="white")
     ax.axvline(best_idx, **vline_kw)
     ax.axhline(0, color="#bbb", linewidth=0.8, linestyle="--")
@@ -304,8 +222,7 @@ def _plot_resolution_selection(metrics: dict) -> str:
         yp = s + 0.005 if s >= 0 else s - 0.015
         ax.text(xi, yp, f"{s:.3f}", ha="center", va="bottom", fontsize=8)
     ax.set_xticks(x); ax.set_xticklabels(xlbls)
-    ax.set_title("Silhouette Score  (geometric cluster quality)",
-                 fontsize=11, fontweight="bold")
+    ax.set_title("Silhouette Score  (geometric cluster quality)", fontsize=11, fontweight="bold")
     ax.set_xlabel("Resolution"); ax.set_ylabel("Silhouette")
     ax.spines[["top", "right"]].set_visible(False)
 
@@ -314,33 +231,25 @@ def _plot_resolution_selection(metrics: dict) -> str:
 
 
 def _plot_cluster_sizes(adata_clustered: AnnData, metrics: dict) -> str:
-    """
-    Bar chart of cluster sizes at the best resolution, sorted descending.
-    """
     best_res = metrics["best_resolution"]
-    obs_key = f"leiden_{best_res:.4g}"
-
+    obs_key  = f"leiden_{best_res:.4g}"
     if obs_key not in adata_clustered.obs.columns:
         obs_key = "leiden"
-
     if obs_key not in adata_clustered.obs.columns:
         fig, ax = plt.subplots(figsize=(5, 4))
-        ax.text(0.5, 0.5, "Cluster labels not found",
-                ha="center", va="center", transform=ax.transAxes, fontsize=12)
+        ax.text(0.5, 0.5, "Cluster labels not found", ha="center", va="center",
+                transform=ax.transAxes, fontsize=12)
         ax.axis("off")
         return _fig_to_b64(fig)
 
-    counts = adata_clustered.obs[obs_key].value_counts().sort_values(ascending=False)
+    counts     = adata_clustered.obs[obs_key].value_counts().sort_values(ascending=False)
     n_clusters = len(counts)
-    cmap = plt.get_cmap("tab20", n_clusters)
-
-    fig, ax = plt.subplots(figsize=(max(8, n_clusters * 0.5), 4))
-    x = np.arange(n_clusters)
-    bars = ax.bar(x, counts.values,
-                  color=[cmap(i) for i in range(n_clusters)],
-                  width=0.7, alpha=0.85, edgecolor="white")
-
-    ax.set_xticks(x)
+    cmap_      = plt.get_cmap("tab20", n_clusters)
+    fig, ax    = plt.subplots(figsize=(max(8, n_clusters * 0.5), 4))
+    ax.bar(range(n_clusters), counts.values,
+           color=[cmap_(i) for i in range(n_clusters)],
+           width=0.7, alpha=0.85, edgecolor="white")
+    ax.set_xticks(range(n_clusters))
     ax.set_xticklabels(counts.index.tolist(), fontsize=8, rotation=45, ha="right")
     ax.set_xlabel("Cluster", fontsize=11)
     ax.set_ylabel("Number of Cells", fontsize=11)
@@ -351,257 +260,197 @@ def _plot_cluster_sizes(adata_clustered: AnnData, metrics: dict) -> str:
     )
     ax.yaxis.set_major_formatter(ticker.FuncFormatter(lambda v, _: f"{int(v):,}"))
     ax.spines[["top", "right"]].set_visible(False)
-
-    # Median line
     median_size = int(np.median(counts.values))
-    ax.axhline(median_size, color="#C0392B", linewidth=1.2, linestyle="--",
+    ax.axhline(median_size, color="#c0392b", linewidth=1.2, linestyle="--",
                label=f"Median: {median_size:,} cells")
     ax.legend(frameon=False, fontsize=9)
-
     fig.tight_layout()
     return _fig_to_b64(fig)
 
 
 def _plot_umap_cell_type(adata_clustered: AnnData) -> Optional[str]:
-    """
-    UMAP coloured by ground-truth cell_type label (if present in obs).
-    Returns None when cell_type is absent — caller skips the section.
-    """
     if "X_umap" not in adata_clustered.obsm:
         return None
     if "cell_type" not in adata_clustered.obs.columns:
         return None
-
-    umap = adata_clustered.obsm["X_umap"]
-    cell_types = adata_clustered.obs["cell_type"].astype(str)
+    umap        = adata_clustered.obsm["X_umap"]
+    cell_types  = adata_clustered.obs["cell_type"].astype(str)
     unique_types = sorted(cell_types.unique())
-    cmap = plt.get_cmap("tab20", len(unique_types))
-    color_map = {ct: cmap(i) for i, ct in enumerate(unique_types)}
-    colors = [color_map[ct] for ct in cell_types]
-
-    n_types = len(unique_types)
-    # Scale figure width to give the legend enough room
-    fig_w = 8 + max(0, (n_types - 20) // 10) * 1.5
-    fig_h = max(6, n_types * 0.22)
-
-    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
-    ax.scatter(umap[:, 0], umap[:, 1], c=colors, s=1.5,
-               alpha=0.6, rasterized=True)
-
-    # Legend placed outside the axes to the right — never overlaps the UMAP
+    cmap_       = plt.get_cmap("tab20", len(unique_types))
+    col_map     = {ct: cmap_(i) for i, ct in enumerate(unique_types)}
+    n_types     = len(unique_types)
+    fig, ax     = plt.subplots(figsize=(8 + max(0, (n_types - 20) // 10) * 1.5,
+                                        max(6, n_types * 0.22)))
+    ax.scatter(umap[:, 0], umap[:, 1], c=[col_map[ct] for ct in cell_types],
+               s=1.5, alpha=0.6, rasterized=True)
     from matplotlib.patches import Patch
-    legend_elements = [Patch(facecolor=color_map[ct], label=ct)
-                       for ct in unique_types]
-    ncol = max(1, n_types // 25)
-    legend = ax.legend(
-        handles=legend_elements,
-        bbox_to_anchor=(1.02, 1),
-        loc="upper left",
-        borderaxespad=0,
-        frameon=False,
-        fontsize=7.5,
-        ncol=ncol,
-        handlelength=1.2,
-        handleheight=1.2,
-        labelspacing=0.4,
-    )
-
-    ax.set_title("UMAP — Ground-Truth Cell Type", fontsize=13, fontweight="bold")
-    ax.set_xlabel("UMAP 1", fontsize=10)
-    ax.set_ylabel("UMAP 2", fontsize=10)
-    ax.set_xticks([])
-    ax.set_yticks([])
+    legend_el = [Patch(facecolor=col_map[ct], label=ct) for ct in unique_types]
+    ax.legend(handles=legend_el, bbox_to_anchor=(1.02, 1), loc="upper left",
+              borderaxespad=0, frameon=False, fontsize=7.5,
+              ncol=max(1, n_types // 25), handlelength=1.2, labelspacing=0.4)
+    ax.set_title("UMAP -- Ground-Truth Cell Type", fontsize=13, fontweight="bold")
+    ax.set_xlabel("UMAP 1", fontsize=10); ax.set_ylabel("UMAP 2", fontsize=10)
+    ax.set_xticks([]); ax.set_yticks([])
     ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
-    # bbox_inches="tight" in _fig_to_b64 ensures the legend is not clipped
     fig.tight_layout()
     return _fig_to_b64(fig)
 
 
 # ---------------------------------------------------------------------------
-# HTML template
+# HTML renderer — matches deg_report._render_page exactly
 # ---------------------------------------------------------------------------
 
-_HTML_TEMPLATE = """\
-<!DOCTYPE html>
+def _render_page(title: str, sections: list[str], timestamp: str) -> str:
+    body = "\n".join(sections)
+    return f"""<!DOCTYPE html>
 <html lang="en">
 <head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OmicSage — Clustering Report: {dataset_name}</title>
-<style>
-  body       {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI",
-                sans-serif; margin: 2em auto; max-width: 1100px;
-                color: #2c3e50; background: #fafafa; }}
-  h1         {{ color: #1a252f; border-bottom: 2px solid #E07B3A;
-                padding-bottom: 0.3em; }}
-  h2         {{ color: #2c3e50; margin-top: 2em; }}
-  p.meta     {{ color: #666; font-size: 0.9em; margin-top: -0.5em; }}
-  table      {{ border-collapse: collapse; width: 100%; margin-bottom: 1.5em; }}
-  th, td     {{ border: 1px solid #ddd; padding: 8px 12px; text-align: left; }}
-  th         {{ background: #f2f2f2; font-weight: 600; }}
-  tr:nth-child(even) {{ background: #fafafa; }}
-  img        {{ max-width: 100%; height: auto; border: 1px solid #eee;
-                border-radius: 4px; }}
-  .fig-grid  {{ display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(480px, 1fr));
-                gap: 1.5em; margin-top: 1em; }}
-  .fig-box   {{ background: white; border: 1px solid #e0e0e0; border-radius: 6px;
-                padding: 1em; }}
-  .fig-box.wide {{ grid-column: 1 / -1; }}
-  .badge     {{ display: inline-block; padding: 2px 8px; border-radius: 3px;
-                font-size:0.8em; font-weight:bold; }}
-  .ok        {{ background:#d4edda; color:#155724; }}
-  footer     {{ margin-top: 3em; font-size: 0.8em; color: #999;
-                border-top: 1px solid #eee; padding-top: 12px; }}
-</style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{title}</title>
+  <style>
+    *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
+    body {{
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      font-size: 14px; line-height: 1.6; color: #1a1a2e; background: #f7f8fc;
+    }}
+    header {{
+      background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+      color: white; padding: 32px 40px 24px;
+    }}
+    header h1 {{ font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px; }}
+    header p  {{ font-size: 0.85rem; opacity: 0.7; margin-top: 4px; }}
+    main {{ max-width: 1100px; margin: 0 auto; padding: 32px 24px; }}
+    section {{
+      background: white; border-radius: 10px;
+      box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+      padding: 28px 32px; margin-bottom: 24px;
+    }}
+    section h2 {{
+      font-size: 1.15rem; font-weight: 700; color: #0f3460;
+      border-bottom: 2px solid #e8eaf6; padding-bottom: 10px; margin-bottom: 18px;
+    }}
+    section h3 {{ font-size: 1rem; font-weight: 600; color: #16213e; margin: 18px 0 10px; }}
+    section p {{ color: #444; margin-bottom: 12px; font-size: 0.9rem; }}
+    .timestamp {{ font-size: 0.8rem; color: #888; margin-bottom: 6px; }}
+    code {{
+      font-family: "SFMono-Regular", Consolas, monospace;
+      background: #f0f2ff; padding: 1px 5px; border-radius: 3px; font-size: 0.85em;
+    }}
+    .stat-grid {{ display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }}
+    .stat-card {{
+      background: #f0f2ff; border-radius: 8px; padding: 14px 20px;
+      min-width: 130px; text-align: center; flex: 1 1 130px;
+    }}
+    .stat-value {{ font-size: 1.4rem; font-weight: 700; color: #0f3460; }}
+    .stat-label {{ font-size: 0.75rem; color: #666; margin-top: 2px; }}
+    table {{ width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 8px; }}
+    th {{
+      background: #f0f2ff; color: #0f3460; font-weight: 600;
+      padding: 9px 12px; text-align: left; border-bottom: 2px solid #d0d4f0;
+    }}
+    td {{ padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: middle; }}
+    tr:last-child td {{ border-bottom: none; }}
+    tr:hover td {{ background: #f8f9ff; }}
+    .fig-grid {{ display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }}
+    .fig-wrap {{ flex: 1 1 300px; max-width: 520px; }}
+    .fig-wrap.wide {{ flex: 1 1 100%; max-width: 100%; }}
+    .fig-wrap h3 {{ font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }}
+    .fig-wrap img {{ width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }}
+    footer {{ text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }}
+    footer a {{ color: #0f3460; text-decoration: none; }}
+  </style>
 </head>
 <body>
-
-<h1>🧬 OmicSage — Leiden Clustering Report</h1>
-<p class="meta">
-  Dataset: <strong>{dataset_name}</strong> &nbsp;|&nbsp;
-  Generated: <strong>{timestamp}</strong> &nbsp;|&nbsp;
-  OmicSage v0.1.0
-</p>
-
-<h2>Summary</h2>
-<table>
-  <tr><th>Parameter</th><th>Value</th></tr>
-  {summary_rows}
-</table>
-
-<h2>Figures</h2>
-<div class="fig-grid">
-  <div class="fig-box wide">
-    <strong>UMAP — Leiden Clustering across Resolutions</strong>
-    <p class="meta">
-      Each panel shows cluster assignments at one resolution.
-      The gold-bordered panel is the selected resolution.
-      Selection reason is shown in the diagnostics section below.
-    </p>
-    <img src="data:image/png;base64,{fig_umap_resolutions}" alt="UMAP resolutions">
-  </div>
-  <div class="fig-box wide">
-    <strong>Silhouette Score &amp; Cluster Count vs Resolution</strong>
-    <p class="meta">
-      Orange bars = selected resolution.  Green line = number of clusters (right axis).
-      Red dotted line = expected cluster count (if set).
-      Selection reason shown in the title.
-    </p>
-    <img src="data:image/png;base64,{fig_silhouette}" alt="Silhouette scores">
-  </div>
-  <div class="fig-box wide">
-    <strong>Resolution Selection Diagnostics (4-panel)</strong>
-    <p class="meta">
-      Top-left: cluster count curve — look for a plateau near your expected count.<br>
-      Top-right: delta (new clusters per step) — large jumps signal an unstable region.<br>
-      Bottom-left: stability score — peaks at the plateau edge (score = 1 = no further growth).<br>
-      Bottom-right: silhouette score — geometric cluster quality.<br>
-      Orange dashed line marks the selected resolution across all panels.
-    </p>
-    <img src="data:image/png;base64,{fig_resolution_diagnostics}" alt="Resolution diagnostics">
-  </div>
-  <div class="fig-box wide">
-    <strong>Cluster Size Distribution — Best Resolution ({best_res:.2g})</strong>
-    <p class="meta">
-      Bars sorted by cluster size (descending).
-      Red dashed line = median cluster size.
-      Large size disparities may indicate over- or under-clustering.
-    </p>
-    <img src="data:image/png;base64,{fig_cluster_sizes}" alt="Cluster sizes">
-  </div>
-  {cell_type_section}
-</div>
-
-<h2>Provenance</h2>
-<table>
-  <tr><th>Key</th><th>Value</th></tr>
-  {provenance_rows}
-</table>
-
-<footer>
-  Generated by OmicSage · reports/cluster_report.py ·
-  <a href="https://github.com/fshokor/OmicSage">github.com/fshokor/OmicSage</a>
-</footer>
+  <header>
+    <h1>OmicSage -- Leiden Clustering Report</h1>
+    <p>Generated {timestamp}</p>
+  </header>
+  <main>{body}</main>
+  <footer>
+    Generated by <a href="https://github.com/fshokor/OmicSage">OmicSage</a>
+    &middot; MIT License
+  </footer>
 </body>
 </html>
 """
 
-_CELL_TYPE_SECTION_TEMPLATE = """\
-  <div class="fig-box wide">
-    <strong>UMAP — Ground-Truth Cell Type</strong>
-    <p class="meta">Each colour is one annotated cell type from the original publication.
-    Use this as a reference to assess whether Leiden clusters align with known biology.</p>
-    <img src="data:image/png;base64,{fig_cell_type}" alt="UMAP cell type">
-  </div>"""
 
-
-def _build_html(
-    adata_clustered: AnnData,
-    metrics: dict,
-    dataset_name: str,
-) -> str:
-    """Render all figures and assemble the HTML string."""
-
-    print("  Rendering UMAP resolution panels ...", flush=True)
-    fig_umap_resolutions = _plot_umap_resolutions(adata_clustered, metrics)
-
-    print("  Rendering silhouette bar chart ...", flush=True)
-    fig_silhouette = _plot_silhouette_bar(metrics)
-
-    print("  Rendering resolution selection diagnostics ...", flush=True)
-    fig_resolution_diagnostics = _plot_resolution_selection(metrics)
-
-    print("  Rendering cluster size distribution ...", flush=True)
-    fig_cluster_sizes = _plot_cluster_sizes(adata_clustered, metrics)
-
-    # Optional cell_type panel
-    cell_type_section = ""
-    fig_cell_type = _plot_umap_cell_type(adata_clustered)
-    if fig_cell_type is not None:
-        print("  Rendering ground-truth cell type UMAP ...", flush=True)
-        cell_type_section = _CELL_TYPE_SECTION_TEMPLATE.format(
-            fig_cell_type=fig_cell_type,
-        )
-
-    # --- summary table ---
-    best_res = metrics["best_resolution"]
-    silhouette_scores = metrics["silhouette_scores"]
-    sil_rows = "  ".join(
-        f"<tr><td>Silhouette @ res={r:.2g}</td><td>{silhouette_scores[r]:.4f}</td></tr>"
+def _section_summary(adata_clustered: AnnData, metrics: dict,
+                     dataset_name: str, timestamp: str) -> str:
+    best_res  = metrics["best_resolution"]
+    stat_cards = "".join(
+        f'<div class="stat-card"><div class="stat-value">{v}</div>'
+        f'<div class="stat-label">{k}</div></div>'
+        for k, v in [
+            ("Cells",           f"{adata_clustered.n_obs:,}"),
+            ("Selected res",    f"{best_res:.2g}"),
+            ("Clusters",        str(metrics["best_n_clusters"])),
+            ("Silhouette",      f"{metrics['best_silhouette']:.4f}"),
+            ("Stability",       f"{metrics['best_stability']:.4f}"),
+            ("Selection",       metrics.get("selection_reason", "?")),
+        ]
+    )
+    per_res_rows = "".join(
+        f"<tr><td>res={r:.2g}{'  *' if r == best_res else ''}</td>"
+        f"<td>{metrics['n_clusters'][r]}</td>"
+        f"<td>{metrics['n_clusters_delta'][r]:+d}</td>"
+        f"<td>{metrics['stability_scores'][r]:.3f}</td>"
+        f"<td>{metrics['silhouette_scores'][r]:.4f}</td></tr>"
         for r in metrics["resolutions"]
     )
-    n_expected = metrics.get("n_clusters_expected")
-    selection_reason = metrics.get("selection_reason", "—")
-    summary_items = [
-        ("Cells",                        f"{adata_clustered.n_obs:,}"),
-        ("Resolutions tested",           ", ".join(f"{r:.2g}" for r in metrics["resolutions"])),
-        ("Selected resolution",          f"{best_res:.2g}"),
-        ("Selection reason",             selection_reason),
-        ("Clusters at selected resolution", str(metrics["best_n_clusters"])),
-        ("Expected clusters (prior)",    str(n_expected) if n_expected is not None else "not set"),
-        ("Best silhouette score",        f"{metrics['best_silhouette']:.4f}"),
-        ("Stability score at selection", f"{metrics['best_stability']:.4f}"),
-    ]
-    summary_rows = "\n  ".join(
-        f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in summary_items
-    )
-    # Append per-resolution rows
-    per_res_rows = []
-    for r in metrics["resolutions"]:
-        marker = " ★" if r == best_res else ""
-        per_res_rows.append(
-            f"<tr><td>res={r:.2g}{marker}</td>"
-            f"<td>n={metrics['n_clusters'][r]}  "
-            f"Δ={metrics['n_clusters_delta'][r]:+d}  "
-            f"stability={metrics['stability_scores'][r]:.3f}  "
-            f"silhouette={metrics['silhouette_scores'][r]:.4f}</td></tr>"
-        )
-    summary_rows += "\n  " + "\n  ".join(per_res_rows)
+    return f"""
+    <section>
+      <h2>Run Summary</h2>
+      <p class="timestamp">Dataset: <strong>{dataset_name}</strong> &middot; {timestamp}</p>
+      <div class="stat-grid">{stat_cards}</div>
+      <h3>Per-Resolution Metrics</h3>
+      <table>
+        <thead><tr><th>Resolution</th><th>Clusters</th><th>Delta</th>
+               <th>Stability</th><th>Silhouette</th></tr></thead>
+        <tbody>{per_res_rows}</tbody>
+      </table>
+    </section>
+    """
 
-    # --- provenance table ---
+
+def _section_figures(fig_umap: str, fig_sil: str, fig_diag: str,
+                     fig_sizes: str, fig_ct: Optional[str], best_res: float) -> str:
+    cell_type_html = ""
+    if fig_ct is not None:
+        cell_type_html = f"""
+        <div class="fig-wrap wide">
+          <h3>UMAP -- Ground-Truth Cell Type</h3>
+          <img src="data:image/png;base64,{fig_ct}" alt="UMAP cell type">
+        </div>"""
+    return f"""
+    <section>
+      <h2>Figures</h2>
+      <div class="fig-grid">
+        <div class="fig-wrap wide">
+          <h3>UMAP -- Leiden Clustering across Resolutions</h3>
+          <img src="data:image/png;base64,{fig_umap}" alt="UMAP resolutions">
+        </div>
+        <div class="fig-wrap wide">
+          <h3>Silhouette Score &amp; Cluster Count vs Resolution</h3>
+          <img src="data:image/png;base64,{fig_sil}" alt="Silhouette bar chart">
+        </div>
+        <div class="fig-wrap wide">
+          <h3>Resolution Selection Diagnostics (4-panel)</h3>
+          <img src="data:image/png;base64,{fig_diag}" alt="Resolution diagnostics">
+        </div>
+        <div class="fig-wrap wide">
+          <h3>Cluster Size Distribution -- Best Resolution ({best_res:.2g})</h3>
+          <img src="data:image/png;base64,{fig_sizes}" alt="Cluster sizes">
+        </div>
+        {cell_type_html}
+      </div>
+    </section>
+    """
+
+
+def _section_provenance(adata_clustered: AnnData) -> str:
     prov = adata_clustered.uns.get("omicsage_cluster", {})
-    # Flatten nested dicts (n_clusters, silhouette_scores) for display
     prov_display = {}
     for k, v in prov.items():
         if isinstance(v, dict):
@@ -610,27 +459,23 @@ def _build_html(
                 prov_display[f"{k}[{subk}]"] = display_subv
         else:
             prov_display[k] = v
-    provenance_rows = "\n  ".join(
+    rows = "".join(
         f"<tr><td><code>{k}</code></td><td>{v}</td></tr>"
         for k, v in prov_display.items()
     )
-
-    return _HTML_TEMPLATE.format(
-        dataset_name=dataset_name,
-        timestamp=datetime.now().strftime("%Y-%m-%d %H:%M"),
-        best_res=best_res,
-        summary_rows=summary_rows,
-        provenance_rows=provenance_rows,
-        fig_umap_resolutions=fig_umap_resolutions,
-        fig_silhouette=fig_silhouette,
-        fig_resolution_diagnostics=fig_resolution_diagnostics,
-        fig_cluster_sizes=fig_cluster_sizes,
-        cell_type_section=cell_type_section,
-    )
+    return f"""
+    <section>
+      <h2>Provenance</h2>
+      <table>
+        <thead><tr><th>Key</th><th>Value</th></tr></thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>
+    """
 
 
 # ---------------------------------------------------------------------------
-# Public API — callable from notebook
+# Public API
 # ---------------------------------------------------------------------------
 
 def run_cluster_report(
@@ -645,10 +490,9 @@ def run_cluster_report(
     Parameters
     ----------
     adata_clustered : AnnData
-        Clustered AnnData returned by ``cluster()``.
-        Must have obsm['X_umap'] and obs['leiden_*'] columns.
+        Clustered AnnData returned by cluster().
     metrics : dict
-        Metrics dict returned by ``cluster()``.
+        Metrics dict returned by cluster().
     report_path : str
         Where to write the HTML file.
     dataset_name : str
@@ -661,73 +505,33 @@ def run_cluster_report(
     """
     out = Path(report_path)
     out.parent.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     print(f"Building clustering report for '{dataset_name}' ...", flush=True)
-    html = _build_html(adata_clustered, metrics, dataset_name)
+    print("  Rendering UMAP resolution panels ...", flush=True)
+    fig_umap  = _plot_umap_resolutions(adata_clustered, metrics)
+    print("  Rendering silhouette bar chart ...", flush=True)
+    fig_sil   = _plot_silhouette_bar(metrics)
+    print("  Rendering resolution selection diagnostics ...", flush=True)
+    fig_diag  = _plot_resolution_selection(metrics)
+    print("  Rendering cluster size distribution ...", flush=True)
+    fig_sizes = _plot_cluster_sizes(adata_clustered, metrics)
+    fig_ct    = _plot_umap_cell_type(adata_clustered)
+    if fig_ct is not None:
+        print("  Rendering ground-truth cell type UMAP ...", flush=True)
+
+    sections = [
+        _section_summary(adata_clustered, metrics, dataset_name, timestamp),
+        _section_figures(fig_umap, fig_sil, fig_diag, fig_sizes, fig_ct,
+                         metrics["best_resolution"]),
+        _section_provenance(adata_clustered),
+    ]
+
+    html = _render_page(
+        title=f"OmicSage -- Cluster Report -- {dataset_name}",
+        sections=sections,
+        timestamp=timestamp,
+    )
     out.write_text(html, encoding="utf-8")
-    print(f"Report saved → {out.resolve()}", flush=True)
+    print(f"Report saved -> {out.resolve()}", flush=True)
     return str(out.resolve())
-
-
-# ---------------------------------------------------------------------------
-# CLI entry point
-# ---------------------------------------------------------------------------
-
-def _parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(
-        description="Generate OmicSage Leiden clustering report",
-        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
-    )
-    p.add_argument("--input",   required=True,
-                   help="Reduced h5ad (obsm['X_pca'], obsp['connectivities'])")
-    p.add_argument("--output",  default=None,
-                   help="Where to save the clustered h5ad "
-                        "(if omitted, cluster runs but h5ad is not saved)")
-    p.add_argument("--report",  default="reports/cluster_report.html",
-                   help="Path for the output HTML report")
-    p.add_argument("--dataset", default=None,
-                   help="Dataset label shown in the report (default: input filename)")
-    p.add_argument("--resolutions", nargs="+", type=float,
-                   default=[0.2, 0.4, 0.6, 0.8, 1.0],
-                   help="Leiden resolutions to sweep")
-    return p.parse_args()
-
-
-def main() -> None:
-    logging.basicConfig(level=logging.INFO,
-                        format="%(asctime)s %(levelname)s %(message)s")
-    args = _parse_args()
-
-    repo_root = Path(__file__).resolve().parent.parent
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-
-    from pipeline.modules.clustering.cluster import cluster
-
-    dataset_name = args.dataset or Path(args.input).stem
-
-    print(f"Loading {args.input} ...", flush=True)
-    adata = sc.read_h5ad(args.input)
-    print(adata, flush=True)
-
-    print("Running Leiden clustering ...", flush=True)
-    adata_clustered, metrics = cluster(
-        adata,
-        resolution_range=args.resolutions,
-    )
-
-    if args.output:
-        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
-        adata_clustered.write_h5ad(args.output)
-        print(f"Clustered h5ad saved → {args.output}", flush=True)
-
-    run_cluster_report(
-        adata_clustered=adata_clustered,
-        metrics=metrics,
-        report_path=args.report,
-        dataset_name=dataset_name,
-    )
-
-
-if __name__ == "__main__":
-    main()
