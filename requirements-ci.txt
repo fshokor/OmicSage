@@ -23,3 +23,9 @@ kneed>=0.8.5
 celltypist>=1.6
 gseapy>=1.1.0
 pydeseq2>=0.4
+
+# Phase 3 — AI layer
+# Pinned to tested version — do not upgrade without re-running all AI tests
+# API changes confirmed between versions (set_system_message renamed to
+# append_system_message, base_url became required in OllamaConversation)
+biochatter==0.14.2

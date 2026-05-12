@@ -1,0 +1,104 @@
+# =============================================================================
+# OmicSage — Study Context File
+# =============================================================================
+# Fill in what you know. Leave any field as null if unknown or not applicable.
+# The more context you provide, the more precise the AI outputs will be.
+# The pipeline runs fully without this file — it is only used by the AI layer.
+#
+# Location: config/runs/<your_dataset>/study_context.yaml
+# One file per dataset / per project run.
+# =============================================================================
+
+# -----------------------------------------------------------------------------
+# Dataset
+# -----------------------------------------------------------------------------
+dataset:
+  name: "GSE166635"            # GEO accession, internal name, or any identifier
+  species: "human"             # human | mouse | rat | other
+  tissue: "liver"              # required — used in every AI prompt
+                               # be specific: "liver" not "organ"
+                               # examples: PBMC, bone_marrow, lung, brain, breast_tumour
+  cell_source: "tumour and adjacent normal tissue"
+                               # how / where cells were collected
+                               # examples: biopsy, surgical resection, blood draw, organoid
+
+# -----------------------------------------------------------------------------
+# Disease context
+# -----------------------------------------------------------------------------
+disease:
+  context: "hepatocellular carcinoma"
+                               # null if healthy tissue or not applicable
+                               # be specific: "hepatocellular carcinoma" not "cancer"
+  stage: null                  # clinical stage if known — e.g. "stage III", "T2N0M0"
+  treatment: null              # treatment history if known
+                               # e.g. "treatment-naive", "post-chemotherapy", "anti-PD1"
+
+# -----------------------------------------------------------------------------
+# Experimental design
+# -----------------------------------------------------------------------------
+experiment:
+  design: "tumour_vs_normal"   # one of:
+                               #   tumour_vs_normal   — paired tumour and control tissue
+                               #   case_vs_control    — disease vs healthy donors
+                               #   time_course        — multiple time points per donor
+                               #   perturbation       — treated vs untreated cells
+                               #   atlas              — single condition, characterisation only
+                               #   null               — unknown, AI will infer from data
+
+  n_donors: 6                  # number of biological donors / patients
+                               # null if unknown
+  n_conditions: 2              # number of experimental conditions
+  conditions:                  # list condition labels as they appear in adata.obs
+    - "tumour"
+    - "adjacent_normal"
+
+  batch_key: "sample_id"       # obs column used for batch correction
+                               # null if single batch or no batch correction needed
+
+  paired: true                 # true if tumour + normal come from the same donor
+                               # affects DEG method recommendation (pseudobulk vs Wilcoxon)
+
+# -----------------------------------------------------------------------------
+# Biological question and objectives
+# -----------------------------------------------------------------------------
+# If biological_question is left null, the AI will generate one based on
+# the tissue, disease, and experimental design above.
+biological_question: |
+  Characterise the immune and stromal microenvironment of hepatocellular carcinoma.
+  Identify immunosuppressive cell populations and potential therapeutic targets.
+  Determine how the tumour microenvironment differs between tumour and adjacent
+  normal tissue at single-cell resolution.
+
+# List the specific objectives for this study.
+# These become the Objectives section of the final report.
+# Leave as empty list [] if you want the AI to generate them.
+objectives:
+  - "Identify and annotate all major cell types in the tumour microenvironment"
+  - "Find differentially expressed genes between tumour and adjacent normal conditions"
+  - "Identify immunosuppressive populations that may drive immune evasion"
+  - "Highlight potential drug targets based on DEG results"
+
+# -----------------------------------------------------------------------------
+# Prior knowledge
+# -----------------------------------------------------------------------------
+# Anything you already know about this dataset or biological context that
+# the AI should take into account. Free text. Examples:
+#   - "This dataset was published in Wang et al. 2025 (PMID: 12345678)"
+#   - "The main finding was an immunosuppressive macrophage subpopulation"
+#   - "Batch effects between samples 3 and 4 were noted in the original paper"
+#   - "This tissue type typically contains 8-12 major cell types"
+prior_knowledge: |
+  Wang et al. 2025 (npj Precision Oncology, DOI: 10.1038/s41698-025-00952-3)
+  published analysis of this dataset. Key finding: an immunosuppressive macrophage
+  subpopulation drives immune evasion in HCC. The original paper used Seurat v4
+  with Harmony batch correction and identified 14 major cell populations.
+
+# -----------------------------------------------------------------------------
+# Notes for the AI
+# -----------------------------------------------------------------------------
+# Any additional instructions or constraints for the AI layer.
+# Examples:
+#   - "Focus interpretation on the myeloid compartment"
+#   - "This is a rare disease — literature may be limited"
+#   - "Do not suggest trajectory analysis — cells are not developmental"
+notes: null

@@ -1,0 +1,210 @@
+# =============================================================================
+# OmicSage Skill — cluster_annotator
+# =============================================================================
+# Maps top marker genes per cluster to known cell types.
+# Returns label, confidence, supporting markers, recommended reference database,
+# and a manual marker set for biological verification.
+#
+# Version history:
+#   1.0  — initial version, tested on PBMC and HCC TME
+# =============================================================================
+
+name: cluster_annotator
+version: "1.0"
+
+description: >
+  Annotates a single-cell cluster by mapping its top marker genes to known
+  cell types. Returns three outputs: an automated cell type label for the
+  report, a recommended reference database for automated annotation, and a
+  manual marker set for biological verification.
+
+tested_on:
+  - "PBMC (10x Genomics 3k dataset)"
+  - "HCC tumour microenvironment (GSE166635)"
+
+# -----------------------------------------------------------------------------
+# Input schema
+# All fields listed here are validated by the skill loader before the LLM
+# is called. Required fields raise SkillInputError if missing or null.
+# -----------------------------------------------------------------------------
+inputs:
+  - name: tissue
+    type: str
+    required: true
+    description: >
+      Tissue of origin. Be specific — "liver" not "organ",
+      "PBMC" not "blood". Used to contextualise marker gene interpretation.
+
+  - name: disease_context
+    type: str
+    required: false
+    default: "not specified"
+    description: >
+      Disease context if applicable. "hepatocellular carcinoma", "healthy",
+      "not specified". Affects interpretation of immune markers especially.
+
+  - name: cluster_id
+    type: str
+    required: true
+    description: Cluster identifier as it appears in adata.obs.
+
+  - name: n_cells
+    type: int
+    required: true
+    description: Number of cells in this cluster.
+
+  - name: marker_genes
+    type: list[str]
+    required: true
+    min_length: 5
+    description: >
+      Top marker genes for this cluster, ranked by log2FC descending.
+      Provide at least 10, ideally 20. Only gene symbols — no Ensembl IDs.
+
+  - name: prior_knowledge
+    type: str
+    required: false
+    default: null
+    description: >
+      Any prior knowledge about this dataset from study_context.yaml.
+      Passed through verbatim.
+
+# -----------------------------------------------------------------------------
+# Output schema
+# The LLM is instructed to return a JSON object matching this schema exactly.
+# The skill loader validates the parsed response against these keys.
+# -----------------------------------------------------------------------------
+output_schema:
+  cell_type:
+    type: str
+    description: >
+      Best cell type prediction. Use standard nomenclature:
+      "CD8+ T cell", "macrophage", "hepatocyte", not abbreviations.
+
+  confidence:
+    type: str
+    enum: [high, medium, low]
+    description: >
+      high   — multiple canonical markers present, unambiguous
+      medium — some markers present but could be a related type
+      low    — weak marker signal, ambiguous, or unusual combination
+
+  supporting_markers:
+    type: list[str]
+    description: >
+      The subset of input markers that most strongly support the call.
+      Must be a subset of the input marker_genes list.
+
+  alternative_types:
+    type: list[str]
+    description: >
+      Other plausible cell types if ambiguous. Empty list if confident.
+      Maximum 3 alternatives.
+
+  recommended_db:
+    type: str
+    description: >
+      The most appropriate reference database for automated annotation
+      of this tissue/cell type combination. Examples:
+        CellTypist        — immune cells, especially blood and lymphoid tissue
+        PanglaoDB         — broad coverage across tissues
+        Allen Brain Atlas — brain and neural tissue
+        Human Cell Atlas  — broad human tissue atlas
+        CellMarker 2.0    — manually curated markers across tissues
+      Give the database name only, not a URL.
+
+  manual_marker_set:
+    type: list[str]
+    description: >
+      5 to 8 genes a biologist should verify manually — either by
+      visualising on a UMAP, checking expression in a dot plot, or
+      looking up in literature. These should be the most canonical and
+      recognisable markers for this cell type in this tissue context.
+
+  reasoning:
+    type: str
+    description: >
+      One paragraph explaining the annotation decision. Must explicitly
+      cite at least 3 marker genes from the input list. Must mention
+      why alternatives were ruled out if confidence is medium or low.
+
+# -----------------------------------------------------------------------------
+# Prompts
+# {variable} placeholders are filled by the skill loader from the input values.
+# Do not add logic here — logic belongs in the Python module.
+# Keep the system prompt stable across versions; tune the user prompt.
+# -----------------------------------------------------------------------------
+system_prompt: |
+  You are an expert computational biologist specialising in single-cell
+  RNA-seq analysis and cell type annotation. You have deep knowledge of
+  cell type marker genes across tissues, diseases, and species.
+
+  Rules you always follow:
+  - Ground every annotation in the specific marker genes provided. Never
+    invent markers that are not in the input list.
+  - Use standard cell type nomenclature (e.g. "CD8+ T cell" not "CTL").
+  - Always recommend the most appropriate reference database for the tissue.
+  - If the marker set is ambiguous, say so honestly — set confidence to
+    medium or low and list alternatives.
+  - Respond only with a valid JSON object matching the output schema.
+    No preamble, no markdown fences, no explanation outside the JSON.
+
+user_prompt_template: |
+  Annotate the following single-cell cluster.
+
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Cluster ID: {cluster_id}
+  Number of cells: {n_cells}
+  Top marker genes (ranked by log2FC, highest first):
+  {marker_genes}
+
+  {prior_knowledge_block}
+
+  Return a JSON object with exactly these keys:
+  {{
+    "cell_type": "<standard cell type name>",
+    "confidence": "<high | medium | low>",
+    "supporting_markers": ["<gene1>", "<gene2>", ...],
+    "alternative_types": ["<type1>", ...],
+    "recommended_db": "<database name>",
+    "manual_marker_set": ["<gene1>", ..., "<gene8>"],
+    "reasoning": "<one paragraph citing specific markers>"
+  }}
+
+# -----------------------------------------------------------------------------
+# Conditional blocks
+# These are inserted into the user prompt template at named positions
+# when the corresponding input is non-null.
+# The skill loader handles substitution — keep these short.
+# -----------------------------------------------------------------------------
+conditional_blocks:
+  prior_knowledge_block:
+    condition: "prior_knowledge is not null"
+    content: |
+      Prior knowledge about this dataset:
+      {prior_knowledge}
+    default: ""
+
+# -----------------------------------------------------------------------------
+# Evaluation notes
+# How to judge whether this skill is performing well.
+# Used when benchmarking or comparing prompt versions.
+# -----------------------------------------------------------------------------
+evaluation:
+  good_output_signs:
+    - "Cell type matches known markers for the tissue"
+    - "supporting_markers is a strict subset of the input marker_genes"
+    - "reasoning paragraph names at least 3 specific genes"
+    - "recommended_db is appropriate for the tissue (not generic for immune tissue)"
+
+  bad_output_signs:
+    - "Cell type uses abbreviations or non-standard names"
+    - "supporting_markers contains genes not in the input list"
+    - "confidence is high but alternative_types is non-empty"
+    - "reasoning is generic with no specific gene citations"
+
+  known_failure_modes:
+    - "Small clusters (<50 cells) often have noisy marker lists — confidence tends to be low"
+    - "Transitional or progenitor cells are often misclassified as the mature type"
+    - "Mixed doublet clusters produce inconsistent marker combinations — usually low confidence"
