@@ -1,96 +1,225 @@
 # OmicSage Master Configuration Schema
+# ======================================
+# This is the authoritative schema for all OmicSage configuration options.
+# It documents every supported field, its type, default value, and valid options.
+#
+# Two config layers exist in this project:
+#
+#   config/schema.yaml        ← THIS FILE
+#                                Platform-wide schema. Covers all modalities,
+#                                the AI layer, report engine, and compute settings.
+#                                Used as the reference for Nextflow + full platform.
+#
+#   config/runs/<dataset_id>.yaml ← Per-dataset run configs
+#                                Subset of this schema scoped to one dataset and
+#                                run via: python run_pipeline.py --config config/runs/X.yaml
+#                                See config/runs/GSE194122.yaml for a working example.
+#
+# Phase status markers:
+#   [BUILT]   — implemented and tested in Phase 1
+#   [FUTURE]  — planned, not yet implemented
+#   [PARTIAL] — partially implemented
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PROJECT [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
 project:
   name: "my_project"
   description: ""
   author: ""
-  date: ""
+  date: ""                      # ISO 8601 e.g. "2026-05-12"
   output_dir: "results/"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# MODALITY [PARTIAL — scrna + cite built; atac/spatial/multiome future]
+# ──────────────────────────────────────────────────────────────────────────────
 modality:
   scrna: true
-  scatac: false
-  spatial: false
-  multiome: false
+  cite: false                   # CITE-seq (RNA + ADT) — QC built, ADT normalization future
+  scatac: false                 # Phase 4
+  spatial: false                # Phase 5
+  multiome: false               # Phase 6
 
+# ──────────────────────────────────────────────────────────────────────────────
+# INPUT [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
 input:
+  # Supported formats: .h5ad | .h5 (10x HDF5) | directory (10x MEX)
   scrna_path: ""
-  scatac_fragments: ""
-  scatac_peaks: ""
-  spatial_path: ""
-  spatial_platform: "visium"
-  sample_metadata: ""
+  scatac_fragments: ""          # [FUTURE] .tsv.gz fragment file
+  scatac_peaks: ""              # [FUTURE] .bed peak file; null = call with MACS3
+  spatial_path: ""              # [FUTURE] Visium/MERFISH/Xenium directory
+  spatial_platform: "visium"    # [FUTURE] visium | merfish | xenium
+  sample_metadata: ""           # [FUTURE] .csv with per-sample covariates
 
+# ──────────────────────────────────────────────────────────────────────────────
+# QC [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
+# qc.py auto-detects modality from feature_types; filters apply to RNA only.
+# QC obs columns live on mdata["rna"] only — never on mixed AnnData.
 qc:
   scrna:
-    min_genes: 200
-    max_genes: 6000
-    max_mt_pct: 20
-    min_cells: 3
-    run_scrublet: true
-    scrublet_threshold: null
-    run_soupx: true
-    soupx_tfidf: false
+    min_genes: 200              # cells with fewer genes removed (empty droplets)
+    max_genes: 6000             # cells with more genes removed (likely multiplets)
+    max_mt_pct: 20              # mitochondrial % threshold (dead/lysed cells)
+    min_cells: 3                # genes expressed in fewer cells removed
+    run_scrublet: true          # doublet detection via Scrublet
+    scrublet_threshold: null    # null = auto-detect; float = manual override
+    run_soupx: false            # [FUTURE] ambient RNA correction via SoupX
 
+# ──────────────────────────────────────────────────────────────────────────────
+# PROCESSING [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
+# normalize.py: CP10K → log1p → HVG selection
+# reduce.py:    PCA → auto n_pcs → kNN graph → UMAP
 processing:
   scrna:
-    normalization: "scran"
-    n_hvgs: 2000
-    n_pcs: 50
-    n_pcs_use: 30
-    batch_correction: "harmony"
-    batch_key: null
-    umap_neighbors: 15
-    umap_min_dist: 0.3
+    # Normalization
+    normalization: "cp10k"      # cp10k (implemented) | scran (future)
+    target_sum: 10000           # per-cell normalization target
+    n_hvgs: 2000                # highly variable genes to select
+    hvg_flavor: "seurat"        # seurat | seurat_v3 | cell_ranger
+                                # note: seurat_v3 requires scikit-misc>=0.3
+                                #       and must run on raw counts pre-normalization
+    batch_key: null             # obs column for per-batch HVG selection; null = ignore
 
+    # Dimensionality reduction
+    n_pcs: 50                   # PCA components to compute
+    n_pcs_method: "elbow"       # elbow | cumvar | fixed
+                                # elbow: kneed auto-detection (default)
+                                # cumvar: keep PCs until cumulative variance >= variance_threshold
+                                # fixed: always use min(30, n_pcs)
+    n_pcs_override: null        # int — bypasses n_pcs_method entirely when set
+    variance_threshold: 0.85    # cumulative variance target for n_pcs_method="cumvar"
+    n_neighbors: 15             # kNN graph neighbors (used for UMAP + clustering)
+    umap_min_dist: 0.3          # UMAP min_dist parameter
+    run_tsne: false             # also compute t-SNE (slow on large datasets)
+
+# ──────────────────────────────────────────────────────────────────────────────
+# CLUSTERING [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
+# cluster.py sweeps resolution_range, scores each with silhouette, auto-selects.
+# resolution_override pins a specific resolution (set after visual inspection).
 clustering:
   scrna:
-    algorithm: "leiden"
-    resolution: [0.3, 0.5, 0.8, 1.0]
-    default_resolution: 0.5
+    algorithm: "leiden"         # leiden (implemented) | louvain (future)
+    resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+    resolution_override: null   # float — set after inspecting cluster report
+                                # workflow: run --to-step cluster → inspect →
+                                #   set override → run --step cluster →
+                                #   run --from-step annotate
 
+# ──────────────────────────────────────────────────────────────────────────────
+# BATCH CORRECTION [BUILT]
+# ──────────────────────────────────────────────────────────────────────────────
+# harmony_correct.py: corrects PCA embedding, recomputes kNN + UMAP.
+# Original X_umap preserved as X_umap_precorrection for before/after comparison.
+# Set enabled: false for datasets without batch effects.
+integration:
+  scrna:
+    enabled: true
+    method: "harmony"           # harmony (implemented) | scvi (future)
+    batch_key: "batch"          # obs column encoding batch/donor identity
+    n_pcs: 50                   # PCs passed to Harmony
+    theta: 2.0                  # Harmony diversity penalty (higher = stronger correction)
+    max_iter: 50                # maximum Harmony iterations
+
+# ──────────────────────────────────────────────────────────────────────────────
+# ANNOTATION [BUILT — celltypist + markers + vote; singler/sctype future]
+# ──────────────────────────────────────────────────────────────────────────────
+# annotate.py: runs methods at cluster level, combines via majority vote.
+# obs['cell_type_vote'] = consensus label used by all downstream steps.
+# obs['cell_type_groundtruth'] = original obs['cell_type'] preserved if present.
 annotation:
   scrna:
-    run_singler: true
-    singler_reference: "HumanPrimaryCellAtlasData"
-    n_marker_genes: 20
+    methods: ["celltypist", "markers", "vote"]
+                                # celltypist: CellTypist model prediction + cluster majority vote
+                                # markers: mean expression scoring against built-in marker sets
+                                # vote: 2-way consensus (required celltypist + markers)
+                                # singler: [FUTURE] HumanPrimaryCellAtlasData via rpy2
+                                # sctype: [FUTURE] tissue-specific DB scoring via rpy2
+    leiden_col: "leiden"        # obs column with cluster labels to annotate
+    celltypist_models:
+      - "Immune_All_High.pkl"   # coarse immune types
+      - "Immune_All_Low.pkl"    # fine-grained immune subtypes
+    celltypist_models_dir: "data/references/celltypist/"
+    singler_reference: "HumanPrimaryCellAtlasData"   # [FUTURE]
+    n_marker_genes: 20          # [FUTURE] top marker genes per cluster for report
 
+# ──────────────────────────────────────────────────────────────────────────────
+# DOWNSTREAM [BUILT — deg/gsea/pseudobulk; trajectory/survival/drugtargets future]
+# ──────────────────────────────────────────────────────────────────────────────
 downstream:
   scrna:
+    # Wilcoxon DEG (deg.py)
     run_deg: true
-    deg_method: "wilcoxon"
-    run_gsea: true
-    gsea_databases: ["GO", "KEGG", "Reactome"]
-    run_trajectory: false
-    trajectory_method: "slingshot"
-    run_survival: false
-    run_drugtargets: false
+    deg_groupby: "cell_type_vote"
+    deg_method: "wilcoxon"      # wilcoxon | t-test | logreg
+    deg_min_logfc: 0.25
+    deg_max_pval_adj: 0.05
+    deg_n_genes: 500            # max genes computed per group (before threshold filtering)
+    deg_exclude_prefixes: []    # e.g. ["RPL", "RPS", "MT-"]
 
+    # GSEA / ORA (gsea.py) — requires Enrichr API access
+    run_gsea: true
+    gsea_gene_sets:
+      - "GO_Biological_Process_2023"
+      - "KEGG_2021_Human"
+      - "Reactome_2022"
+    gsea_direction: "up"        # up | down | both
+    gsea_organism: "human"      # human | mouse
+    gsea_min_genes: 5           # skip group if fewer query genes
+
+    # Pseudobulk DEG (pseudobulk_deg.py) — DESeq2 via pydeseq2
+    run_pseudobulk: true
+    pseudobulk_groupby: "cell_type_vote"
+    pseudobulk_donor_key: "batch"
+    pseudobulk_counts_layer: "counts"  # must be raw integers, not logcounts
+    pseudobulk_min_cells: 10
+    pseudobulk_min_samples: 3
+
+    # [FUTURE] Phase 1 extension
+    run_trajectory: false       # Slingshot/PAGA
+    trajectory_method: "slingshot"
+    run_survival: false         # survival analysis
+    run_drugtargets: false      # DGIdb drug target lookup
+
+# ──────────────────────────────────────────────────────────────────────────────
+# REPORTS [BUILT — HTML; PDF/PPTX future]
+# ──────────────────────────────────────────────────────────────────────────────
 reports:
-  generate_html: true
-  generate_pdf: true
-  generate_pptx: true
-  include_methods: true
-  include_versions: true
+  generate_html: true           # self-contained HTML after every step (implemented)
+  generate_pdf: false           # [FUTURE] Quarto PDF rendering
+  generate_pptx: false          # [FUTURE] python-pptx slide deck
+  include_methods: true         # [FUTURE] auto-generated methods text
+  include_versions: true        # software versions in provenance (already in uns[])
   figure_dpi: 300
   color_palette: "tab20"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# AI LAYER [FUTURE — Phase 3]
+# ──────────────────────────────────────────────────────────────────────────────
+# Setting enabled: false disables the AI layer entirely.
+# The full pipeline still runs. Reports still generate. No API key required.
 ai:
-  enabled: true
-  provider: "claude"
-  model: "claude-opus-4-5"
+  enabled: false
+  provider: "claude"            # claude | openai | ollama
+  model: "claude-sonnet-4-6"    # current Anthropic recommended model
   api_key_env: "ANTHROPIC_API_KEY"
   ollama_host: "http://localhost:11434"
   ollama_model: "llama3.2"
-  suggest_qc_thresholds: true
-  interpret_clusters: true
-  generate_narrative: true
-  pubmed_rag: true
-  log_llm_calls: true
+  suggest_qc_thresholds: true   # augmented-prompt threshold suggestion (SCassist-style)
+  interpret_clusters: true      # marker → LLM → cell type + evidence
+  generate_narrative: true      # biological narrative for reports
+  pubmed_rag: true              # BioChatter RAG linked to DEG results
+  log_llm_calls: true           # all LLM calls logged with input/output/model/timestamp
   llm_log_dir: "logs/llm/"
 
+# ──────────────────────────────────────────────────────────────────────────────
+# COMPUTE [FUTURE — Nextflow integration]
+# ──────────────────────────────────────────────────────────────────────────────
 compute:
-  executor: "local"
+  executor: "local"             # local | slurm | aws | gcp
   max_cpus: 8
   max_memory: "32.GB"
   max_time: "24.h"

@@ -1,0 +1,130 @@
+# OmicSage — Dataset Configuration
+# Dataset : GSE194122 BMMC CITE-seq (NeurIPS 2021)
+# Run     : python run_pipeline.py --config config/runs/GSE194122.yaml
+#
+# Common usage patterns
+# ---------------------
+# Full pipeline:
+#   python run_pipeline.py --config config/runs/GSE194122.yaml
+#
+# Stop at clustering to inspect:
+#   python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+#
+# Resume after choosing a resolution:
+#   1. Set cluster.params.best_resolution_override below
+#   2. python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
+#   3. python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+#
+# Re-run a single step:
+#   python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+#
+# Skip harmony (no batch effects):
+#   Set harmony.enabled: false and cluster_harmony.enabled: false below
+
+dataset:
+  id: GSE194122
+  name: "BMMC CITE-seq (NeurIPS 2021)"
+  modality: cite          # cite | scrna | atac | multiome
+  organism: human
+
+paths:
+  raw_input: data/benchmark/GSE194122_cite_raw_only.h5ad
+  processed_dir: data/processed/GSE194122
+  reports_dir: reports/GSE194122
+
+steps:
+
+  qc:
+    enabled: true
+    # input_override: data/external/my_qc_output.h5ad   # uncomment to bypass
+    params:
+      min_genes: 200
+      max_genes: 2500
+      max_mt_pct: 5.0
+      remove_doublets: true
+
+  normalize:
+    enabled: true
+    params:
+      batch_key: batch
+      target_sum: 10000
+      n_top_genes: 2000
+      hvg_flavor: seurat    # seurat | seurat_v3 | cell_ranger
+
+  reduce:
+    enabled: true
+    params:
+      n_comps: 50
+      n_pcs_method: elbow   # elbow | cumvar | fixed
+      n_pcs: null           # set a number to override n_pcs_method
+      n_neighbors: 15
+
+  cluster:
+    enabled: true
+    params:
+      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+      # best_resolution_override: 0.8   # uncomment after inspecting clusters
+
+  annotate:
+    enabled: true
+    params:
+      methods: [celltypist, markers, vote]
+      leiden_col: leiden
+      celltypist_models:
+        - Immune_All_High.pkl
+        - Immune_All_Low.pkl
+
+  deg:
+    enabled: true
+    params:
+      groupby: cell_type_vote
+      method: wilcoxon
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      n_genes: 500
+      top_n_volcano: 10
+      top_n_dotplot: 5
+      max_volcano_groups: 9
+
+  gsea:
+    enabled: true
+    params:
+      gene_sets:
+        - GO_Biological_Process_2023
+        - KEGG_2021_Human
+        - Reactome_2022
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      min_genes: 5
+      organism: human
+      direction: both
+      top_n_table: 5
+      top_n_bar: 10
+
+  harmony:
+    enabled: true           # set false if no batch effects
+    params:
+      batch_key: batch
+      n_pcs: 50
+      n_neighbors: 15
+      umap_min_dist: 0.3
+      random_state: 0
+
+  cluster_harmony:
+    enabled: true           # set false if harmony is false
+    params:
+      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0]
+
+  pseudobulk:
+    enabled: true
+    params:
+      groupby: cell_type_vote
+      donor_key: batch
+      counts_layer: counts
+      min_cells: 10
+      min_samples: 3
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      top_n_volcano: 10
+      top_n_dotplot: 5
+      max_volcano_groups: 11

@@ -1,0 +1,133 @@
+# OmicSage — Dataset Configuration
+# Dataset  : GSE166635 HCC scRNA-seq (Wang et al. 2025, npj Precision Oncology)
+# Modality : scRNA-seq (plain RNA, no ADT or ATAC)
+# Samples  : HCC1 (normal adjacent) + HCC2 (tumor) — MTX format
+# Run      : python run_pipeline.py --config config/runs/GSE166635.yaml
+#
+# Key differences from GSE194122
+# --------------------------------
+# - Multi-sample MTX input (parent folder, auto-detected by ingest.py)
+# - No pseudobulk — only 2 samples (HCC1/HCC2), not enough donors per cell type
+# - Harmony enabled — HCC1 vs HCC2 is the batch axis
+# - Higher max_genes threshold — tumour cells can have high gene counts
+# - Liver/tumour marker sets for annotation (not immune-focused)
+# - No CITE-seq ADT modality
+#
+# First run workflow
+# ------------------
+# 1. Run QC only and inspect the report to validate thresholds:
+#    python run_pipeline.py --config config/runs/GSE166635.yaml --step qc
+#    → open reports/GSE166635/01_qc_report.html
+#    → adjust min_genes / max_genes / max_mt_pct below if needed
+#
+# 2. Run through clustering, inspect clusters, choose resolution:
+#    python run_pipeline.py --config config/runs/GSE166635.yaml --from-step normalize --to-step cluster
+#    → open reports/GSE166635/04_cluster_report.html
+#    → set cluster.params.resolution_override below
+#
+# 3. Continue from annotation:
+#    python run_pipeline.py --config config/runs/GSE166635.yaml --from-step annotate
+
+dataset:
+  id: GSE166635
+  name: "HCC scRNA-seq (Wang et al. 2025)"
+  modality: scrna
+  organism: human
+
+paths:
+  # Parent folder containing HCC1/ and HCC2/ MTX subfolders.
+  # ingest.py auto-detects multiple samples and concatenates them.
+  raw_input: data/test/GSE166635
+  processed_dir: data/processed/GSE166635
+  reports_dir: reports/GSE166635
+
+steps:
+
+  qc:
+    enabled: true
+    params:
+      # HCC tumour tissue — thresholds are looser than BMMC immune cells.
+      # Tumour cells can have higher gene counts; MT% threshold is higher
+      # because stressed/hypoxic tumour cells have elevated mitochondrial reads.
+      # INSPECT the QC report after first run and adjust if needed.
+      min_genes: 200        # standard lower bound — removes empty droplets
+      max_genes: 6000       # tumour cells can be large; raise if many cells lost
+      max_mt_pct: 20.0      # liver tumour tissue — 20% is standard starting point
+      remove_doublets: true
+
+  normalize:
+    enabled: true
+    params:
+      batch_key: sample     # obs['sample'] = HCC1 | HCC2 — set by ingest.py
+      target_sum: 10000
+      n_top_genes: 2000
+      hvg_flavor: seurat
+
+  reduce:
+    enabled: true
+    params:
+      n_comps: 50
+      n_pcs_method: elbow
+      n_pcs: null
+      n_neighbors: 15
+
+  cluster:
+    enabled: true
+    params:
+      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
+      # resolution_override: 0.6   # uncomment after inspecting cluster report
+
+  annotate:
+    enabled: true
+    params:
+      methods: [celltypist, markers, vote]
+      leiden_col: leiden
+      celltypist_models:
+        - Immune_All_High.pkl     # picks up immune infiltrate (T cells, macrophages)
+        - Immune_All_Low.pkl
+
+  deg:
+    enabled: true
+    params:
+      groupby: cell_type_vote
+      method: wilcoxon
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      n_genes: 500
+      top_n_volcano: 10
+      top_n_dotplot: 5
+      max_volcano_groups: 9
+
+  gsea:
+    enabled: true
+    params:
+      gene_sets:
+        - GO_Biological_Process_2023
+        - KEGG_2021_Human
+        - Reactome_2022
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      min_genes: 5
+      organism: human
+      top_n_table: 5
+      top_n_bar: 10
+
+  harmony:
+    enabled: false
+    # params:
+    #   batch_key: sample     # correct HCC1 vs HCC2 batch effect
+    #   n_pcs: 50
+    #   n_neighbors: 15
+    #   umap_min_dist: 0.3
+    #   random_state: 0
+
+  cluster_harmony:
+    enabled: false
+    # params:
+    #   resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0]
+
+  pseudobulk:
+    enabled: false
+    # Disabled — only 2 samples (HCC1 + HCC2).
+    # DESeq2 pseudobulk requires >= 3 donors per cell type group.
+    # Use Wilcoxon DEG (step deg) as the primary result for this dataset.

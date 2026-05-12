@@ -183,7 +183,125 @@ def _load_mtx(path: Path) -> tuple[ad.AnnData, dict]:
     return adata, source_info
 
 
+
+
 # ── Public API ───────────────────────────────────────────────────────────────
+
+def load_dataset_dir(
+    path: str | Path,
+    sample_name: Optional[str] = None,
+    verbose: bool = True,
+) -> ad.AnnData:
+    """
+    Load a parent directory containing multiple 10x MEX sample subfolders
+    and return a single concatenated AnnData.
+
+    Each subfolder must contain matrix.mtx(.gz), barcodes.tsv(.gz),
+    and features.tsv(.gz). The subfolder name is used as the sample label
+    stored in obs['sample'].
+
+    Example directory layout
+    ------------------------
+    GSE166635/
+      HCC1/
+        barcodes.tsv.gz
+        features.tsv.gz
+        matrix.mtx.gz
+      HCC2/
+        barcodes.tsv.gz
+        features.tsv.gz
+        matrix.mtx.gz
+
+    Parameters
+    ----------
+    path : str or Path
+        Parent directory containing sample subfolders.
+    sample_name : str, optional
+        Ignored — sample labels are taken from subfolder names.
+    verbose : bool
+        If True, print a per-sample summary after loading.
+
+    Returns
+    -------
+    AnnData
+        Concatenated AnnData with:
+          obs['sample'] = subfolder name per cell
+          obs['batch']  = same as sample (for harmony compatibility)
+        adata.uns['omicsage_source'] contains provenance metadata.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise FileNotFoundError(f"Path not found: {path}")
+    if not path.is_dir():
+        raise ValueError(f"Expected a directory, got: {path}")
+
+    # Collect all subfolders that look like MTX directories (sorted for reproducibility)
+    sample_dirs = sorted([
+        d for d in path.iterdir()
+        if d.is_dir() and list(d.glob("matrix.mtx*"))
+    ])
+
+    if not sample_dirs:
+        raise ValueError(
+            f"No 10x MEX subfolders found in {path}. "
+            f"Each subfolder must contain matrix.mtx or matrix.mtx.gz."
+        )
+
+    print(f"[ingest] Found {len(sample_dirs)} sample(s): "
+          f"{[d.name for d in sample_dirs]}")
+
+    # Load each sample individually
+    adatas = []
+    for sample_dir in sample_dirs:
+        sample_label = sample_dir.name
+        print(f"[ingest] Loading {sample_label} ...")
+        adata_s, _ = _load_mtx(sample_dir)
+        adata_s.obs["sample"] = sample_label
+        adata_s.obs["batch"]  = sample_label   # harmony key
+        adatas.append(adata_s)
+
+    # Concatenate — join='outer' fills missing genes across samples with 0
+    adata = ad.concat(
+        adatas,
+        join="outer",
+        label="sample",
+        keys=[d.name for d in sample_dirs],
+        index_unique="-",
+    )
+
+    # ad.concat with label= writes the key into a new 'sample' column;
+    # override with the explicit column we set per-sample above
+    for col in ("sample", "batch"):
+        adata.obs[col] = adata.obs[col].astype(str)
+
+    # Fill NaN introduced by outer join with 0
+    adata.X = sp.csr_matrix(np.nan_to_num(
+        adata.X.toarray() if sp.issparse(adata.X) else adata.X
+    ))
+
+    # Provenance
+    adata.uns["omicsage_source"] = {
+        "file":      str(path.resolve()),
+        "format":    "mtx_dir_multi",
+        "raw_layer": None,
+        "x_was_raw": True,
+        "sample":    [d.name for d in sample_dirs],
+        "n_samples": len(sample_dirs),
+    }
+
+    if verbose:
+        print("\n" + "─" * 50)
+        print(f"  OmicSage · Multi-sample Dataset Loaded")
+        print("─" * 50)
+        print(f"  Parent dir : {path.name}")
+        for adata_s, d in zip(adatas, sample_dirs):
+            print(f"    {d.name:<20} {adata_s.n_obs:>6,} cells")
+        print(f"  Total cells: {adata.n_obs:,}")
+        print(f"  Features   : {adata.n_vars:,}")
+        print("─" * 50 + "\n")
+
+    return adata
+
 
 def load_dataset(
     path: str | Path,
@@ -225,6 +343,15 @@ def load_dataset(
     path = Path(path)
     if not path.exists():
         raise FileNotFoundError(f"Path not found: {path}")
+
+    # Auto-detect multi-sample parent directory:
+    # if it's a directory that contains MTX subfolders (not an MTX dir itself),
+    # delegate to load_dataset_dir automatically.
+    if path.is_dir() and not list(path.glob("matrix.mtx*")):
+        subdirs_with_mtx = [d for d in path.iterdir()
+                            if d.is_dir() and list(d.glob("matrix.mtx*"))]
+        if subdirs_with_mtx:
+            return load_dataset_dir(path, verbose=verbose)
 
     fmt = detect_format(path)
 

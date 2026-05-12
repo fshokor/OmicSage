@@ -1,0 +1,732 @@
+"""
+OmicSage — Generic Pipeline Runner
+====================================
+Usage
+-----
+  # Run all enabled steps
+  python run_pipeline.py --config config/runs/GSE194122.yaml
+
+  # Stop at a checkpoint (inclusive)
+  python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+
+  # Resume from a checkpoint (inclusive)
+  python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+
+  # Run a specific range
+  python run_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
+
+  # Run exactly one step
+  python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+
+Checkpointing
+-------------
+  Every step writes its output to processed_dir/NN_<step>.h5ad.
+  If the file already exists the step is skipped (cached).
+  Use --from-step to force re-execution from a given step onward.
+
+Resolution override
+-------------------
+  After inspecting clusters, add to the config:
+      cluster:
+        params:
+          best_resolution_override: 0.8
+  Then re-run:
+      python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
+      python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+"""
+
+import sys
+import io
+
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+
+import argparse
+import os
+import warnings
+from datetime import datetime
+from pathlib import Path
+from typing import Any
+
+import yaml
+
+warnings.filterwarnings("ignore", category=UserWarning)
+warnings.filterwarnings("ignore", category=FutureWarning)
+
+# ── repo root ──────────────────────────────────────────────────────────────────
+root = Path(__file__).resolve().parent
+while not (root / "pipeline").exists() and root != root.parent:
+    root = root.parent
+os.chdir(root)
+sys.path.insert(0, str(root))
+
+# ── step order (canonical) ─────────────────────────────────────────────────────
+STEP_ORDER = [
+    "qc",
+    "normalize",
+    "reduce",
+    "cluster",
+    "annotate",
+    "deg",
+    "gsea",
+    "harmony",
+    "cluster_harmony",
+    "pseudobulk",
+]
+
+# Output filename for each step
+STEP_OUTPUT = {
+    "qc":              "01_qc.h5ad",
+    "normalize":       "02_normalized.h5ad",
+    "reduce":          "03_reduced.h5ad",
+    "cluster":         "04_clustered.h5ad",
+    "annotate":        "05_annotated.h5ad",
+    "deg":             "06_deg.h5ad",
+    "gsea":            "07_gsea.h5ad",
+    "harmony":         "08_harmony.h5ad",
+    "cluster_harmony": "09_harmony_clustered.h5ad",
+    "pseudobulk":      "10_pseudobulk_deg.h5ad",
+}
+
+# Each step's required predecessor (None = needs raw input)
+STEP_PREDECESSOR = {
+    "qc":              None,
+    "normalize":       "qc",
+    "reduce":          "normalize",
+    "cluster":         "reduce",
+    "annotate":        "cluster",
+    "deg":             "annotate",
+    "gsea":            "deg",
+    "harmony":         "gsea",
+    "cluster_harmony": "harmony",
+    "pseudobulk":      "annotate",   # runs off annotated, not harmony
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# CONFIG
+# ══════════════════════════════════════════════════════════════════════════════
+
+def load_config(config_path: str) -> dict:
+    with open(config_path) as f:
+        cfg = yaml.safe_load(f)
+    return cfg
+
+
+def get_step_cfg(cfg: dict, step: str) -> dict:
+    """Return the step sub-config, defaulting enabled=True and empty params."""
+    step_cfg = cfg.get("steps", {}).get(step, {})
+    if isinstance(step_cfg, bool):
+        # shorthand: step: false
+        return {"enabled": step_cfg, "params": {}}
+    return {
+        "enabled": step_cfg.get("enabled", True),
+        "params":  step_cfg.get("params", {}),
+        "input_override": step_cfg.get("input_override"),
+    }
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# INPUT RESOLUTION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def resolve_input(step: str, cfg: dict, processed_dir: Path) -> Path:
+    """
+    Return the input path for a step.
+    Priority:
+      1. input_override in step config
+      2. output of predecessor step (cached file)
+      3. raw_input from paths (for qc only)
+    Raises if nothing is found.
+    """
+    step_cfg = get_step_cfg(cfg, step)
+
+    # 1. explicit override
+    if step_cfg.get("input_override"):
+        p = Path(step_cfg["input_override"])
+        if not p.exists():
+            raise FileNotFoundError(
+                f"[{step}] input_override path not found: {p}"
+            )
+        return p
+
+    # 2. predecessor output
+    pred = STEP_PREDECESSOR[step]
+    if pred is not None:
+        pred_out = processed_dir / STEP_OUTPUT[pred]
+        if pred_out.exists():
+            return pred_out
+        raise FileNotFoundError(
+            f"[{step}] requires output of '{pred}' at {pred_out}\n"
+            f"  Options:\n"
+            f"    • Run '{pred}' first\n"
+            f"    • Add 'input_override' under steps.{step} in your config"
+        )
+
+    # 3. raw input (qc only)
+    raw = cfg.get("paths", {}).get("raw_input")
+    if raw:
+        p = Path(raw)
+        if not p.exists():
+            raise FileNotFoundError(
+                f"[{step}] raw_input not found: {p}"
+            )
+        return p
+
+    raise ValueError(
+        f"[{step}] No input source found. "
+        f"Set paths.raw_input or steps.{step}.input_override in your config."
+    )
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+
+def validate_plan(active_steps: list[str], cfg: dict, processed_dir: Path) -> None:
+    """
+    Check that every active step will have an input before we start running.
+    Skips the check for steps whose predecessor is also active in this run
+    (their input will be produced during the run itself).
+    Fails loudly with a clear message if anything is missing.
+    """
+    errors = []
+    for step in active_steps:
+        pred = STEP_PREDECESSOR[step]
+        # If the predecessor is also running in this batch, input will be
+        # produced during the run — no need to validate it exists now.
+        if pred is not None and pred in active_steps:
+            continue
+        try:
+            resolve_input(step, cfg, processed_dir)
+        except (FileNotFoundError, ValueError) as e:
+            errors.append(str(e))
+
+    if errors:
+        print("\n[OmicSage] Validation failed — fix these before running:\n")
+        for e in errors:
+            print(f"  ✗  {e}\n")
+        sys.exit(1)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# STEP RUNNERS
+# ══════════════════════════════════════════════════════════════════════════════
+
+def run_qc(input_path: Path, out: Path, reports_dir: Path,
+           params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[qc] cached → {out}")
+        return out
+
+    print("[qc] running …")
+    import scanpy as sc
+    from pipeline.modules.qc.ingest import load_dataset
+    from pipeline.modules.qc.qc import run_qc as _run_qc
+
+    sample_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
+    adata = load_dataset(input_path, sample_name=sample_name)
+    mdata, metrics = _run_qc(
+        adata,
+        min_genes=params.get("min_genes", 200),
+        max_genes=params.get("max_genes", 2500),
+        max_mt_pct=params.get("max_mt_pct", 5.0),
+        remove_doublets=params.get("remove_doublets", True),
+        generate_report=True,
+        report_path=str(reports_dir / "01_qc_report.html"),
+        sample_name=sample_name,
+    )
+
+    rna = mdata["rna"]
+    rna.write_h5ad(out)
+    if "adt" in mdata.mod:
+        mdata["adt"].write_h5ad(out.parent / "01_qc_adt.h5ad")
+
+    pass_rate = 100 * metrics["n_cells_output"] / metrics["n_cells_input"]
+    print(f"[qc] {metrics['n_cells_output']:,} cells kept ({pass_rate:.1f}%) → {out}")
+    return out
+
+
+def run_normalize(input_path: Path, out: Path, reports_dir: Path,
+                  params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[normalize] cached → {out}")
+        return out
+
+    print("[normalize] running …")
+    import scanpy as sc
+    from pipeline.modules.qc.normalize import normalize
+    from pipeline.modules.qc.normalization_report import run_normalization_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_norm, metrics = normalize(
+        adata,
+        batch_key=params.get("batch_key", "batch"),
+        target_sum=params.get("target_sum", 1e4),
+        n_top_genes=params.get("n_top_genes", 2000),
+        hvg_flavor=params.get("hvg_flavor", "seurat"),
+        inplace=False,
+    )
+
+    dataset_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
+    run_normalization_report(
+        adata_norm=adata_norm,
+        metrics=metrics,
+        report_path=str(reports_dir / "02_normalization_report.html"),
+        dataset_name=dataset_name,
+    )
+
+    adata_norm.write_h5ad(out)
+    print(f"[normalize] HVGs={metrics['n_hvg_selected']} → {out}")
+    return out
+
+
+def run_reduce(input_path: Path, out: Path, reports_dir: Path,
+               params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[reduce] cached → {out}")
+        return out
+
+    print("[reduce] running …")
+    import scanpy as sc
+    from pipeline.modules.qc.reduce import reduce
+    from pipeline.modules.qc.reduce_report import run_reduce_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_reduced, metrics = reduce(
+        adata,
+        n_comps=params.get("n_comps", 50),
+        n_pcs=params.get("n_pcs"),
+        n_pcs_method=params.get("n_pcs_method", "elbow"),
+        n_neighbors=params.get("n_neighbors", 15),
+        inplace=False,
+    )
+
+    dataset_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
+    run_reduce_report(
+        adata_reduced=adata_reduced,
+        metrics=metrics,
+        report_path=str(reports_dir / "03_reduce_report.html"),
+        dataset_name=dataset_name,
+    )
+
+    adata_reduced.write_h5ad(out)
+    prov = adata_reduced.uns["omicsage_reduce"]
+    print(
+        f"[reduce] {prov['n_pcs_used']} PCs"
+        f" ({prov['cumulative_variance_explained_by_selected_pcs']*100:.1f}% var)"
+        f" → {out}"
+    )
+    return out
+
+
+def run_cluster(input_path: Path, out: Path, reports_dir: Path,
+                params: dict, cfg: dict) -> Path:
+    # Always re-run cluster if best_resolution_override is set
+    # (user inspected and made a decision — honour it)
+    best_resolution_override = params.get("best_resolution_override")
+    if out.exists() and best_resolution_override is None:
+        print(f"[cluster] cached → {out}")
+        return out
+    if out.exists() and best_resolution_override is not None:
+        print(f"[cluster] best_resolution_override={best_resolution_override}, re-running …")
+
+    print("[cluster] running …")
+    import scanpy as sc
+    from pipeline.modules.clustering.cluster import cluster
+    from pipeline.modules.clustering.cluster_report import run_cluster_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_clustered, metrics = cluster(
+        adata,
+        resolution_range=params.get("resolution_range", [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]),
+        best_resolution_override=best_resolution_override,
+        inplace=False,
+    )
+
+    dataset_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
+    run_cluster_report(
+        adata_clustered=adata_clustered,
+        metrics=metrics,
+        report_path=str(reports_dir / "04_cluster_report.html"),
+        dataset_name=dataset_name,
+    )
+
+    adata_clustered.write_h5ad(out)
+    print(
+        f"[cluster] res={metrics['best_resolution']}"
+        f"  {metrics['best_n_clusters']} clusters"
+        f"  ({metrics['selection_reason']}) → {out}"
+    )
+    return out
+
+
+def run_annotate(input_path: Path, out: Path, reports_dir: Path,
+                 params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[annotate] cached → {out}")
+        return out
+
+    print("[annotate] running …")
+    import scanpy as sc
+    from pipeline.modules.annotation.annotate import annotate
+    from pipeline.modules.annotation.annotate_report import run_annotate_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_annotated, annotation_dict = annotate(
+        adata,
+        methods=params.get("methods", ["celltypist", "markers", "vote"]),
+        leiden_col=params.get("leiden_col", "leiden"),
+        celltypist_models=params.get("celltypist_models", ["Immune_All_High.pkl"]),
+        inplace=False,
+    )
+
+    dataset_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
+    run_annotate_report(
+        adata_annotated=adata_annotated,
+        annotation_dict=annotation_dict,
+        report_path=str(reports_dir / "05_annotate_report.html"),
+        dataset_name=dataset_name,
+    )
+
+    adata_annotated.write_h5ad(out)
+    n_types = adata_annotated.obs["cell_type_vote"].nunique()
+    print(f"[annotate] {n_types} consensus types → {out}")
+    return out
+
+
+def run_deg(input_path: Path, out: Path, reports_dir: Path,
+            params: dict, cfg: dict) -> tuple[Path, dict]:
+    print("[deg] running …")
+    import scanpy as sc
+    from pipeline.modules.downstream.deg import deg
+    from pipeline.modules.downstream.deg_report import generate_deg_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_deg, deg_dict = deg(
+        adata,
+        groupby=params.get("groupby", "cell_type_vote"),
+        method=params.get("method", "wilcoxon"),
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        n_genes=params.get("n_genes", 500),
+        inplace=False,
+    )
+
+    generate_deg_report(
+        adata=adata_deg,
+        deg_dict=deg_dict,
+        output_path=str(reports_dir / "06_deg_report.html"),
+        top_n_volcano=params.get("top_n_volcano", 10),
+        top_n_dotplot=params.get("top_n_dotplot", 5),
+        max_volcano_groups=params.get("max_volcano_groups", 9),
+    )
+
+    adata_deg.write_h5ad(out)
+    total_sig = sum(len(df) for df in deg_dict["results"].values())
+    print(f"[deg] {len(deg_dict['results'])} groups  {total_sig:,} DEGs → {out}")
+    return out, deg_dict
+
+
+def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
+    """Reconstruct deg_dict from cached file (needed when gsea runs after skipping deg)."""
+    import scanpy as sc
+    from pipeline.modules.downstream.deg import deg
+
+    deg_path = processed_dir / STEP_OUTPUT["deg"]
+    adata = sc.read_h5ad(deg_path)
+    _, deg_dict = deg(
+        adata,
+        groupby=params.get("groupby", "cell_type_vote"),
+        method=params.get("method", "wilcoxon"),
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        n_genes=params.get("n_genes", 500),
+        inplace=False,
+    )
+    return deg_path, deg_dict
+
+
+def run_gsea(input_path: Path, out: Path, reports_dir: Path,
+             params: dict, cfg: dict, deg_dict: dict) -> Path:
+    print("[gsea] running …")
+    import scanpy as sc
+    from pipeline.modules.downstream.gsea import gsea
+    from pipeline.modules.downstream.gsea_report import generate_gsea_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_gsea, gsea_dict = gsea(
+        adata,
+        deg_dict=deg_dict,
+        gene_sets=params.get("gene_sets", [
+            "GO_Biological_Process_2023",
+            "KEGG_2021_Human",
+            "Reactome_2022",
+        ]),
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        top_n_genes=params.get("top_n_genes"),
+        min_genes=params.get("min_genes", 5),
+        organism=params.get("organism", cfg["dataset"].get("organism", "human")),
+        inplace=False,
+    )
+
+    generate_gsea_report(
+        gsea_dict=gsea_dict,
+        output_path=str(reports_dir / "07_gsea_report.html"),
+        top_n_table=params.get("top_n_table", 5),
+        top_n_bar=params.get("top_n_bar", 10),
+    )
+
+    adata_gsea.write_h5ad(out)
+    prov = gsea_dict["provenance"]
+    print(f"[gsea] {prov['n_groups_tested']} groups tested  {prov['n_groups_skipped']} skipped → {out}")
+    return out
+
+
+def run_harmony(input_path: Path, out: Path, reports_dir: Path,
+                params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[harmony] cached → {out}")
+        return out
+
+    print("[harmony] running …")
+    import scanpy as sc
+    from pipeline.modules.integration.harmony_correct import harmony_correct
+    from pipeline.modules.integration.harmony_report import generate_harmony_report
+
+    adata = sc.read_h5ad(input_path)
+    adata = harmony_correct(
+        adata,
+        batch_key=params.get("batch_key", "batch"),
+        n_pcs=params.get("n_pcs", 50),
+        n_neighbors=params.get("n_neighbors", 15),
+        umap_min_dist=params.get("umap_min_dist", 0.3),
+        random_state=params.get("random_state", 0),
+        copy=False,
+    )
+
+    generate_harmony_report(
+        adata=adata,
+        output_path=str(reports_dir / "08_harmony_report.html"),
+    )
+
+    adata.write_h5ad(out)
+    prov = adata.uns["omicsage_harmony"]
+    print(f"[harmony] {prov['n_batches']} batches corrected  {prov['elapsed_seconds']:.1f}s → {out}")
+    return out
+
+
+def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
+                        params: dict, cfg: dict) -> Path:
+    if out.exists():
+        print(f"[cluster_harmony] cached → {out}")
+        return out
+
+    print("[cluster_harmony] running …")
+    import scanpy as sc
+    from pipeline.modules.clustering.cluster import cluster, compute_ari
+
+    adata = sc.read_h5ad(input_path)
+
+    adata, metrics_pre = cluster(
+        adata,
+        resolution_range=params.get("resolution_range", [0.2, 0.4, 0.6, 0.8, 1.0]),
+        cluster_key="leiden",
+        inplace=True,
+    )
+    adata, metrics_post = cluster(
+        adata,
+        resolution_range=params.get("resolution_range", [0.2, 0.4, 0.6, 0.8, 1.0]),
+        neighbors_key="neighbors_harmony",
+        cluster_key="leiden_harmony",
+        inplace=True,
+    )
+
+    ari = compute_ari(adata, "leiden", "leiden_harmony")
+    print(
+        f"[cluster_harmony] pre={metrics_pre['best_n_clusters']} clusters"
+        f"  post={metrics_post['best_n_clusters']} clusters"
+        f"  ARI={ari:.4f} → {out}"
+    )
+
+    adata.write_h5ad(out)
+    return out
+
+
+def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
+                   params: dict, cfg: dict) -> Path:
+    print("[pseudobulk] running …")
+    import scanpy as sc
+    from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
+    from pipeline.modules.downstream.pseudobulk_deg_report import generate_pseudobulk_deg_report
+
+    adata = sc.read_h5ad(input_path)
+    adata_pb, pb_dict = pseudobulk_deg(
+        adata,
+        groupby=params.get("groupby", "cell_type_vote"),
+        donor_key=params.get("donor_key", "batch"),
+        counts_layer=params.get("counts_layer", "counts"),
+        min_cells=params.get("min_cells", 10),
+        min_samples=params.get("min_samples", 3),
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        inplace=False,
+    )
+
+    generate_pseudobulk_deg_report(
+        adata=adata_pb,
+        pb_dict=pb_dict,
+        output_path=str(reports_dir / "10_pseudobulk_deg_report.html"),
+        top_n_volcano=params.get("top_n_volcano", 10),
+        top_n_dotplot=params.get("top_n_dotplot", 5),
+        max_volcano_groups=params.get("max_volcano_groups", 11),
+    )
+
+    adata_pb.write_h5ad(out)
+    prov = pb_dict["provenance"]
+    total_sig = sum(len(df) for df in pb_dict["results"].values())
+    print(
+        f"[pseudobulk] {prov['n_groups']} groups tested"
+        f"  {prov['n_skipped']} skipped"
+        f"  {total_sig:,} DEGs → {out}"
+    )
+    return out
+
+
+# Map step name → runner function
+STEP_RUNNERS = {
+    "qc":              run_qc,
+    "normalize":       run_normalize,
+    "reduce":          run_reduce,
+    "cluster":         run_cluster,
+    "annotate":        run_annotate,
+    "deg":             run_deg,
+    "gsea":            run_gsea,
+    "harmony":         run_harmony,
+    "cluster_harmony": run_cluster_harmony,
+    "pseudobulk":      run_pseudobulk,
+}
+
+
+# ══════════════════════════════════════════════════════════════════════════════
+# MAIN
+# ══════════════════════════════════════════════════════════════════════════════
+
+def parse_args():
+    parser = argparse.ArgumentParser(
+        description="OmicSage — Generic Pipeline Runner",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    parser.add_argument("--config", required=True,
+                        help="Path to dataset YAML config (e.g. config/runs/GSE194122.yaml)")
+    parser.add_argument("--from-step", metavar="STEP", default=None,
+                        help="Start execution from this step (inclusive)")
+    parser.add_argument("--to-step", metavar="STEP", default=None,
+                        help="Stop execution at this step (inclusive)")
+    parser.add_argument("--step", metavar="STEP", default=None,
+                        help="Run exactly one step (shorthand for --from-step X --to-step X)")
+    return parser.parse_args()
+
+
+def resolve_step_window(from_step, to_step, step) -> tuple[int, int]:
+    """Return (from_idx, to_idx) into STEP_ORDER."""
+    if step:
+        if from_step or to_step:
+            print("Error: --step cannot be combined with --from-step / --to-step")
+            sys.exit(1)
+        from_step = to_step = step
+
+    from_idx = 0 if from_step is None else STEP_ORDER.index(from_step)
+    to_idx   = len(STEP_ORDER) - 1 if to_step is None else STEP_ORDER.index(to_step)
+
+    if from_idx > to_idx:
+        print(f"Error: --from-step '{from_step}' comes after --to-step '{to_step}'")
+        sys.exit(1)
+
+    return from_idx, to_idx
+
+
+def main():
+    args = parse_args()
+
+    # ── validate step names ────────────────────────────────────────────────────
+    for arg_name, val in [("--from-step", args.from_step),
+                           ("--to-step",   args.to_step),
+                           ("--step",      args.step)]:
+        if val and val not in STEP_ORDER:
+            print(f"Error: unknown step '{val}' for {arg_name}")
+            print(f"Valid steps: {', '.join(STEP_ORDER)}")
+            sys.exit(1)
+
+    cfg = load_config(args.config)
+    dataset_id   = cfg["dataset"]["id"]
+    dataset_name = cfg["dataset"].get("name", dataset_id)
+
+    processed_dir = Path(cfg["paths"]["processed_dir"])
+    reports_dir   = Path(cfg["paths"]["reports_dir"])
+    processed_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── build active step list ─────────────────────────────────────────────────
+    from_idx, to_idx = resolve_step_window(args.from_step, args.to_step, args.step)
+    window = STEP_ORDER[from_idx : to_idx + 1]
+    active_steps = [s for s in window if get_step_cfg(cfg, s)["enabled"]]
+
+    if not active_steps:
+        print(f"No enabled steps in the requested range: {window}")
+        sys.exit(0)
+
+    # ── validate inputs before touching anything ───────────────────────────────
+    validate_plan(active_steps, cfg, processed_dir)
+
+    # ── banner ─────────────────────────────────────────────────────────────────
+    start_time = datetime.now()
+    print("=" * 60)
+    print(f"OmicSage — {dataset_name}")
+    print(f"Steps    : {' → '.join(active_steps)}")
+    print(f"Started  : {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+    print("=" * 60)
+
+    # ── run ────────────────────────────────────────────────────────────────────
+    deg_dict = None   # carried from deg → gsea
+
+    import scanpy as sc
+    sc.settings.verbosity = 1
+
+    for step in active_steps:
+        step_cfg  = get_step_cfg(cfg, step)
+        params    = step_cfg["params"]
+        input_path = resolve_input(step, cfg, processed_dir)
+        out        = processed_dir / STEP_OUTPUT[step]
+
+        if step == "deg":
+            out, deg_dict = run_deg(input_path, out, reports_dir, params, cfg)
+
+        elif step == "gsea":
+            # deg_dict may not have been computed this run if deg was cached/skipped
+            if deg_dict is None:
+                deg_params = get_step_cfg(cfg, "deg")["params"]
+                _, deg_dict = _reload_deg_dict(processed_dir, deg_params)
+            run_gsea(input_path, out, reports_dir, params, cfg, deg_dict)
+
+        else:
+            STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg)
+
+    # ── footer ─────────────────────────────────────────────────────────────────
+    end_time = datetime.now()
+    elapsed  = end_time - start_time
+    hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+
+    print()
+    print("=" * 60)
+    print("Pipeline complete.")
+    print(f"Processed : {processed_dir}")
+    print(f"Reports   : {reports_dir}")
+    print(f"Elapsed   : {hours:02d}h {minutes:02d}m {seconds:02d}s")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

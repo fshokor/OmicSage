@@ -2,7 +2,7 @@
 
 > Locations: `pipeline/modules/qc/` · `pipeline/modules/annotation/` · `reports/`
 > Phase: 1 — Core scRNA Pipeline
-> Last updated: 2026-05-11 (session 5)
+> Last updated: 2026-05-12 (session 6)
 
 This document describes every script in the pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -1508,91 +1508,200 @@ python -m pytest tests/test_pseudobulk_deg.py -v    # 14 passed
 
 ---
 
-## 21. `run_GSE194122.py`
+## 21. `run_pipeline.py` + `config/runs/`
 
 **What it does**
 
-Master pipeline script for the GSE194122 BMMC CITE-seq dataset (NeurIPS 2021).
-Runs all 10 Phase 1 steps in order by calling the individual pipeline modules.
-Each step reads the previous step's output file, calls its module, saves the
-result, and generates the corresponding HTML report.
+Generic pipeline runner. Executes any subset of the 10 Phase 1 steps for any
+dataset. All dataset identity, paths, and parameters live in a per-dataset YAML
+config file — the runner itself never needs to be edited.
 
-**Location**: `pipeline/modules/run_GSE194122.py`
+**Location**: `run_pipeline.py` (repo root)
 
-**Output directories**
+**Config files**: `config/runs/<dataset_id>.yaml` — one file per dataset
 
-| Directory | Contents |
-|-----------|----------|
-| `data/processed/GSE194122/` | One `.h5ad` file per step (`01_qc.h5ad` → `10_pseudobulk_deg.h5ad`) |
-| `reports/GSE194122/` | One HTML report per step (`01_qc_report.html` → `10_pseudobulk_deg_report.html`) |
+---
 
-**Steps**
+### Config file structure
+
+```yaml
+dataset:
+  id: GSE194122
+  name: "BMMC CITE-seq (NeurIPS 2021)"
+  modality: cite        # cite | scrna | atac | multiome
+  organism: human
+
+paths:
+  raw_input: data/benchmark/GSE194122_cite_raw_only.h5ad
+  processed_dir: data/processed/GSE194122
+  reports_dir: reports/GSE194122
+
+steps:
+  qc:
+    enabled: true
+    params:
+      min_genes: 200
+      max_genes: 2500
+      max_mt_pct: 5.0
+      remove_doublets: true
+
+  normalize:
+    enabled: true
+    params:
+      batch_key: batch
+      target_sum: 10000
+      n_top_genes: 2000
+      hvg_flavor: seurat
+
+  # ... one block per step, same pattern
+  harmony:
+    enabled: false        # set false when no batch effects
+```
+
+Every step block supports an `input_override` field to inject a pre-existing
+file as the step's input, bypassing predecessor output:
+
+```yaml
+reduce:
+  enabled: true
+  input_override: data/external/already_normalized.h5ad
+```
+
+Full parameter reference: `config/schema.yaml`
+
+---
+
+### Step output files
 
 | Step | File saved | Report saved |
 |------|-----------|-------------|
-| 1. QC | `01_qc.h5ad` + `01_qc_adt.h5ad` | `01_qc_report.html` |
-| 2. Normalize | `02_normalized.h5ad` | `02_normalization_report.html` |
-| 3. Reduce | `03_reduced.h5ad` | `03_reduce_report.html` |
-| 4. Cluster | `04_clustered.h5ad` | `04_cluster_report.html` |
-| 5. Annotate | `05_annotated.h5ad` | `05_annotate_report.html` |
-| 6. DEG | `06_deg.h5ad` | `06_deg_report.html` |
-| 7. GSEA | `07_gsea.h5ad` | `07_gsea_report.html` |
-| 8. Harmony | `08_harmony.h5ad` | `08_harmony_report.html` |
-| 9. Cluster (Harmony) | `09_harmony_clustered.h5ad` | — |
-| 10. Pseudobulk DEG | `10_pseudobulk_deg.h5ad` | `10_pseudobulk_deg_report.html` |
+| qc | `01_qc.h5ad` + `01_qc_adt.h5ad` | `01_qc_report.html` |
+| normalize | `02_normalized.h5ad` | `02_normalization_report.html` |
+| reduce | `03_reduced.h5ad` | `03_reduce_report.html` |
+| cluster | `04_clustered.h5ad` | `04_cluster_report.html` |
+| annotate | `05_annotated.h5ad` | `05_annotate_report.html` |
+| deg | `06_deg.h5ad` | `06_deg_report.html` |
+| gsea | `07_gsea.h5ad` | `07_gsea_report.html` |
+| harmony | `08_harmony.h5ad` | `08_harmony_report.html` |
+| cluster_harmony | `09_harmony_clustered.h5ad` | — |
+| pseudobulk | `10_pseudobulk_deg.h5ad` | `10_pseudobulk_deg_report.html` |
 
-**Caching behaviour**
+All paths are under `paths.processed_dir` and `paths.reports_dir` from the config.
 
-Steps 1–5, 8, and 9 are cached: if the output `.h5ad` already exists the step
-is skipped entirely and the cached path is returned. Steps 6, 7, and 10 always
-re-run so reports stay fresh when parameters change.
+`pseudobulk` reads from `annotate` output (step 5), not `cluster_harmony` (step 9) —
+it needs `obs['cell_type_vote']`, `obs['batch']`, and `layers['counts']` which live
+on the annotated file. Harmony does not add or modify these columns.
 
-**`--from-step` flag**
+---
 
-Resume from any step without rerunning earlier ones. Steps before the chosen
-start point must already have their `.h5ad` output on disk.
+### CLI reference
 
 ```bash
-# Full run
-python pipeline/modules/run_GSE194122.py
+# Full pipeline
+python run_pipeline.py --config config/runs/GSE194122.yaml
 
-# Resume from step 3 (steps 1 and 2 already cached)
-python pipeline/modules/run_GSE194122.py --from-step 3
+# Stop at a checkpoint (inclusive) — then inspect the report
+python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+
+# Resume from a checkpoint (inclusive)
+python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+
+# Run a specific range
+python run_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
+
+# Run exactly one step
+python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+
+# Valid step names (in order):
+# qc  normalize  reduce  cluster  annotate  deg  gsea  harmony  cluster_harmony  pseudobulk
 ```
 
-**Step 10 reads from step 5, not step 9** — pseudobulk DEG needs
-`obs['cell_type_vote']`, `obs['batch']`, and `layers['counts']` which live on
-the annotated file. Harmony does not add or modify these columns.
+---
 
-**Logging**
+### Interactive checkpoint workflow (cluster resolution)
 
-Redirect all output to a log file using `>>` (append) so previous runs are
-preserved. Use `run.bat` as a wrapper for automatic separators and UTF-8
-encoding on Windows:
+The standard single-cell workflow requires inspecting clusters before continuing.
+The runner supports this explicitly:
+
+```bash
+# 1. Run through clustering
+python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+
+# 2. Open reports/GSE194122/04_cluster_report.html
+#    Decide you want resolution 0.8 instead of the auto-selected value
+
+# 3. Add to config under cluster.params:
+#      resolution_override: 0.8
+
+# 4. Re-run clustering with the chosen resolution
+python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
+
+# 5. Continue from annotation onward
+python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+```
+
+---
+
+### Common config patterns
+
+**No batch effects — skip Harmony:**
+```yaml
+harmony:         { enabled: false }
+cluster_harmony: { enabled: false }
+```
+
+**Pre-processed data — start from reduce:**
+```yaml
+qc:        { enabled: false }
+normalize: { enabled: false }
+reduce:
+  enabled: true
+  input_override: data/external/already_normalized.h5ad
+```
+
+**New dataset:** copy `config/runs/GSE194122.yaml` → `config/runs/GSE166635.yaml`,
+update `dataset.id`, `paths.raw_input`, and any parameters that differ.
+Zero Python required.
+
+---
+
+### Validation
+
+The runner validates all inputs before executing any step. If a step's required
+input is missing and no `input_override` is provided, it exits with a clear
+message before touching any data:
+
+```
+[OmicSage] Validation failed — fix these before running:
+
+  ✗  [reduce] requires output of 'normalize' at data/processed/GSE194122/02_normalized.h5ad
+       Options:
+         • Run 'normalize' first
+         • Add 'input_override' under steps.reduce in your config
+```
+
+---
+
+### Caching
+
+If a step's output `.h5ad` already exists it is skipped (cached) and the
+existing path is passed to the next step. The one exception is `cluster` when
+`resolution_override` is set — in that case the step always re-runs to apply
+the analyst's chosen resolution.
+
+---
+
+### Logging
 
 ```bat
 @echo off
 set PYTHONUTF8=1
 echo. >> logs\GSE194122.log
 echo ======================================================== >> logs\GSE194122.log
-echo RERUN from step %1 -- %date% %time% >> logs\GSE194122.log
+echo RUN %date% %time% >> logs\GSE194122.log
 echo ======================================================== >> logs\GSE194122.log
-python pipeline\modules\run_GSE194122.py --from-step %1 >> logs\GSE194122.log 2>&1
+python run_pipeline.py --config configs\GSE194122.yaml >> logs\GSE194122.log 2>&1
 ```
 
-```bat
-run.bat 3
-```
-
-**Timing**
-
-The script prints start time, end time, and elapsed time (`HHh MMm SSs`) at
-the end of every run so log files record exactly how long each run took.
-
-**Known issues**
-
-- Unicode characters (`→`, `✓`) in report modules cause `UnicodeEncodeError`
-  on Windows (cp1252 terminal). Set `PYTHONUTF8=1` before running or replace
-  Unicode symbols with ASCII equivalents in the report modules.
-- `metrics['n_hvgs']` does not exist — the correct key is `metrics['n_hvg_selected']`
-  (fixed in current version of the script).
+The runner prints start time, end time, and elapsed time (`HHh MMm SSs`) at
+the end of every run.
