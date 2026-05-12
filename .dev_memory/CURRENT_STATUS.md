@@ -1,8 +1,8 @@
 # OmicSage — Current Status
-> Last updated: 2026-05-11
+> Last updated: 2026-05-12 (session 7)
 
 ## Phase
-Phase 1 — Core scRNA Pipeline
+Phase 2 — Report Engine (Phase 1 complete ✅)
 
 ## What Is Built and Tested Right Now
 
@@ -17,6 +17,10 @@ Phase 1 — Core scRNA Pipeline
 - Auto-detects 10x MEX, H5, AnnData formats
 - Moves normalized values out of .X, puts raw counts in .X
 - Handles GSE194122 CITE-seq and multiome, GSE166635 HCC
+- NEW: load_dataset_dir() — scans parent folder, loads all MTX subfolders,
+  concatenates with obs['sample'] + obs['batch'] per subfolder name
+- NEW: load_dataset() auto-routes to load_dataset_dir() when given a parent
+  folder containing MTX subfolders (no config change needed)
 
 ### ✅ QC (pipeline/modules/qc/qc.py)
 - Modality-aware: auto-detects GEX / ADT / ATAC from var['feature_types']
@@ -53,7 +57,7 @@ Phase 1 — Core scRNA Pipeline
 - Silhouette score per resolution; best_resolution_override for manual pinning
 - obs['leiden_*'] per resolution + obs['leiden'] convenience key
 - neighbors_key param — routes to Harmony graph when set
-- cluster_key param — stores results in obs['leiden_harmony'] (coexists with leiden)
+- cluster_key param — stores results in obs['leiden_harmony']
 - compute_ari(adata, key_a, key_b) — ARI comparison between any two obs columns
 - Provenance stored in uns['omicsage_cluster']
 - 16 tests passing in tests/test_cluster.py
@@ -64,9 +68,9 @@ Phase 1 — Core scRNA Pipeline
 
 ### ✅ Cell-Type Annotation (pipeline/modules/annotation/annotate.py)
 - Methods: CellTypist (Immune_All_High + Immune_All_Low), marker gene scoring, majority vote
-- CellTypist models cached in data/references/celltypist/ (project-local)
+- CellTypist models cached in data/references/celltypist/
 - obs columns: celltypist_coarse, celltypist_fine, cell_type_markers,
-  cell_type_groundtruth (preserved from obs['cell_type']), cell_type_vote, cell_type_confidence
+  cell_type_groundtruth, cell_type_vote, cell_type_confidence
 - Provenance stored in uns['omicsage_annotate']
 - 18 tests passing, 1 skipped in tests/test_annotate.py
 
@@ -75,94 +79,86 @@ Phase 1 — Core scRNA Pipeline
 - Per-cluster table with all method labels and confidence scores
 
 ### ✅ DEG (pipeline/modules/downstream/deg.py)
-- Input: annotated AnnData with obs['cell_type_vote'] and layers['logcounts']
-- Wilcoxon rank-sum via sc.tl.rank_genes_groups(), one-vs-rest per cell type
-- rankby_abs=True — returns both up- and downregulated genes
-- n_genes default 500 — prevents artificial cap on significant DEGs
-- exclude_gene_prefixes param — post-filters RPL/RPS/MT- without biasing fold-changes
-- Fallback: tries obs['cell_type_vote'], falls back to obs['leiden'] with UserWarning
-- BH FDR correction; configurable min_logfc and max_pval_adj thresholds
+- Wilcoxon rank-sum, one-vs-rest, rankby_abs=True, BH correction
+- n_genes default 500, exclude_gene_prefixes param
 - Provenance stored in uns['omicsage_deg']
 - 11 tests passing in tests/test_deg.py
 
 ### ✅ DEG Report (reports/deg_report.py)
-- max_volcano_groups default 20; truncation note + sorted by DEG count
-- Direction column in Top DEGs table (▲ Up red / ▼ Down blue)
-- n_genes stat card in Run Summary; exclude_prefixes info note
+- Volcano plots + dot plot + summary table + direction column
 
 ### ✅ GSEA (pipeline/modules/downstream/gsea.py)
-- Input: deg_dict['results'] + adata (for gene universe)
-- ORA via gseapy.enrichr (Fisher exact + BH correction)
-- Gene sets: GO Biological Process 2023, KEGG 2021 Human, Reactome 2022
+- ORA via gseapy.enrichr — GO BP / KEGG / Reactome
 - direction param: "up" | "down" | "both"
-- exclude_gene_prefixes param: filters query list only, universe unchanged
 - Provenance stored in uns['omicsage_gsea']
-- 8 tests passing in tests/test_gsea.py (all Enrichr calls mocked — CI-safe)
+- 8 tests passing in tests/test_gsea.py (Enrichr calls mocked — CI-safe)
 
 ### ✅ GSEA Report (reports/gsea_report.py)
-- Run summary, top pathways table, bar charts per group, bubble plot
-- Direction badges: ▲ Up / ▼ Down when direction="both"
+- Bar charts + bubble plot + direction badges
 
 ### ✅ Harmony Batch Correction (pipeline/modules/integration/harmony_correct.py)
-- Harmony integration on obs[batch_key] (default: 'batch')
-- Corrected embedding stored in obsm['X_pca_harmony']
-- Original UMAP preserved as obsm['X_umap_precorrection'] before overwriting
-- Post-correction UMAP stored as obsm['X_umap_harmony'] (not X_umap)
-- Neighbor graph recomputed on corrected embedding → uns['neighbors_harmony'],
-  obsp['neighbors_harmony_connectivities'], obsp['neighbors_harmony_distances']
+- obsm['X_pca_harmony'], obsm['X_umap_precorrection'], obsm['X_umap_harmony']
+- neighbors_harmony graph in uns + obsp
 - Provenance stored in uns['omicsage_harmony']
 - 13 tests passing in tests/test_harmony.py
 
 ### ✅ Harmony Report (reports/harmony_report.py)
-- Run summary: stat cards + output key verification
-- Batch composition: bar chart + table
-- UMAP embeddings: side-by-side X_umap_precorrection vs X_umap_harmony, coloured by batch
-- Batch mixing metrics: per-cell same-batch neighbour fraction histogram
-- Per-PC correction shift: bar chart + top 5 most-shifted PCs table
+- Batch composition, mixing metrics, PC shift, UMAP comparison
 
-### ✅ Clustering on Harmony Graph (pipeline/modules/clustering/cluster.py)
-- neighbors_key param routes to obsp['neighbors_harmony_connectivities']
-- cluster_key param stores results in obs['leiden_harmony']
-- compute_ari() compares any two obs clustering columns
-- 16 tests passing (includes harmony-routing tests)
-
-### ✅ Pseudobulk DEG (pipeline/modules/downstream/pseudobulk_deg.py) ← NEW
-- Input: annotated AnnData with obs['cell_type_vote'], obs['batch'], layers['counts']
-- Aggregates raw counts per (cell_type, donor) into bulk-like matrices
-- Runs DESeq2 Wald tests via pydeseq2, one-vs-rest per cell type
-- min_cells param: drops (cell_type, donor) combos with too few cells
-- min_samples param: skips cell types with too few donor pseudo-samples (with UserWarning)
-- Output schema identical to deg.py deg_dict — results, summary_df, provenance, pairwise, skipped
+### ✅ Pseudobulk DEG (pipeline/modules/downstream/pseudobulk_deg.py)
+- DESeq2 Wald tests via pydeseq2, one-vs-rest per cell type
+- Aggregate layers['counts'] per (cell_type, donor)
+- min_cells + min_samples filters with graceful skip + UserWarning
+- Output schema identical to deg.py deg_dict
 - Provenance stored in uns['omicsage_pseudobulk_deg']
 - 14 tests passing in tests/test_pseudobulk_deg.py
 
-### ✅ Pseudobulk DEG Report (reports/pseudobulk_deg_report.py) ← NEW
-- Dedicated report (not deg_report.py) — reads uns['omicsage_pseudobulk_deg'] natively
-- Extra sections vs deg_report: Skipped Groups table, pseudobulk-specific stat cards
-  (donor_key, counts_layer, min_cells, min_samples)
-- Same CSS/style as deg_report.py — consistent look across all reports
-- Sections: run summary • skipped groups • top DEGs table • volcano plots • dot plot
+### ✅ Pseudobulk DEG Report (reports/pseudobulk_deg_report.py)
+- Skipped groups section + pseudobulk-specific stat cards
 
 ### ✅ Notebook (notebooks/phase1_qc.ipynb)
-- Steps 1–9: all prior steps
-- Step 10 (Pseudobulk DEG) — 9 cells: imports, load, run pseudobulk_deg(),
-  sanity checks, biological sanity check (CD3D/CD14/MS4A1), HTML report via
-  generate_pseudobulk_deg_report(), save GSE194122_cite_pseudobulk_deg.h5ad
+- Steps 1–10 complete
+
+### ✅ MILESTONE: Wang et al. 2025 HCC Benchmark ← DONE THIS SESSION
+- Full Phase 1 pipeline run on GSE166635 (HCC1 normal + HCC2 tumour)
+- Cell types identified: Hepatocytes, T cells, Macrophages, Endothelial,
+  Fibroblasts, B cells
+- Known HCC markers recovered in DEG results (AFP, GPC3, EPCAM in hepatocytes;
+  CD3D in T cells; CD68 in macrophages)
+- Liver metabolism and immune pathway terms in GSEA results
+- Reports generated: reports/GSE166635/ (all 9 steps, pseudobulk skipped)
+- Processed files: data/processed/GSE166635/ (steps 01–09)
+
+### ✅ Generic Pipeline Runner (run_pipeline.py)
+- Config-driven, --from-step / --to-step / --step flags
+- Validation at startup, caching, resolution_override support
+- Fresh-run validation bug fixed
+
+### ✅ Config System (config/)
+- config/schema.yaml — platform master schema
+- config/runs/GSE194122.yaml, GSE166635.yaml, GSE194122_multiome.yaml
+
+## Phase 2 — What Is Being Built Next
+- Quarto report templates (HTML + PDF) replacing hand-coded HTML reports
+- python-pptx slide deck generator
+- Auto-methods text from provenance metadata
+- Goal: one command → complete PDF report + PowerPoint slides
 
 ## Total Tests Passing
-~231 (217 pre-session + 14 new pseudobulk tests)
+~231
 
 ## What Is NOT Built Yet
-- MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper ← NEXT
-- scVI batch correction → deferred to Phase 6 (MultiVI)
-- ScType-py + SingleR-py annotation (deferred — see docs/ANNOTATION_PLAN.md)
-- ADT QC + CLR normalization (mdata["adt"] path)
+- Phase 2: Quarto report templates ← NEXT
+- Phase 2: python-pptx slide deck generator
+- Phase 2: auto-methods text + figure captioning
+- scVI batch correction → deferred to Phase 6
+- ScType-py + SingleR-py annotation
+- ADT QC + CLR normalization
 - scATAC module (Phase 4)
 - Spatial module (Phase 5)
 - Multiome module (Phase 6)
 - Streamlit UI (Phase 7)
 - CLI (Phase 7)
-- Quarto reports (Phase 2)
 
 ## Processed Data Files
 - data/processed/GSE194122_cite_rna_qc.h5ad
@@ -178,4 +174,8 @@ Phase 1 — Core scRNA Pipeline
 - data/processed/GSE194122_cite_gsea.h5ad
 - data/processed/GSE194122_cite_harmony.h5ad
 - data/processed/GSE194122_cite_harmony_clustered.h5ad
-- data/processed/GSE194122_cite_pseudobulk_deg.h5ad  ← NEW
+- data/processed/GSE194122_cite_pseudobulk_deg.h5ad
+
+## New Output Structure (run_pipeline.py)
+- data/processed/<dataset_id>/01_qc.h5ad → 10_pseudobulk_deg.h5ad
+- reports/<dataset_id>/01_qc_report.html → 10_pseudobulk_deg_report.html

@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-11
+> Last updated: 2026-05-12 (session 7 — Phase 1 complete, Phase 2 starting)
 
 ## Phase 0 — Foundation
 - [x] GitHub repo created
@@ -8,13 +8,14 @@
 - [x] Full repo structure scaffolded
 - [x] Docker base images (Python + R) — defined
 - [x] CI/CD via GitHub Actions
-- [x] YAML config schema defined
+- [x] YAML config schema defined (config/schema.yaml — updated this session)
 - [x] Benchmark dataset downloaded (GSE194122 CITE-seq + multiome)
 - [x] .dev_memory/ system initialized and filled
 - [x] README with project description and badges
 
 ## Phase 1 — Core scRNA Pipeline
 - [x] Data ingestion: 10x MEX, H5, AnnData auto-detection
+- [x] Data ingestion: multi-sample MTX parent folder (load_dataset_dir) ← NEW
 - [x] QC module: MT%, genes/cell, Scrublet doublets
 - [x] Modality-aware QC: MuData return, GEX/ADT/ATAC splitting
 - [x] Normalization: CP10K + log1p + HVG selection (seurat_v3)
@@ -24,48 +25,28 @@
 - [x] PCA + UMAP + neighbors (reduce.py)
 - [x] Data-driven PC selection (elbow via kneed + variance fallback)
 - [x] Dimensionality reduction report (HTML, self-contained)
-- [x] Notebook Step 3 — dimensionality reduction section
 - [x] Leiden clustering with resolution sweep (cluster.py)
 - [x] Silhouette score per resolution + best_resolution_override
 - [x] Clustering report (HTML, self-contained)
-- [x] Notebook Step 4 — clustering section + ARI milestone check
-- [x] Cell-type annotation: CellTypist + marker scoring + majority vote (annotate.py)
+- [x] Cell-type annotation: CellTypist + marker scoring + majority vote
 - [x] Annotation report (HTML, self-contained)
-- [x] Notebook Step 5 — annotation section + broad-match accuracy check
-- [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction (deg.py)
-- [x] DEG: rankby_abs=True — both up and downregulated genes returned
-- [x] DEG: exclude_gene_prefixes param (RPL/RPS/MT- filtering)
-- [x] DEG: n_genes default raised 200→500
-- [x] DEG report: volcano plots + dot plot + summary table (deg_report.py)
-- [x] DEG report: Direction column (▲/▼) in Top DEGs table
-- [x] DEG report: max_volcano_groups raised to 20 + truncation note
-- [x] Notebook Step 6 — DEG section + canonical marker gene sanity check
-- [x] GSEA: ORA via gseapy.enrichr — GO BP / KEGG / Reactome (gsea.py)
-- [x] GSEA: direction param — "up" | "down" | "both"
-- [x] GSEA: exclude_gene_prefixes param (query list only, universe unchanged)
-- [x] GSEA report: bar charts + bubble plot + direction badges (gsea_report.py)
-- [x] Notebook Step 7 — GSEA section + immune pathway sanity check
-- [x] Harmony batch correction: harmony_correct.py
-- [x] Harmony: obsm['X_pca_harmony'] — corrected embedding
-- [x] Harmony: obsm['X_umap_precorrection'] — original UMAP preserved
-- [x] Harmony: obsm['X_umap_harmony'] — UMAP on corrected embedding
-- [x] Harmony: neighbors_harmony graph in uns + obsp
+- [x] DEG: Wilcoxon rank-sum, one-vs-rest, BH correction
+- [x] DEG report: volcano plots + dot plot + summary table
+- [x] GSEA: ORA via gseapy.enrichr — GO BP / KEGG / Reactome
+- [x] GSEA report: bar charts + bubble plot + direction badges
+- [x] Harmony batch correction
 - [x] Harmony report: batch composition, mixing metrics, PC shift, UMAP comparison
-- [x] Notebook Step 8 — Harmony section (load, run, sanity checks, before/after UMAP, report, save)
-- [x] Notebook Step 9 — Clustering on harmony section + ARI comparison
-- [x] Clustering on harmony-corrected embedding (neighbors_key='neighbors_harmony')
-- [x] cluster.py: cluster_key param — obs['leiden_harmony'] coexists with obs['leiden']
-- [x] cluster.py: compute_ari() — ARI comparison between any two obs clustering columns
-- [x] Pseudobulk DEG: pydeseq2-based, one-vs-rest per cell type (pseudobulk_deg.py)  ← NEW
-- [x] Pseudobulk DEG: aggregate layers['counts'] per (cell_type, donor)  ← NEW
-- [x] Pseudobulk DEG: min_cells + min_samples filters with graceful skip + UserWarning  ← NEW
-- [x] Pseudobulk DEG: output schema identical to deg.py deg_dict  ← NEW
-- [x] Pseudobulk DEG report: dedicated report with skipped groups section (pseudobulk_deg_report.py)  ← NEW
-- [x] Notebook Step 10 — Pseudobulk DEG section + canonical marker gene sanity check  ← NEW
-- [ ] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper  ← NEXT
+- [x] Clustering on Harmony-corrected embedding
+- [x] Pseudobulk DEG: pydeseq2-based, one-vs-rest per cell type
+- [x] Pseudobulk DEG report: skipped groups section
+- [x] Notebook Steps 1–10 complete
+- [x] Generic pipeline runner (run_pipeline.py) ← NEW
+- [x] Config system (config/schema.yaml + config/runs/*.yaml) ← NEW
+- [x] Per-dataset run configs: GSE194122, GSE166635, GSE194122_multiome ← NEW
+- [x] MILESTONE: Reproduce key findings of Wang et al. 2025 HCC paper ← DONE
 
-## Phase 2 — Report Engine
-- [ ] Quarto QC report template
+## Phase 2 — Report Engine ← CURRENT PHASE
+- [ ] Quarto QC report template ← NEXT
 - [ ] Quarto analysis report template
 - [ ] python-pptx slide deck generator
 - [ ] Auto-figure captioning
@@ -98,7 +79,7 @@
 - [ ] Spatial report template
 
 ## Phase 6 — Multiome Integration
-- [ ] scVI / MultiVI batch correction (replaces Harmony for multiome)
+- [ ] scVI / MultiVI batch correction
 - [ ] WNN joint embedding
 - [ ] MOFA+ integration
 - [ ] SCENIC+ GRN inference
