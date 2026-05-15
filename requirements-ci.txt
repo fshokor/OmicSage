@@ -29,3 +29,6 @@ pydeseq2>=0.4
 # API changes confirmed between versions (set_system_message renamed to
 # append_system_message, base_url became required in OllamaConversation)
 biochatter==0.14.2
+
+python-pptx==1.0.2
+beautifulsoup4==4.14.3
