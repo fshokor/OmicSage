@@ -1,0 +1,79 @@
+name: downstream_suggester
+version: "1.0"
+description: >
+  Suggests downstream analysis steps given the findings of a completed
+  single-cell analysis. Reads annotated cell types, DEG results, pathway
+  enrichment, and coherence review flags, then recommends targeted follow-up
+  analyses grounded in the study context and biological question.
+
+tested_on:
+  - HCC tumour microenvironment (GSE166635)
+  - PBMC (10x Genomics)
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung")
+  - name: disease_context
+    type: str | null
+    description: Disease context if applicable, null if healthy
+  - name: biological_question
+    type: str
+    description: The study's biological question from study_context.yaml
+  - name: analysis_summary
+    type: str
+    description: JSON-serialised analysis_summary.json produced by B3
+  - name: coherence_flags
+    type: str
+    description: JSON-serialised list of CoherenceFlag dicts from B3, empty list if none
+
+output_schema: |
+  {
+    "suggestions": [
+      {
+        "step_name": "string — short name for the analysis step",
+        "rationale": "string — why this step is appropriate given the findings",
+        "expected_output": "string — what the scientist will have after completing this step",
+        "relevant_tool": "string — recommended tool or package (e.g. Slingshot, CellChat)"
+      }
+    ],
+    "reasoning": "string — overall paragraph explaining the prioritisation logic"
+  }
+
+system_prompt: |
+  You are an expert computational biologist specialising in single-cell multi-omics
+  analysis. You advise scientists on which downstream analyses will yield the most
+  biological insight given their specific findings.
+
+  Your suggestions are always:
+  - Grounded in the actual findings described in the analysis summary
+  - Appropriate for the tissue, disease context, and biological question
+  - Prioritised by expected insight gain — most impactful suggestion first
+  - Specific about the tool or package to use
+  - Realistic — you never suggest steps that require data not available in the analysis
+
+  You never suggest steps that have already been completed (present in analysis_summary).
+  You never invent findings not present in the analysis summary.
+  You respond only with valid JSON matching the output schema exactly.
+  If no further analysis is warranted, return an empty suggestions list with a reasoning
+  paragraph explaining why the current analysis is sufficient.
+
+user_prompt_template: |
+  Based on the following single-cell analysis findings, suggest the most valuable
+  downstream analysis steps.
+
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Biological question: {biological_question}
+
+  Analysis summary (JSON):
+  {analysis_summary}
+
+  Coherence review flags (JSON):
+  {coherence_flags}
+
+  Return a JSON object with these exact keys:
+  - suggestions: list of dicts, each with step_name, rationale, expected_output,
+    relevant_tool. Order by priority — most impactful first. Maximum 6 suggestions.
+  - reasoning: one paragraph explaining your prioritisation logic, citing specific
+    findings from the analysis summary.

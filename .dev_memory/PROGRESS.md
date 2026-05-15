@@ -84,10 +84,10 @@
   - [x] ai/coherence_reviewer.py
   - [x] tests/test_coherence_reviewer.py
   - [x] reports/<dataset>/analysis_summary.json (schema designed here)
-- [ ] Session 6 — A3: Downstream analysis suggester
-  - [ ] ai/skills/downstream_suggester.yaml
-  - [ ] ai/downstream_suggester.py
-  - [ ] tests/test_downstream_suggester.py
+- [x] Session 6 — A3: Downstream analysis suggester
+  - [x] ai/skills/downstream_suggester.yaml
+  - [x] ai/downstream_suggester.py
+  - [x] tests/test_downstream_suggester.py
 - [ ] Session 7 — C1: Narrative generator
   - [ ] ai/skills/narrative_generator.yaml
   - [ ] ai/narrative_generator.py
@@ -95,7 +95,7 @@
   - [ ] reports/<dataset>/ai_narrative.md
 - [ ] Session 8 — C2: Full report + PowerPoint
   - [ ] ai/skills/report_writer.yaml
-  - [ ] ai/report_writer.py
+  - [ ] ai/report_writer.py 
   - [ ] tests/test_report_writer.py
 - [ ] Session 9 — Milestone validation
   - [ ] tests/test_groundedness.py

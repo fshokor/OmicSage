@@ -1,120 +1,155 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 5 — B3 Coherence Reviewer + analysis_summary.json
-                      built and tested. 22 new tests passing (377 total, 1 skipped).
-                      build_analysis_summary() is a pure function — no LLM, fully
-                      tested without mocking. analysis_summary.json written to
-                      reports/<dataset>/analysis_summary.json when summary_path set.
-File last worked on: tests/test_coherence_reviewer.py
+Last thing completed: Session 6 — A3 Downstream Analysis Suggester
+                      built and tested. 20 new tests passing (400 total, 1 skipped).
+                      Rule-based triggers (trajectory, communication, survival,
+                      sub-clustering, pseudobulk) fire before LLM call. LLM
+                      suggestions de-duplicated against rule-based by step_name.
+                      NEXT_STEPS.md written as human-readable markdown.
+File last worked on: tests/test_downstream_suggester.py
 
 ## Today's Goal
-Phase 3 — Session 6: A3 — Downstream Analysis Suggester.
+Phase 3 — Session 7: C1 — Biological Narrative Generator.
 Nothing else.
 
 Files to create:
-  - ai/skills/downstream_suggester.yaml     ← skill YAML
-  - ai/downstream_suggester.py              ← feature module
-  - tests/test_downstream_suggester.py      ← all tests without a real API key
+  - ai/skills/narrative_generator.yaml     ← skill YAML
+  - ai/narrative_generator.py              ← feature module
+  - tests/test_narrative_generator.py      ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 377 passed, 1 skipped
+# Expected: 400 passed, 1 skipped
 ```
 
-## Step 2 — Read the Downstream Suggester spec in PHASE3_PLAN.md
-Section: "Session 6 — A3: Downstream Analysis Suggester"
+## Step 2 — Read the Narrative Generator spec in PHASE3_PLAN.md
+Section: "Session 7 — C1: Biological Narrative Generator"
 Read it fully before writing any code.
 
-## Step 3 — Build ai/skills/downstream_suggester.yaml
-Follow coherence_reviewer.yaml pattern exactly.
+## Step 3 — Build ai/skills/narrative_generator.yaml
+Follow downstream_suggester.yaml pattern exactly.
 CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
   - tissue, disease_context (from study_context)
   - biological_question (from study_context)
-  - analysis_summary: str (JSON-serialised analysis_summary.json)
-  - coherence_flags: str (JSON-serialised flags from B3, optional)
+  - analysis_summary: str (JSON-serialised analysis_summary.json from B3)
+  - pipeline_advice: str (JSON-serialised PipelineAdvice from A1, optional)
+  - cluster_annotations: str (JSON-serialised per-cluster annotation from B1, optional)
+  - deg_validation: str (JSON-serialised DegValidation from B2, optional)
+  - coherence_review: str (JSON-serialised CoherenceReview from B3, optional)
+  - narrative_block: str (which block to generate — one of:
+      "qc_rationale" | "cell_type_landscape" | "differential_expression" | "interpretation")
 
 Output schema (JSON):
-  - suggestions: list of dicts — each with step_name, rationale,
-    expected_output, relevant_tool
-  - reasoning: str
+  - narrative_text: str (the generated narrative paragraph(s) for this block)
+  - cited_evidence: list of str (metric values, gene names, or PMIDs used)
+  - groundedness_score: float (cited_evidence count / total factual sentences,
+      self-reported by the model — cross-checked in test_groundedness.py)
+  - reasoning: str (why the model wrote what it wrote)
 
-## Step 4 — Build ai/downstream_suggester.py
+## Step 4 — Build ai/narrative_generator.py
 
 ### Public API
 ```python
 @dataclass
-class DownstreamSuggestion:
-    step_name: str = ""
-    rationale: str = ""
-    expected_output: str = ""
-    relevant_tool: str = ""
+class NarrativeBlock:
+    block_name: str = ""          # "qc_rationale" | "cell_type_landscape" | etc.
+    narrative_text: str = ""
+    cited_evidence: list[str] = field(default_factory=list)
+    groundedness_score: float = 0.0
 
 @dataclass
-class DownstreamAdvice(AiResult):
-    suggestions: list[DownstreamSuggestion] = field(default_factory=list)
+class NarrativeResult(AiResult):
+    blocks: list[NarrativeBlock] = field(default_factory=list)
+    overall_groundedness: float = 0.0   # mean across all blocks
 
 def run(
     adata,
     config: dict,
     study_context: dict,
+    pipeline_advice=None,        # PipelineAdvice | None from A1
+    cluster_annotations=None,    # list[ClusterAnnotation] | None from B1
+    deg_validation=None,         # DegValidation | None from B2
     coherence_review=None,       # CoherenceReview | None from B3
     *,
-    output_path: str | None = None,   # if set, write NEXT_STEPS.md here
+    output_path: str | None = None,   # if set, write ai_narrative.md here
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> DownstreamAdvice | None:
+) -> NarrativeResult | None:
     ...
 ```
 
-### Rule-based logic (run BEFORE calling LLM — these always fire)
-These fire based on what is present in adata.obs and adata.uns:
-- Progenitor + mature cell types in obs['ai_cell_type'] → suggest trajectory
-- Immune + non-immune cells both present → suggest cell-cell communication
-- Clinical metadata column present in obs → suggest survival analysis
-- sub_clustering_candidates non-empty in coherence_review → suggest sub-clustering
-- n_conditions > 1 in study_context → suggest pseudobulk DEG if not already done
+### Key behaviour
+- Generates four narrative blocks in order:
+    1. qc_rationale
+    2. cell_type_landscape
+    3. differential_expression
+    4. interpretation
+- Each block is a SEPARATE LLM call using the same skill YAML with
+  narrative_block set to the block name. This keeps each call focused.
+- If the upstream data for a block is missing (e.g. no deg_validation →
+  skip differential_expression block), that block is skipped silently.
+  The NarrativeResult still returns with the remaining blocks.
+- overall_groundedness = mean of groundedness_score across generated blocks.
+  Target ≥ 0.85 (validated in Session 10 test_groundedness.py).
 
-### Output written to NEXT_STEPS.md
-Human-readable markdown. Each suggestion as a section:
-  ## <step_name>
-  **Rationale**: ...
-  **Expected output**: ...
-  **Relevant tool**: ...
+### Output written to ai_narrative.md
+```markdown
+# AI Biological Narrative
 
-### Usage pattern
-```python
-from ai._config_gate import check_ai_enabled, AiDisabledError
+*Generated: <timestamp>*
+*Model: <model> (<provider>)*
+*Overall groundedness score: <score>*
 
-def run(adata, config, study_context, coherence_review=None, *, output_path, log_dir, runtime_ai):
-    try:
-        check_ai_enabled(config, module="downstream_suggester", runtime_ai=runtime_ai)
-    except AiDisabledError:
-        return None
+## QC Rationale
+<narrative_text>
+
+## Cell Type Landscape
+<narrative_text>
+
+## Differential Expression
+<narrative_text>
+
+## Interpretation and Perspectives
+<narrative_text>
 ```
+
+### Groundedness target
+Every factual claim must cite a metric value, a gene name, or a PMID.
+groundedness_score = cited factual sentences / total factual sentences.
+Target ≥ 0.85. The model self-reports this — test_groundedness.py will
+cross-check it on the real GSE166635 run in Session 10.
+
+### Graceful degradation
+If any upstream module output is None, that block is skipped.
+If a block's LLM call fails to parse, that block is skipped.
+The remaining blocks are returned normally.
 
 ## Step 5 — Tests (all without a real API key)
 Mock pattern:
-  - patch("ai.downstream_suggester.call_llm") — returns str only
+  - patch("ai.narrative_generator.call_llm") — returns str only
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns DownstreamAdvice when mock LLM returns valid JSON
-  - Trajectory suggestion fires when progenitor + mature cell types present
-  - Communication suggestion fires when immune + non-immune cells present
-  - Sub-clustering suggestion fires when coherence_review has sub_clustering_candidates
-  - suggestions list populated correctly (step_name, rationale, expected_output, tool)
-  - NEXT_STEPS.md written to output_path when provided
-  - NEXT_STEPS.md is valid markdown with correct structure
-  - Degraded parse (invalid JSON) does not crash — returns DownstreamAdvice with empty list
+  - Returns NarrativeResult when mock LLM returns valid JSON
+  - All four blocks generated when all upstream inputs provided
+  - qc_rationale block skipped when analysis_summary missing qc data
+  - differential_expression block skipped when deg_validation=None
+  - NarrativeBlock fields populated (block_name, narrative_text, cited_evidence)
+  - overall_groundedness calculated correctly (mean of block scores)
+  - overall_groundedness = 0.0 when no blocks generated
+  - ai_narrative.md written to output_path when provided
+  - ai_narrative.md has correct markdown structure (headings per block)
+  - Degraded parse (invalid JSON for one block) skips that block, others continue
   - AiResult base fields populated (timestamp, model, provider, skill_name)
-  - coherence_review=None handled gracefully (no crash)
+  - pipeline_advice=None and coherence_review=None handled gracefully
+  - Four separate call_llm calls made (one per block) when all inputs present
 
 ## Phase 3 Build Order (full reference)
 ```
@@ -125,10 +160,10 @@ Session 2  ✅ DONE — A2: Clustering advisor (22 tests passing)
 Session 3  ✅ DONE — B1: Cluster annotator (23 tests passing)
 Session 4  ✅ DONE — B2: DEG validator + literature linker (25 tests passing)
 Session 5  ✅ DONE — B3: Coherence reviewer + analysis_summary.json (22 tests passing)
-Session 6  ← TODAY — A3: Downstream analysis suggester
-Session 7  — C1: Narrative generator
+Session 6  ✅ DONE — A3: Downstream analysis suggester (20 tests passing)
+Session 7  ← TODAY — C1: Narrative generator
 Session 8  — C2: Full report + PowerPoint
-Session 9  — D1: Report reviewer (reads final HTML report, not adata)  ← NEW
+Session 9  — D1: Report reviewer (reads final HTML report, not adata)
 Session 10 — Milestone validation: groundedness test + end-to-end GSE166635
 ```
 Full details: .dev_memory/PHASE3_PLAN.md
@@ -231,7 +266,7 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-5 Modules (done, do not modify)
+## Session 1-6 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
@@ -242,6 +277,8 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/skills/deg_validator.yaml
 - ai/coherence_reviewer.py          ← 22 tests passing
 - ai/skills/coherence_reviewer.yaml
+- ai/downstream_suggester.py        ← 20 tests passing
+- ai/skills/downstream_suggester.yaml
 
 ## Bugs Fixed in Prior Sessions (carry as warnings)
 - rank_genes_groups structured array: rows must have length n_groups (one value
