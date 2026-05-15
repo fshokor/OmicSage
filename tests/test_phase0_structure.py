@@ -82,6 +82,6 @@ class TestCLI:
         sys.path.insert(0, str(REPO_ROOT))
         from ai.biochatter_client import LLMConfig, OmicSageAIClient
         cfg = LLMConfig()
-        assert cfg.provider == "claude"
+        assert cfg.provider == "ollama"
         client = OmicSageAIClient(cfg)
         assert client is not None
