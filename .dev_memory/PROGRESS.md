@@ -88,11 +88,11 @@
   - [x] ai/skills/downstream_suggester.yaml
   - [x] ai/downstream_suggester.py
   - [x] tests/test_downstream_suggester.py
-- [ ] Session 7 — C1: Narrative generator
-  - [ ] ai/skills/narrative_generator.yaml
-  - [ ] ai/narrative_generator.py
-  - [ ] tests/test_narrative_generator.py
-  - [ ] reports/<dataset>/ai_narrative.md
+- [x] Session 7 — C1: Narrative generator
+  - [x] ai/skills/narrative_generator.yaml
+  - [x] ai/narrative_generator.py
+  - [x] tests/test_narrative_generator.py
+  - [x] reports/<dataset>/ai_narrative.md
 - [ ] Session 8 — C2: Full report + PowerPoint
   - [ ] ai/skills/report_writer.yaml
   - [ ] ai/report_writer.py 

@@ -1,155 +1,147 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 6 — A3 Downstream Analysis Suggester
-                      built and tested. 20 new tests passing (400 total, 1 skipped).
-                      Rule-based triggers (trajectory, communication, survival,
-                      sub-clustering, pseudobulk) fire before LLM call. LLM
-                      suggestions de-duplicated against rule-based by step_name.
-                      NEXT_STEPS.md written as human-readable markdown.
-File last worked on: tests/test_downstream_suggester.py
+Last thing completed: Session 7 — C1 Biological Narrative Generator
+                      built and tested. 18 new tests passing (418 total, 1 skipped).
+                      Four narrative blocks (qc_rationale, cell_type_landscape,
+                      differential_expression, interpretation) generated via
+                      separate LLM calls. Graceful degradation per block when
+                      upstream inputs missing. ai_narrative.md written to disk.
+                      overall_groundedness = mean of block scores (target >= 0.85,
+                      validated in Session 10).
+File last worked on: tests/test_narrative_generator.py
 
 ## Today's Goal
-Phase 3 — Session 7: C1 — Biological Narrative Generator.
+Phase 3 — Session 8: C2 — Full Report + PowerPoint Generator.
 Nothing else.
 
 Files to create:
-  - ai/skills/narrative_generator.yaml     ← skill YAML
-  - ai/narrative_generator.py              ← feature module
-  - tests/test_narrative_generator.py      ← all tests without a real API key
+  - ai/skills/report_writer.yaml       ← skill YAML
+  - ai/report_writer.py                ← feature module
+  - tests/test_report_writer.py        ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 400 passed, 1 skipped
+# Expected: 418 passed, 1 skipped
 ```
 
-## Step 2 — Read the Narrative Generator spec in PHASE3_PLAN.md
-Section: "Session 7 — C1: Biological Narrative Generator"
+## Step 2 — Read the Report Writer spec in PHASE3_PLAN.md
+Section: "Session 8 — C2: Full Report + PowerPoint Generator"
 Read it fully before writing any code.
 
-## Step 3 — Build ai/skills/narrative_generator.yaml
-Follow downstream_suggester.yaml pattern exactly.
+## Step 3 — Build ai/skills/report_writer.yaml
+Follow narrative_generator.yaml pattern exactly.
 CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
   - tissue, disease_context (from study_context)
-  - biological_question (from study_context)
+  - biological_question, objectives (from study_context)
   - analysis_summary: str (JSON-serialised analysis_summary.json from B3)
-  - pipeline_advice: str (JSON-serialised PipelineAdvice from A1, optional)
-  - cluster_annotations: str (JSON-serialised per-cluster annotation from B1, optional)
-  - deg_validation: str (JSON-serialised DegValidation from B2, optional)
+  - ai_narrative: str (contents of ai_narrative.md from C1, or "not available")
   - coherence_review: str (JSON-serialised CoherenceReview from B3, optional)
-  - narrative_block: str (which block to generate — one of:
-      "qc_rationale" | "cell_type_landscape" | "differential_expression" | "interpretation")
+  - report_section: str (which section to generate — one of:
+      "conclusion" | "perspectives")
 
 Output schema (JSON):
-  - narrative_text: str (the generated narrative paragraph(s) for this block)
-  - cited_evidence: list of str (metric values, gene names, or PMIDs used)
-  - groundedness_score: float (cited_evidence count / total factual sentences,
-      self-reported by the model — cross-checked in test_groundedness.py)
-  - reasoning: str (why the model wrote what it wrote)
+  - section_text: str (the generated text for this report section)
+  - key_findings: list of str (for conclusion: 3-5 bullet points summarising findings)
+  - cited_evidence: list of str (metric values, gene names, or PMIDs cited)
+  - reasoning: str
 
-## Step 4 — Build ai/narrative_generator.py
+## Step 4 — Build ai/report_writer.py
 
 ### Public API
 ```python
 @dataclass
-class NarrativeBlock:
-    block_name: str = ""          # "qc_rationale" | "cell_type_landscape" | etc.
-    narrative_text: str = ""
+class ReportSection:
+    section_name: str = ""       # "conclusion" | "perspectives"
+    section_text: str = ""
+    key_findings: list[str] = field(default_factory=list)
     cited_evidence: list[str] = field(default_factory=list)
-    groundedness_score: float = 0.0
 
 @dataclass
-class NarrativeResult(AiResult):
-    blocks: list[NarrativeBlock] = field(default_factory=list)
-    overall_groundedness: float = 0.0   # mean across all blocks
+class ReportWriterResult(AiResult):
+    sections: list[ReportSection] = field(default_factory=list)
+    pptx_path: str | None = None    # path to written PowerPoint file
 
 def run(
     adata,
     config: dict,
     study_context: dict,
-    pipeline_advice=None,        # PipelineAdvice | None from A1
+    narrative_result=None,       # NarrativeResult | None from C1
+    coherence_review=None,       # CoherenceReview | None from B3
     cluster_annotations=None,    # list[ClusterAnnotation] | None from B1
     deg_validation=None,         # DegValidation | None from B2
-    coherence_review=None,       # CoherenceReview | None from B3
     *,
-    output_path: str | None = None,   # if set, write ai_narrative.md here
+    report_dir: str,             # required — output directory for this dataset run
+    figures_dir: str | None = None,  # directory containing saved figures
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> NarrativeResult | None:
+) -> ReportWriterResult | None:
     ...
 ```
 
-### Key behaviour
-- Generates four narrative blocks in order:
-    1. qc_rationale
-    2. cell_type_landscape
-    3. differential_expression
-    4. interpretation
-- Each block is a SEPARATE LLM call using the same skill YAML with
-  narrative_block set to the block name. This keeps each call focused.
-- If the upstream data for a block is missing (e.g. no deg_validation →
-  skip differential_expression block), that block is skipped silently.
-  The NarrativeResult still returns with the remaining blocks.
-- overall_groundedness = mean of groundedness_score across generated blocks.
-  Target ≥ 0.85 (validated in Session 10 test_groundedness.py).
+### Key behaviour — two deliverables
 
-### Output written to ai_narrative.md
-```markdown
-# AI Biological Narrative
+#### 1. HTML/PDF report sections (AI-generated)
+Two LLM calls, one per section:
+  - conclusion: 3-5 key findings as bullet points + one summary paragraph
+  - perspectives: open questions + suggested follow-up experiments +
+                  potential clinical relevance
 
-*Generated: <timestamp>*
-*Model: <model> (<provider>)*
-*Overall groundedness score: <score>*
+Written to:
+  - reports/<dataset>/conclusion.md
+  - reports/<dataset>/perspectives.md
 
-## QC Rationale
-<narrative_text>
+#### 2. PowerPoint (python-pptx, rule-based — NO LLM call)
+Eight slides built programmatically from the data:
+  1. Title slide — dataset name, tissue, disease, date
+  2. Data overview — n_cells, modalities, QC metrics table
+  3. UMAP — placeholder if figure not available
+  4. Cell type proportions — bar chart from cluster_annotations
+  5. Top DEGs — table from deg_validation
+  6. Pathway enrichment — table from analysis_summary pathways
+  7. Key findings — bullet points from conclusion section
+  8. Conclusions + perspectives — from conclusion + perspectives sections
 
-## Cell Type Landscape
-<narrative_text>
+Speaker notes on every slide = corresponding C1 narrative paragraph
+  (matched by slide topic to narrative block).
 
-## Differential Expression
-<narrative_text>
-
-## Interpretation and Perspectives
-<narrative_text>
-```
-
-### Groundedness target
-Every factual claim must cite a metric value, a gene name, or a PMID.
-groundedness_score = cited factual sentences / total factual sentences.
-Target ≥ 0.85. The model self-reports this — test_groundedness.py will
-cross-check it on the real GSE166635 run in Session 10.
+Written to: reports/<dataset>/presentation.pptx
 
 ### Graceful degradation
-If any upstream module output is None, that block is skipped.
-If a block's LLM call fails to parse, that block is skipped.
-The remaining blocks are returned normally.
+- If narrative_result is None, conclusion and perspectives are still
+  generated from analysis_summary alone (C1 output is enrichment, not required).
+- If a figure file is missing, that slide uses a text placeholder.
+- If python-pptx is not installed, log a warning and skip PowerPoint only.
+  HTML sections still written.
+- pptx_path in result is None if PowerPoint was not written.
 
 ## Step 5 — Tests (all without a real API key)
 Mock pattern:
-  - patch("ai.narrative_generator.call_llm") — returns str only
+  - patch("ai.report_writer.call_llm") — returns str only
+  - Use tmp_path for all file output
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns NarrativeResult when mock LLM returns valid JSON
-  - All four blocks generated when all upstream inputs provided
-  - qc_rationale block skipped when analysis_summary missing qc data
-  - differential_expression block skipped when deg_validation=None
-  - NarrativeBlock fields populated (block_name, narrative_text, cited_evidence)
-  - overall_groundedness calculated correctly (mean of block scores)
-  - overall_groundedness = 0.0 when no blocks generated
-  - ai_narrative.md written to output_path when provided
-  - ai_narrative.md has correct markdown structure (headings per block)
-  - Degraded parse (invalid JSON for one block) skips that block, others continue
-  - AiResult base fields populated (timestamp, model, provider, skill_name)
-  - pipeline_advice=None and coherence_review=None handled gracefully
-  - Four separate call_llm calls made (one per block) when all inputs present
+  - Returns ReportWriterResult when mock LLM returns valid JSON
+  - conclusion section generated from analysis_summary alone (no narrative_result)
+  - perspectives section generated
+  - Both sections written as .md files under report_dir
+  - conclusion.md contains key findings as markdown bullets
+  - PowerPoint written to report_dir/presentation.pptx
+  - PowerPoint has correct number of slides (8)
+  - Speaker notes present on all slides
+  - pptx_path set in result when PowerPoint written
+  - pptx_path is None when python-pptx unavailable (mock ImportError)
+  - Missing figures_dir handled gracefully (placeholder text on slide)
+  - AiResult base fields populated
+  - Two separate call_llm calls made (conclusion + perspectives)
+  - coherence_review=None and cluster_annotations=None handled gracefully
 
 ## Phase 3 Build Order (full reference)
 ```
@@ -161,8 +153,8 @@ Session 3  ✅ DONE — B1: Cluster annotator (23 tests passing)
 Session 4  ✅ DONE — B2: DEG validator + literature linker (25 tests passing)
 Session 5  ✅ DONE — B3: Coherence reviewer + analysis_summary.json (22 tests passing)
 Session 6  ✅ DONE — A3: Downstream analysis suggester (20 tests passing)
-Session 7  ← TODAY — C1: Narrative generator
-Session 8  — C2: Full report + PowerPoint
+Session 7  ✅ DONE — C1: Narrative generator (18 tests passing)
+Session 8  ← TODAY — C2: Full report + PowerPoint
 Session 9  — D1: Report reviewer (reads final HTML report, not adata)
 Session 10 — Milestone validation: groundedness test + end-to-end GSE166635
 ```
@@ -259,6 +251,21 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 # Mock functions patching this MUST match all three arguments
 ```
 
+### NarrativeResult (ai/narrative_generator.py)
+```python
+@dataclass
+class NarrativeBlock:
+    block_name: str = ""
+    narrative_text: str = ""
+    cited_evidence: list[str] = field(default_factory=list)
+    groundedness_score: float = 0.0
+
+@dataclass
+class NarrativeResult(AiResult):
+    blocks: list[NarrativeBlock] = field(default_factory=list)
+    overall_groundedness: float = 0.0
+```
+
 ## Infrastructure Modules (Session 0 — all done, do not modify)
 - ai/_base.py             ← AiResult base dataclass
 - ai/_config_gate.py      ← check_ai_enabled() + AiDisabledError
@@ -266,7 +273,7 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-6 Modules (done, do not modify)
+## Session 1-7 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
@@ -279,6 +286,8 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/skills/coherence_reviewer.yaml
 - ai/downstream_suggester.py        ← 20 tests passing
 - ai/skills/downstream_suggester.yaml
+- ai/narrative_generator.py         ← 18 tests passing
+- ai/skills/narrative_generator.yaml
 
 ## Bugs Fixed in Prior Sessions (carry as warnings)
 - rank_genes_groups structured array: rows must have length n_groups (one value
@@ -309,6 +318,10 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - write_audit_record uses token_usage=dict (or None), not separate kwargs
 - Provider and model always read from config — never hardcoded anywhere
 - Default provider: "ollama", default model: "llama3"
+- python-pptx must be a soft dependency in report_writer.py — wrap import
+  in try/except ImportError, skip PowerPoint gracefully if not installed.
+  Verify it is in the omicsage env before Session 8 starts:
+  `conda activate omicsage && python -c "import pptx; print(pptx.__version__)"`
 
 ## Conda Environment
 Name: omicsage

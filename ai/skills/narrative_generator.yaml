@@ -1,0 +1,106 @@
+name: narrative_generator
+version: "1.0"
+description: >
+  Generates one narrative block for the biological analysis report.
+  Called once per block with narrative_block set to the target section.
+  Every factual claim must cite a metric value, a gene name, or a PMID.
+  The model self-reports a groundedness_score for cross-checking.
+
+tested_on:
+  - HCC tumour microenvironment (GSE166635)
+  - BMMC CITE-seq (GSE194122)
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung")
+  - name: disease_context
+    type: str
+    description: Disease context if applicable, or "healthy" if none
+  - name: biological_question
+    type: str
+    description: The biological question driving this study
+  - name: analysis_summary
+    type: str
+    description: JSON-serialised analysis_summary.json from the coherence reviewer
+  - name: pipeline_advice
+    type: str
+    description: JSON-serialised PipelineAdvice from A1, or "not available"
+  - name: cluster_annotations
+    type: str
+    description: JSON-serialised per-cluster annotation list from B1, or "not available"
+  - name: deg_validation
+    type: str
+    description: JSON-serialised DegValidation from B2, or "not available"
+  - name: coherence_review
+    type: str
+    description: JSON-serialised CoherenceReview from B3, or "not available"
+  - name: narrative_block
+    type: str
+    description: >
+      Which narrative block to generate. One of:
+      qc_rationale | cell_type_landscape | differential_expression | interpretation
+
+output_schema: |
+  {
+    "narrative_text": "string — the narrative paragraph(s) for this block",
+    "cited_evidence": ["list of strings — each entry is a metric value, gene name, or PMID cited in narrative_text"],
+    "groundedness_score": "float between 0.0 and 1.0 — cited factual sentences divided by total factual sentences",
+    "reasoning": "string — why the model wrote what it wrote"
+  }
+
+system_prompt: |
+  You are an expert computational biologist writing the results section of a
+  peer-reviewed single-cell RNA-seq analysis report.
+
+  You write in precise scientific English. Every factual claim you make must be
+  grounded in one of: a numeric metric value from the analysis summary, a specific
+  gene name from the data, or a PubMed ID (PMID). You never invent findings.
+  You never make claims that cannot be traced back to the provided data.
+
+  You self-report a groundedness_score: the fraction of your factual sentences
+  that explicitly cite a metric, gene, or PMID. Target is 0.85 or higher.
+
+  You respond only with valid JSON matching the output schema. No preamble.
+  No markdown fences. Only the JSON object.
+
+user_prompt_template: |
+  Write the "{narrative_block}" section of the analysis report.
+
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Biological question: {biological_question}
+
+  Analysis summary (JSON):
+  {analysis_summary}
+
+  Pipeline advice:
+  {pipeline_advice}
+
+  Cluster annotations:
+  {cluster_annotations}
+
+  DEG validation:
+  {deg_validation}
+
+  Coherence review:
+  {coherence_review}
+
+  Block to write: {narrative_block}
+
+  Block definitions:
+  - qc_rationale: Why these QC thresholds were chosen, what was removed, whether
+    removal rate is within normal range for this tissue. Cite the specific metric
+    values (min_genes, max_mt_pct, cells_removed_pct) from the analysis summary.
+  - cell_type_landscape: What cell populations were found, in what proportions,
+    what is notable given the tissue and disease. Cite cluster IDs, cell type
+    labels, n_cells, and confidence levels from the cluster annotations.
+  - differential_expression: What changed between conditions, what it means
+    biologically, how it connects to the literature. Cite gene names, log2FC
+    values, and PMIDs from the DEG validation.
+  - interpretation: What the findings collectively suggest, what the open questions
+    are, what experiments would validate the key claims. Synthesise across all
+    upstream inputs.
+
+  Return a JSON object with keys: narrative_text, cited_evidence,
+  groundedness_score, reasoning.
