@@ -1,5 +1,5 @@
 # OmicSage — Current Status
-> Last updated: 2026-05-12 (session 9)
+> Last updated: 2026-05-15 (Phase 3 Session 0 complete)
 
 ## Phase
 Phase 3 — AI Layer (Phase 2 complete ✅)
@@ -17,9 +17,9 @@ Phase 3 — AI Layer (Phase 2 complete ✅)
 - Auto-detects 10x MEX, H5, AnnData formats
 - Moves normalized values out of .X, puts raw counts in .X
 - Handles GSE194122 CITE-seq and multiome, GSE166635 HCC
-- NEW: load_dataset_dir() — scans parent folder, loads all MTX subfolders,
+- load_dataset_dir() — scans parent folder, loads all MTX subfolders,
   concatenates with obs['sample'] + obs['batch'] per subfolder name
-- NEW: load_dataset() auto-routes to load_dataset_dir() when given a parent
+- load_dataset() auto-routes to load_dataset_dir() when given a parent
   folder containing MTX subfolders (no config change needed)
 
 ### ✅ QC (pipeline/modules/qc/qc.py)
@@ -119,62 +119,120 @@ Phase 3 — AI Layer (Phase 2 complete ✅)
 ### ✅ Notebook (notebooks/phase1_qc.ipynb)
 - Steps 1–10 complete
 
-### ✅ MILESTONE: Wang et al. 2025 HCC Benchmark ← DONE THIS SESSION
+### ✅ MILESTONE: Wang et al. 2025 HCC Benchmark
 - Full Phase 1 pipeline run on GSE166635 (HCC1 normal + HCC2 tumour)
 - Cell types identified: Hepatocytes, T cells, Macrophages, Endothelial,
   Fibroblasts, B cells
-- Known HCC markers recovered in DEG results (AFP, GPC3, EPCAM in hepatocytes;
-  CD3D in T cells; CD68 in macrophages)
+- Known HCC markers recovered in DEG results
 - Liver metabolism and immune pathway terms in GSEA results
-- Reports generated: reports/GSE166635/ (all 9 steps, pseudobulk skipped)
-- Processed files: data/processed/GSE166635/ (steps 01–09)
 
 ### ✅ Generic Pipeline Runner (run_pipeline.py)
 - Config-driven, --from-step / --to-step / --step flags
 - Validation at startup, caching, resolution_override support
-- Fresh-run validation bug fixed
 
 ### ✅ Config System (config/)
 - config/schema.yaml — platform master schema
 - config/runs/GSE194122.yaml, GSE166635.yaml, GSE194122_multiome.yaml
 
 ### ✅ Combined Report (reports/combined_report.py)
-- Reads all step HTML reports from reports_dir after pipeline run
-- Extracts <main> content from each and assembles into one tabbed HTML file
-- Tabs: QC · Normalize · Reduce · Cluster · Annotate · DEG · GSEA · Harmony · Pseudobulk
-- Only shows tabs for reports that actually exist (partial runs work fine)
-- Progress bar in header shows pipeline completion percentage
-- Keyboard navigation (left/right arrow keys between tabs)
-- Zero changes to any existing report generators
-- Wired into run_pipeline.py — auto-generates at end of every run
-- Output: 00_combined_report.html (sorts to top of folder)
-- No new dependencies — stdlib only
+- Tabbed HTML assembled from all step reports after every run
+- Output: 00_combined_report.html
 
 ### ✅ MILESTONE: Phase 2 Complete
-- Full pipeline run on GSE166635 HCC generates 00_combined_report.html automatically
-- 7 tabs confirmed working in browser
-- One command → one complete analysis record
+- Full pipeline + combined tabbed report from one command on GSE166635
+
+---
+
+## ✅ Phase 3 Session 0 — AI Infrastructure (COMPLETE)
+
+### ai/_base.py
+- AiResult base dataclass
+- Fields: timestamp (ISO-8601 UTC, auto), model, provider,
+  skill_name, skill_version, reasoning
+- All feature dataclasses inherit from AiResult
+- Tests: 3 passing in test_ai_infrastructure.py
+
+### ai/_config_gate.py
+- check_ai_enabled(config, module, runtime_ai=True)
+- Raises AiDisabledError at three levels:
+    Level 1 — ai.features: false (global)
+    Level 2 — ai.modules.<name>: false (per-module)
+    Level 3 — runtime_ai=False (--ai flag absent at CLI)
+- Missing module key defaults to ENABLED (opt-out model)
+- Tests: 7 passing in test_ai_infrastructure.py
+
+### ai/_audit_log.py
+- write_audit_record() — appends one JSONL line per LLM call
+- Output: logs/llm/<module>.jsonl
+- Creates log_dir automatically if absent
+- Never raises — logging failure prints to stderr and continues
+- Record fields: timestamp, module, skill_version, model, provider,
+  input_summary, prompt_tokens, completion_tokens, raw_response,
+  parsed_output, parse_success
+- Tests: 4 passing in test_ai_infrastructure.py
+
+### ai/_llm_client.py
+- call_llm(skill_name, inputs, config, *, log_dir, module, runtime_ai) → str
+- _build_conversation(provider, model, config) — injectable for tests
+- Routes: claude → AnthropicConversation, ollama → OllamaConversation,
+  openai → GptConversation
+- Unknown provider raises ValueError listing valid options
+- BioChatter version: ==0.14.2 (pinned)
+- Verified method names: append_system_message(), query(), set_api_key()
+- Tests: 7 passing in test_ai_infrastructure.py
+
+### ai/_skill_loader.py (built prior session)
+- load_skill(skill_name, **inputs) → (system_prompt, user_prompt)
+- Loads YAML from ai/skills/<name>.yaml
+- Fills user_prompt_template with inputs via str.format_map()
+- Raises on missing required inputs
+
+### ai/skills/cluster_annotator.yaml (reference pattern)
+- Establishes YAML schema all skill files follow
+- Fields: name, version, description, tested_on, inputs, output_schema,
+  system_prompt, user_prompt_template
+
+### Supporting files
+- config/study_context_template.yaml — fill once per project
+- config/runs/GSE166635/study_context.yaml — copy + fill
+- config/runs/GSE194122/study_context.yaml — copy + fill
+
+### Tests
+- tests/test_ai_infrastructure.py — 20 tests, all passing
+- test_phase0_structure.py encoding fix: schema fixture now uses encoding="utf-8"
+
+---
 
 ## Phase 3 — What Is Being Built Next
-- BioChatter integration (AI middleware)
-- QC threshold suggester (first feature — reads metrics, suggests thresholds + reasoning)
-- Cluster interpreter (marker genes → LLM → cell type label)
-- PubMed RAG tied to DEG results
-- Narrative generator for combined report
-- All LLM calls audit-logged to logs/llm/ in JSONL format
-- ai_features: false in config disables AI layer — pipeline runs without API key
+
+Session 1 (next): A1 — Pipeline Advisor
+  - ai/skills/pipeline_advisor.yaml
+  - ai/pipeline_advisor.py
+  - tests/test_pipeline_advisor.py
+
+Remaining sessions:
+  Session 2  — A2: Clustering advisor (first PubMed RAG use)
+  Session 3  — B1: Cluster annotator
+  Session 4  — B2: DEG validator + literature linker
+  Session 5  — B3: Coherence reviewer
+  Session 6  — A3: Downstream analysis suggester
+  Session 7  — C1: Narrative generator
+  Session 8  — C2: Full report + PowerPoint
+  Session 9  — Milestone validation
 
 ## Total Tests Passing
-~231
+~251 (231 Phase 1-2 + 20 Phase 3 infrastructure)
 
 ## What Is NOT Built Yet
-- Phase 3: BioChatter integration ← NEXT
-- Phase 3: QC threshold suggester
-- Phase 3: Cluster interpreter
-- Phase 3: PubMed RAG + narrative generator
-- Phase 3: PDF/slides via AI layer (absorbed from Phase 2)
+- Phase 3: Pipeline advisor (Session 1 — next)
+- Phase 3: Clustering advisor
+- Phase 3: Cluster annotator
+- Phase 3: DEG validator + literature linker
+- Phase 3: Coherence reviewer
+- Phase 3: Downstream analysis suggester
+- Phase 3: Narrative generator
+- Phase 3: Full report + PowerPoint
 - scVI batch correction → deferred to Phase 6
-- ScType-py + SingleR-py annotation
 - ADT QC + CLR normalization
 - scATAC module (Phase 4)
 - Spatial module (Phase 5)
@@ -197,7 +255,3 @@ Phase 3 — AI Layer (Phase 2 complete ✅)
 - data/processed/GSE194122_cite_harmony.h5ad
 - data/processed/GSE194122_cite_harmony_clustered.h5ad
 - data/processed/GSE194122_cite_pseudobulk_deg.h5ad
-
-## New Output Structure (run_pipeline.py)
-- data/processed/<dataset_id>/01_qc.h5ad → 10_pseudobulk_deg.h5ad
-- reports/<dataset_id>/01_qc_report.html → 10_pseudobulk_deg_report.html

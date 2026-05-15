@@ -1,163 +1,131 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Full Phase 3 plan designed and saved to
-                      .dev_memory/PHASE3_PLAN.md. Three foundation
-                      files built and tested:
-                        - config/study_context_template.yaml
-                        - ai/skills/cluster_annotator.yaml  (reference pattern)
-                        - ai/_skill_loader.py               (tested, all checks pass)
-File last worked on: ai/_skill_loader.py
+Last thing completed: Session 0 — Shared AI infrastructure built and tested.
+                      All 4 foundation modules passing. Encoding fix applied
+                      to test_phase0_structure.py (cp1252 → utf-8).
+File last worked on: tests/test_ai_infrastructure.py
 
 ## Today's Goal
-Phase 3 — Session 0: Shared AI infrastructure.
+Phase 3 — Session 1: A1 — Pipeline Advisor.
 
-Build the four foundation modules that every AI feature will import.
-Nothing else. No feature modules today.
+Build the first feature module. Nothing else.
 
 Files to create:
-  - ai/_llm_client.py      ← BioChatter wrapper, routes on provider
-  - ai/_audit_log.py       ← write_audit_record() → logs/llm/<module>.jsonl
-  - ai/_config_gate.py     ← raises AiDisabledError if ai_features: false
-  - ai/_base.py            ← AiResult base dataclass
-  - tests/test_ai_infrastructure.py
-
-## Step 0 — Read the Phase 3 plan before writing any code
-```
-.dev_memory/PHASE3_PLAN.md
-```
-The full plan is there. Every session references it.
+  - ai/skills/pipeline_advisor.yaml   ← skill YAML (prompts live here, not in .py)
+  - ai/pipeline_advisor.py            ← feature module
+  - tests/test_pipeline_advisor.py    ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~231 passed, 1-2 skipped
+# Expected: ~251 passed, 1-2 skipped
 ```
 
-## Step 2 — Verify Phase 2 milestone still works
-```bash
-python run_pipeline.py --config config/runs/GSE166635.yaml --step qc
-# Should cache and auto-generate reports/GSE166635/00_combined_report.html
-```
+## Step 2 — Read the pipeline advisor spec in PHASE3_PLAN.md
+Section: "Session 1 — A1: Pipeline Advisor"
+Read it fully before writing any code.
 
-## Step 3 — Install and verify biochatter
-```bash
-conda activate omicsage
-pip install biochatter==0.14.2   # pin this exact version
-python -c "
-from biochatter.llm_connect import OllamaConversation
-conv = OllamaConversation(
-    base_url='http://localhost:11434',
-    prompts={}, model_name='llama3', correct=False,
-)
-conv.append_system_message('You are a helpful assistant.')
-response, _, _ = conv.query('Say hello in one sentence.')
-print(response)
-"
-```
+## Step 3 — Build ai/skills/pipeline_advisor.yaml
+Follows the cluster_annotator.yaml pattern exactly.
+Inputs the skill needs:
+  - tissue, disease_context, experiment_design, biological_question
+  - n_cells, n_genes, modalities (list), n_batches, n_donors, n_conditions
+Output schema (JSON):
+  - recommended_steps: list of {step_name, priority, rationale}
+    priority values: "required" | "recommended" | "optional"
+  - inferred_biological_question: str | null
+  - warnings: list[str]
+  - reasoning: str
 
-BioChatter API verified on v0.14.2 — use these exact method names in _llm_client.py:
-  - append_system_message(text)   ← NOT set_system_message (renamed in v0.14)
-  - query(text)                   → returns (response, token_usage, correction)
-  - set_api_key(api_key=...)      ← Claude and OpenAI only, not Ollama
-  - base_url is required for OllamaConversation ← added in recent version
+## Step 4 — Build ai/pipeline_advisor.py
 
-## Step 4 — Copy foundation files already built this planning session
-These files were designed and tested — copy them into the repo before
-writing any new code:
-
-```bash
-# Skill loader (already tested — all checks pass)
-cp <delivered_files>/ai/_skill_loader.py ai/_skill_loader.py
-
-# Reference skill file (establishes pattern for all other skills)
-mkdir -p ai/skills
-cp <delivered_files>/ai/skills/cluster_annotator.yaml ai/skills/cluster_annotator.yaml
-
-# Study context template
-cp <delivered_files>/config/study_context_template.yaml config/study_context_template.yaml
-
-# Populate study context for each existing dataset
-cp config/study_context_template.yaml config/runs/GSE166635/study_context.yaml
-cp config/study_context_template.yaml config/runs/GSE194122/study_context.yaml
-# Then fill in tissue / disease / experiment fields for each dataset
-```
-
-## Step 5 — Build the four infrastructure modules
-
-### ai/_config_gate.py
-Three-level optionality — all checked by a single function:
-  Level 1 — global:     ai_features: false → disabled
-  Level 2 — per-module: modules: { cluster_annotator: false } → disabled
-  Level 3 — runtime:    --ai flag absent on run_pipeline.py → disabled
-
+### Public API
 ```python
-# Usage pattern in every feature module — identical every time:
+from dataclasses import dataclass, field
+from ai._base import AiResult
+
+@dataclass
+class StepRecommendation:
+    step_name: str
+    priority: str   # required | recommended | optional
+    rationale: str
+
+@dataclass
+class PipelineAdvice(AiResult):
+    recommended_steps: list[StepRecommendation] = field(default_factory=list)
+    inferred_biological_question: str | None = None
+    warnings: list[str] = field(default_factory=list)
+
+def run(
+    adata_or_mdata,         # AnnData or MuData — reads properties, never modifies
+    config: dict,
+    study_context: dict,    # loaded from config/runs/<dataset>/study_context.yaml
+    *,
+    log_dir: str = "logs/llm",
+    runtime_ai: bool = True,
+) -> PipelineAdvice | None:
+    ...
+```
+
+### Rule-based pre-checks (run BEFORE the LLM call — fast, no API cost)
+These fire regardless of AI being enabled:
+  - n_batches > 1 → add warning if batch_key not set in config
+  - n_donors > 2 AND n_conditions > 1 → recommend pseudobulk over Wilcoxon
+  - modalities includes "ADT" → recommend WNN (flag as Phase 6, not yet built)
+  - n_cells < 500 → warn about unreliable clustering and doublet detection
+
+The LLM adds rationale and literature context on top of these rule outputs.
+
+### Usage pattern (identical to all feature modules)
+```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata, config):
+def run(adata_or_mdata, config, study_context, *, log_dir, runtime_ai=True):
     try:
-        check_ai_enabled(config, module="cluster_annotator")
+        check_ai_enabled(config, module="pipeline_advisor", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
     # ... rest of the module
 ```
 
-A module that is off returns None silently. Never raises. Never logs a warning.
-Real errors (network, parse failure, bad input) propagate normally — never caught here.
+### study_context loading helper
+```python
+# ai/pipeline_advisor.py — at module level
+import yaml
+from pathlib import Path
 
-### ai/_base.py
-AiResult base dataclass. All feature dataclasses inherit from it.
-Fields: timestamp (ISO-8601 UTC), model, provider, skill_name,
-        skill_version, reasoning.
-
-### ai/_audit_log.py
-write_audit_record() appends one JSONL line per LLM call.
-Record format (from PHASE3_PLAN.md):
-  timestamp, module, skill_version, model, provider,
-  input_summary, raw_response, parsed_output, parse_success
-
-### ai/_llm_client.py
-Thin wrapper around BioChatter. Routes on config.ai.provider.
-Single public function: call_llm(skill_name, inputs, config) → str
-  - Loads skill via _skill_loader.load_skill()
-  - Routes to AnthropicConversation | OllamaConversation | GptConversation
-  - Writes audit log via _audit_log.write_audit_record()
-  - Returns raw LLM response string
-  - Feature modules handle JSON parsing themselves
-
-Config section expected:
-```yaml
-ai:
-  features: true
-  provider: claude        # claude | ollama | openai
-  model: claude-sonnet-4-20250514
+def load_study_context(path: str | Path) -> dict:
+    with open(path, encoding="utf-8") as fh:
+        return yaml.safe_load(fh) or {}
 ```
 
-## Infrastructure Tests Required (all without a real API key)
-- Config gate raises AiDisabledError when ai_features: false
-- Config gate raises AiDisabledError when module explicitly set to false
-- Config gate passes when module key is missing (defaults to enabled)
-- Config gate raises when --ai flag absent at runtime (runtime_ai=False)
-- LLM client routes to AnthropicConversation when provider: claude
-- LLM client routes to OllamaConversation when provider: ollama
-- LLM client routes to GptConversation when provider: openai
-- Unknown provider raises ValueError listing valid options
-- Audit log creates file, writes correct JSONL, appends on second call
-- Audit log creates log_dir if it does not exist
-- AiResult base dataclass instantiates correctly
-- Skill loader integrates with LLM client (mock provider)
+## Step 5 — Tests (all without a real API key)
+Mock pattern — same as test_ai_infrastructure.py:
+  monkeypatch _build_conversation to return a MagicMock that returns
+  a valid JSON string matching the pipeline_advisor output schema.
 
-Hard stop: do not start ai/pipeline_advisor.py until all infrastructure
-tests pass.
+Required tests:
+  - Returns None when ai_features=False
+  - Returns None when runtime_ai=False
+  - Returns PipelineAdvice when mock LLM returns valid JSON
+  - recommended_steps list is non-empty
+  - StepRecommendation priority values are all valid ("required"|"recommended"|"optional")
+  - Batch warning fires when n_batches > 1 and batch_key not in config
+  - Pseudobulk recommendation fires when n_donors > 2 and n_conditions > 1
+  - inferred_biological_question populated when blank in study_context
+  - n_cells < 500 warning fires
+  - Audit log written to log_dir after successful call
+  - Graceful handling of malformed LLM JSON (returns None, logs warning)
+  - AiResult base fields (timestamp, model, provider) populated correctly
 
 ## Phase 3 Build Order (full reference)
 ```
-Session 0  ← TODAY — Infrastructure: _llm_client, _audit_log,
-                      _skill_loader (done), _config_gate, _base
-Session 1  — A1: Pipeline advisor
+Session 0  ✅ DONE — Infrastructure: _llm_client, _audit_log, _skill_loader,
+                      _config_gate, _base
+Session 1  ← TODAY — A1: Pipeline advisor
 Session 2  — A2: Clustering advisor (first PubMed RAG use)
 Session 3  — B1: Cluster annotator
 Session 4  — B2: DEG validator + literature linker
@@ -167,7 +135,7 @@ Session 7  — C1: Narrative generator
 Session 8  — C2: Full report + PowerPoint
 Session 9  — Milestone validation: groundedness test + end-to-end GSE166635
 ```
-Full details for every session: .dev_memory/PHASE3_PLAN.md
+Full details: .dev_memory/PHASE3_PLAN.md
 
 ## AI Layer Design Principles (carry into every session)
 - Skills are the prompts — no raw strings in Python, ever
@@ -179,11 +147,13 @@ Full details for every session: .dev_memory/PHASE3_PLAN.md
 - analysis_summary.json is load-bearing — design carefully in Session 5
 - Copyright enforced at report layer — PMIDs + titles only, no abstract text
 
-## New Files Created This Planning Session
-- ai/_skill_loader.py                       ← tested, ready to copy in
-- ai/skills/cluster_annotator.yaml          ← reference skill pattern
-- config/study_context_template.yaml        ← copy into each run dir
-- .dev_memory/PHASE3_PLAN.md                ← full Phase 3 plan
+## Infrastructure Modules (Session 0 — all done, do not modify)
+- ai/_base.py             ← AiResult base dataclass
+- ai/_config_gate.py      ← check_ai_enabled() + AiDisabledError
+- ai/_audit_log.py        ← write_audit_record()
+- ai/_llm_client.py       ← call_llm() + _build_conversation()
+- ai/_skill_loader.py     ← load_skill()
+- ai/skills/cluster_annotator.yaml  ← reference pattern for all skill YAMLs
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`
@@ -197,6 +167,8 @@ Full details for every session: .dev_memory/PHASE3_PLAN.md
 - obs[batch_key] must be cast .astype(str) before pandas operations
 - pseudobulk requires layers['counts'] (raw integers) — NOT layers['logcounts']
 - GSE166635 pseudobulk is DISABLED — only 2 samples
+- test_phase0_structure.py: schema fixture uses encoding="utf-8" (cp1252 fix applied)
+- biochatter==0.14.2 pinned — do NOT upgrade without re-running all AI tests
 
 ## Conda Environment
 Name: omicsage
@@ -204,5 +176,4 @@ Activate: conda activate omicsage
 Python: 3.11.15
 Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata,
                    ipykernel, jupyter, scikit-misc, kneed>=0.8.5, celltypist,
-                   gseapy 1.1.3, harmonypy, pydeseq2
-New dependency this phase: biochatter (pip install biochatter)
+                   gseapy 1.1.3, harmonypy, pydeseq2, biochatter==0.14.2

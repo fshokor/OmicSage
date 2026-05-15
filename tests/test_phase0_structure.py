@@ -39,7 +39,7 @@ class TestRepoStructure:
 class TestConfigSchema:
     @pytest.fixture
     def schema(self):
-        with open(REPO_ROOT / "config" / "schema.yaml") as f:
+        with open(REPO_ROOT / "config" / "schema.yaml", encoding="utf-8") as f:
             return yaml.safe_load(f)
 
     def test_schema_loads(self, schema):
