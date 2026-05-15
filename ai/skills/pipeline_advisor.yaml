@@ -1,0 +1,124 @@
+name: pipeline_advisor
+version: "1.0"
+description: >
+  Recommends which pipeline steps to run and in what order, given the
+  study design and loaded data properties. Adds biological rationale to
+  rule-based recommendations and infers a biological question when none
+  is provided. Runs once per project, before any analysis step.
+
+tested_on:
+  - GSE166635 HCC tumour microenvironment (human liver)
+  - PBMC 10x Genomics healthy donor
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung"). Required.
+  - name: disease_context
+    type: str | null
+    description: Disease context if applicable (e.g. "hepatocellular carcinoma"). null if healthy.
+  - name: experiment_design
+    type: str | null
+    description: >
+      Experiment design type: tumour_vs_normal | time_course | perturbation | atlas | null.
+      null means the AI should infer from n_conditions and conditions list.
+  - name: biological_question
+    type: str | null
+    description: >
+      The scientist's stated biological question. null or empty string means the AI
+      should generate one based on tissue, disease_context, and experiment_design.
+  - name: n_cells
+    type: int
+    description: Total number of cells after loading (before QC filtering).
+  - name: n_genes
+    type: int
+    description: Total number of genes/features in the dataset.
+  - name: modalities
+    type: list[str]
+    description: Modalities present (e.g. ["RNA"], ["RNA", "ADT"], ["RNA", "ATAC"]).
+  - name: n_batches
+    type: int
+    description: Number of distinct batches detected (1 = single batch, no correction needed).
+  - name: n_donors
+    type: int
+    description: Number of biological donors/individuals.
+  - name: n_conditions
+    type: int
+    description: Number of experimental conditions (1 = no comparison, 2+ = comparison possible).
+  - name: rule_based_warnings
+    type: list[str]
+    description: >
+      Warnings already raised by the rule-based pre-check (before LLM call).
+      The LLM should acknowledge these, not repeat them verbatim.
+  - name: rule_based_steps
+    type: list[str]
+    description: >
+      Step names already flagged by the rule-based pre-check as recommended
+      (e.g. "batch_correction", "pseudobulk_deg"). LLM adds rationale and fills
+      in all remaining steps.
+
+output_schema: |
+  {
+    "recommended_steps": [
+      {
+        "step_name": "<one of: qc | normalization | hvg_selection | pca | neighbor_graph | umap | clustering | batch_correction | cell_type_annotation | wilcoxon_deg | pseudobulk_deg | gsea | trajectory | cell_communication | wnn_integration>",
+        "priority": "<required | recommended | optional>",
+        "rationale": "<string>"
+      }
+    ],
+    "inferred_biological_question": "<string or null — null if biological_question was already provided>",
+    "warnings": ["<additional warnings only — do not repeat rule_based_warnings>"],
+    "reasoning": "<one paragraph explaining overall recommendation logic>"
+  }
+
+system_prompt: |
+  You are an expert computational biologist specialising in single-cell multi-omics
+  analysis. You have deep knowledge of best practices for scRNA-seq, scATAC-seq,
+  spatial transcriptomics, and multiome integration.
+
+  Your role is to act as a senior bioinformatician advising a colleague before
+  they begin analysis. You recommend which pipeline steps to run, in what order,
+  and explain why — grounded in the specific data properties provided.
+
+  Rules you must follow:
+  - Every recommended step must have a clear biological or technical rationale
+    grounded in the input data properties.
+  - priority must be exactly one of: required | recommended | optional.
+    Never invent other values.
+  - step_name must come from this fixed list:
+    qc, normalization, hvg_selection, pca, neighbor_graph, umap, clustering,
+    batch_correction, cell_type_annotation, wilcoxon_deg, pseudobulk_deg,
+    gsea, trajectory, cell_communication, wnn_integration
+  - If biological_question is blank or null, generate one based on tissue,
+    disease_context, and experiment_design. Set inferred_biological_question
+    to your generated question. Otherwise set it to null.
+  - Do not repeat rule_based_warnings verbatim. Add only new warnings.
+  - Respond only with valid JSON matching the output schema. No markdown fences.
+    No preamble. No explanation outside the JSON object.
+
+user_prompt_template: |
+  Recommend a pipeline for the following single-cell dataset.
+
+  === Study context ===
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Experiment design: {experiment_design}
+  Biological question: {biological_question}
+
+  === Data properties ===
+  Number of cells: {n_cells}
+  Number of genes: {n_genes}
+  Modalities: {modalities}
+  Number of batches: {n_batches}
+  Number of donors: {n_donors}
+  Number of conditions: {n_conditions}
+
+  === Rule-based pre-checks (already raised) ===
+  Warnings: {rule_based_warnings}
+  Steps flagged by rules: {rule_based_steps}
+
+  Return a JSON object with exactly these keys:
+  - recommended_steps: list of objects, each with step_name, priority, rationale
+  - inferred_biological_question: string if biological_question was blank, else null
+  - warnings: list of additional warnings (do not repeat rule_based_warnings)
+  - reasoning: one paragraph explaining your overall recommendation logic
