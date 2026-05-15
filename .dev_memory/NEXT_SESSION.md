@@ -1,46 +1,52 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 0 — Shared AI infrastructure built and tested.
-                      All 4 foundation modules passing. Encoding fix applied
-                      to test_phase0_structure.py (cp1252 → utf-8).
-File last worked on: tests/test_ai_infrastructure.py
+Last thing completed: Session 1 — A1 Pipeline Advisor built and tested.
+                      13 tests passing. YAML parse bug fixed (output_schema
+                      must use block scalar | not bare type annotations like
+                      list[{...}] or str | null — these are illegal in bare YAML).
+File last worked on: tests/test_pipeline_advisor.py
 
 ## Today's Goal
-Phase 3 — Session 1: A1 — Pipeline Advisor.
+Phase 3 — Session 2: A2 — Clustering Advisor.
 
-Build the first feature module. Nothing else.
+First module that uses PubMed RAG. Nothing else.
 
 Files to create:
-  - ai/skills/pipeline_advisor.yaml   ← skill YAML (prompts live here, not in .py)
-  - ai/pipeline_advisor.py            ← feature module
-  - tests/test_pipeline_advisor.py    ← all tests without a real API key
+  - ai/skills/clustering_advisor.yaml   ← skill YAML
+  - ai/clustering_advisor.py            ← feature module
+  - tests/test_clustering_advisor.py    ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~251 passed, 1-2 skipped
+# Expected: ~285 passed, 1 skipped
 ```
 
-## Step 2 — Read the pipeline advisor spec in PHASE3_PLAN.md
-Section: "Session 1 — A1: Pipeline Advisor"
+## Step 2 — Read the clustering advisor spec in PHASE3_PLAN.md
+Section: "Session 2 — A2: Clustering Advisor"
 Read it fully before writing any code.
 
-## Step 3 — Build ai/skills/pipeline_advisor.yaml
-Follows the cluster_annotator.yaml pattern exactly.
+## Step 3 — Build ai/skills/clustering_advisor.yaml
+Follow the pipeline_advisor.yaml pattern exactly.
+CRITICAL: output_schema must use a block scalar (|) — never bare type
+annotations. This was the bug in Session 1.
+
 Inputs the skill needs:
-  - tissue, disease_context, experiment_design, biological_question
-  - n_cells, n_genes, modalities (list), n_batches, n_donors, n_conditions
+  - tissue, disease_context (from study_context)
+  - resolution_sweep_results: dict of resolution → silhouette_score
+  - n_cells, n_highly_variable_genes
+
 Output schema (JSON):
-  - recommended_steps: list of {step_name, priority, rationale}
-    priority values: "required" | "recommended" | "optional"
-  - inferred_biological_question: str | null
-  - warnings: list[str]
+  - suggested_resolution: float
+  - resolution_range: [float, float]   ← reasonable range to explore
+  - expected_n_clusters: int
+  - literature_context: list of {pmid, title, resolution_used, tissue, disease}
   - reasoning: str
 
-## Step 4 — Build ai/pipeline_advisor.py
+## Step 4 — Build ai/clustering_advisor.py
 
 ### Public API
 ```python
@@ -48,85 +54,77 @@ from dataclasses import dataclass, field
 from ai._base import AiResult
 
 @dataclass
-class StepRecommendation:
-    step_name: str
-    priority: str   # required | recommended | optional
-    rationale: str
+class PubMedRef:
+    pmid: str
+    title: str
+    resolution_used: float | None
+    tissue: str
+    disease: str | None
 
 @dataclass
-class PipelineAdvice(AiResult):
-    recommended_steps: list[StepRecommendation] = field(default_factory=list)
-    inferred_biological_question: str | None = None
-    warnings: list[str] = field(default_factory=list)
+class ClusteringAdvice(AiResult):
+    suggested_resolution: float = 0.5
+    resolution_range: tuple[float, float] = (0.3, 0.8)
+    expected_n_clusters: int = 0
+    literature_context: list[PubMedRef] = field(default_factory=list)
 
 def run(
-    adata_or_mdata,         # AnnData or MuData — reads properties, never modifies
+    adata,                  # AnnData after dim. reduction — reads only, never modifies
     config: dict,
-    study_context: dict,    # loaded from config/runs/<dataset>/study_context.yaml
+    study_context: dict,
+    resolution_sweep_results: dict[float, float],  # resolution → silhouette_score
     *,
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> PipelineAdvice | None:
+) -> ClusteringAdvice | None:
     ...
 ```
 
-### Rule-based pre-checks (run BEFORE the LLM call — fast, no API cost)
-These fire regardless of AI being enabled:
-  - n_batches > 1 → add warning if batch_key not set in config
-  - n_donors > 2 AND n_conditions > 1 → recommend pseudobulk over Wilcoxon
-  - modalities includes "ADT" → recommend WNN (flag as Phase 6, not yet built)
-  - n_cells < 500 → warn about unreliable clustering and doublet detection
+### PubMed RAG query pattern (from PHASE3_PLAN.md)
+Query string: "Leiden clustering resolution {tissue} {disease} single-cell RNA-seq"
+Use BioChatter's built-in retrieval — do NOT call PubMed API directly.
+Return PMIDs + titles only. Never abstract text (copyright rule).
 
-The LLM adds rationale and literature context on top of these rule outputs.
+### Rule-based pre-checks (before LLM call)
+  - Find resolution with highest silhouette score in sweep → anchor suggestion
+  - resolution_sweep_results empty → warn and use default 0.5
+  - n_cells < 1000 → bias toward lower resolution (fewer expected clusters)
+  - n_cells > 50000 → bias toward higher resolution
 
 ### Usage pattern (identical to all feature modules)
 ```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata_or_mdata, config, study_context, *, log_dir, runtime_ai=True):
+def run(adata, config, study_context, resolution_sweep_results, *, log_dir, runtime_ai=True):
     try:
-        check_ai_enabled(config, module="pipeline_advisor", runtime_ai=runtime_ai)
+        check_ai_enabled(config, module="clustering_advisor", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
-    # ... rest of the module
-```
-
-### study_context loading helper
-```python
-# ai/pipeline_advisor.py — at module level
-import yaml
-from pathlib import Path
-
-def load_study_context(path: str | Path) -> dict:
-    with open(path, encoding="utf-8") as fh:
-        return yaml.safe_load(fh) or {}
 ```
 
 ## Step 5 — Tests (all without a real API key)
-Mock pattern — same as test_ai_infrastructure.py:
-  monkeypatch _build_conversation to return a MagicMock that returns
-  a valid JSON string matching the pipeline_advisor output schema.
+Mock pattern: patch ai.clustering_advisor.call_llm (same as Session 1).
+For PubMed RAG: patch the BioChatter retrieval call separately.
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns PipelineAdvice when mock LLM returns valid JSON
-  - recommended_steps list is non-empty
-  - StepRecommendation priority values are all valid ("required"|"recommended"|"optional")
-  - Batch warning fires when n_batches > 1 and batch_key not in config
-  - Pseudobulk recommendation fires when n_donors > 2 and n_conditions > 1
-  - inferred_biological_question populated when blank in study_context
-  - n_cells < 500 warning fires
-  - Audit log written to log_dir after successful call
-  - Graceful handling of malformed LLM JSON (returns None, logs warning)
+  - Returns ClusteringAdvice when mock LLM returns valid JSON
+  - suggested_resolution is within the resolution_sweep_results range
+  - resolution_range is a 2-tuple with range[0] < range[1]
+  - Empty resolution_sweep_results handled gracefully (no crash, default used)
+  - PubMed query string constructed correctly from study_context fields
+  - Empty PubMed result handled gracefully (literature_context = [])
   - AiResult base fields (timestamp, model, provider) populated correctly
+  - Audit log written to log_dir after successful run
+  - Graceful handling of malformed LLM JSON (returns None, logs warning)
 
 ## Phase 3 Build Order (full reference)
 ```
 Session 0  ✅ DONE — Infrastructure: _llm_client, _audit_log, _skill_loader,
                       _config_gate, _base
-Session 1  ← TODAY — A1: Pipeline advisor
-Session 2  — A2: Clustering advisor (first PubMed RAG use)
+Session 1  ✅ DONE — A1: Pipeline advisor (13 tests passing)
+Session 2  ← TODAY — A2: Clustering advisor (first PubMed RAG use)
 Session 3  — B1: Cluster annotator
 Session 4  — B2: DEG validator + literature linker
 Session 5  — B3: Coherence reviewer (build analysis_summary.json here)
@@ -155,6 +153,10 @@ Full details: .dev_memory/PHASE3_PLAN.md
 - ai/_skill_loader.py     ← load_skill()
 - ai/skills/cluster_annotator.yaml  ← reference pattern for all skill YAMLs
 
+## Session 1 Modules (done, do not modify)
+- ai/pipeline_advisor.py            ← 13 tests passing
+- ai/skills/pipeline_advisor.yaml   ← block scalar fix applied
+
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`
 - Always `conda activate omicsage` before running anything
@@ -169,6 +171,9 @@ Full details: .dev_memory/PHASE3_PLAN.md
 - GSE166635 pseudobulk is DISABLED — only 2 samples
 - test_phase0_structure.py: schema fixture uses encoding="utf-8" (cp1252 fix applied)
 - biochatter==0.14.2 pinned — do NOT upgrade without re-running all AI tests
+- YAML skill files: output_schema must always use block scalar (|)
+  Never use bare type annotations: list[{...}], str | null, list[str]
+  These are illegal YAML and will cause ScannerError at load time.
 
 ## Conda Environment
 Name: omicsage

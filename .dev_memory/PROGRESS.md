@@ -63,11 +63,11 @@
   - [x] tests/test_ai_infrastructure.py — 20 tests passing
   - [x] biochatter==0.14.2 installed and verified
   - [x] test_phase0_structure.py encoding fix (utf-8)
-- [ ] Session 1 — A1: Pipeline advisor ← NEXT
-  - [ ] ai/skills/pipeline_advisor.yaml
-  - [ ] ai/pipeline_advisor.py
-  - [ ] tests/test_pipeline_advisor.py
-- [ ] Session 2 — A2: Clustering advisor (first PubMed RAG use)
+- [x] Session 1 — A1: Pipeline advisor 
+  - [x] ai/skills/pipeline_advisor.yaml
+  - [x] ai/pipeline_advisor.py
+  - [x] tests/test_pipeline_advisor.py
+- [ ] Session 2 — A2: Clustering advisor (first PubMed RAG use) ← NEXT
   - [ ] ai/skills/clustering_advisor.yaml
   - [ ] ai/clustering_advisor.py
   - [ ] tests/test_clustering_advisor.py
