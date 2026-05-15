@@ -79,11 +79,11 @@
   - [x] ai/skills/deg_validator.yaml
   - [x] ai/deg_validator.py
   - [x] tests/test_deg_validator.py
-- [ ] Session 5 — B3: Coherence reviewer ← NEXT
-  - [ ] ai/skills/coherence_reviewer.yaml
-  - [ ] ai/coherence_reviewer.py
-  - [ ] tests/test_coherence_reviewer.py
-  - [ ] reports/<dataset>/analysis_summary.json (schema designed here)
+- [x] Session 5 — B3: Coherence reviewer ← NEXT
+  - [x] ai/skills/coherence_reviewer.yaml
+  - [x] ai/coherence_reviewer.py
+  - [x] tests/test_coherence_reviewer.py
+  - [x] reports/<dataset>/analysis_summary.json (schema designed here)
 - [ ] Session 6 — A3: Downstream analysis suggester
   - [ ] ai/skills/downstream_suggester.yaml
   - [ ] ai/downstream_suggester.py

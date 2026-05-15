@@ -1,180 +1,120 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 4 — B2 DEG Validator + Literature Linker built and tested.
-                      25 new tests passing (355 total, 1 skipped).
-                      Fixed: rank_genes_groups structured array rows must have length
-                      n_groups (one value per group field), not n_genes_per_group.
-                      Fixed: mock functions patching _query_pubmed must match full
-                      signature (gene, tissue, disease_context) — not just (gene).
-File last worked on: tests/test_deg_validator.py
+Last thing completed: Session 5 — B3 Coherence Reviewer + analysis_summary.json
+                      built and tested. 22 new tests passing (377 total, 1 skipped).
+                      build_analysis_summary() is a pure function — no LLM, fully
+                      tested without mocking. analysis_summary.json written to
+                      reports/<dataset>/analysis_summary.json when summary_path set.
+File last worked on: tests/test_coherence_reviewer.py
 
 ## Today's Goal
-Phase 3 — Session 5: B3 — Coherence Reviewer.
-
-This session also builds analysis_summary.json — the load-bearing compressed
-run summary consumed by B3, C1, and C2. Design it before writing any module code.
+Phase 3 — Session 6: A3 — Downstream Analysis Suggester.
 Nothing else.
 
 Files to create:
-  - ai/skills/coherence_reviewer.yaml     ← skill YAML
-  - ai/coherence_reviewer.py              ← feature module
-  - tests/test_coherence_reviewer.py      ← all tests without a real API key
+  - ai/skills/downstream_suggester.yaml     ← skill YAML
+  - ai/downstream_suggester.py              ← feature module
+  - tests/test_downstream_suggester.py      ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 355 passed, 1 skipped
+# Expected: 377 passed, 1 skipped
 ```
 
-## Step 2 — Read the Coherence Reviewer spec in PHASE3_PLAN.md
-Section: "Session 5 — B3: Coherence Reviewer"
+## Step 2 — Read the Downstream Suggester spec in PHASE3_PLAN.md
+Section: "Session 6 — A3: Downstream Analysis Suggester"
 Read it fully before writing any code.
-Pay special attention to the analysis_summary.json schema — it is load-bearing.
 
-## Step 3 — Design analysis_summary.json first
-
-This file is written by B3 and consumed by C1 (narrative generator) and C2
-(report writer). It must compress the full run into ~2000 tokens.
-
-Schema (write this to disk as part of the module, not hardcoded in tests):
-```json
-{
-  "study_context": {
-    "tissue": "str",
-    "disease": "str or null",
-    "n_cells": "int",
-    "n_batches": "int"
-  },
-  "qc_decisions": {
-    "min_genes": "int",
-    "max_mt_pct": "float",
-    "cells_removed_pct": "float"
-  },
-  "clustering": {
-    "resolution": "float",
-    "n_clusters": "int",
-    "silhouette_score": "float or null"
-  },
-  "cell_types": [
-    { "cluster": "str", "cell_type": "str", "confidence": "str", "n_cells": "int" }
-  ],
-  "top_degs": [
-    { "comparison": "str", "cluster": "str", "gene": "str", "log2fc": "float" }
-  ],
-  "pathways": [
-    { "cluster": "str", "pathway": "str", "padj": "float" }
-  ]
-}
-```
-
-Rules:
-- top_degs: max 3 genes per comparison (keeps token budget)
-- pathways: max 3 pathways per cluster (keeps token budget)
-- All fields optional except study_context.tissue and clustering.n_clusters
-- Missing fields written as null, never omitted entirely
-- Written to: reports/<dataset>/analysis_summary.json
-
-## Step 4 — Build ai/skills/coherence_reviewer.yaml
-Follow cluster_annotator.yaml pattern exactly.
+## Step 3 — Build ai/skills/downstream_suggester.yaml
+Follow coherence_reviewer.yaml pattern exactly.
 CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
-  - analysis_summary: str (JSON-serialised analysis_summary.json contents)
   - tissue, disease_context (from study_context)
+  - biological_question (from study_context)
+  - analysis_summary: str (JSON-serialised analysis_summary.json)
+  - coherence_flags: str (JSON-serialised flags from B3, optional)
 
 Output schema (JSON):
-  - flags: list of dicts — each with category, severity, description, suggestion
-  - sub_clustering_candidates: list of str (cluster IDs)
-  - rare_cell_candidates: list of str (cluster IDs)
-  - overall_assessment: str
+  - suggestions: list of dicts — each with step_name, rationale,
+    expected_output, relevant_tool
+  - reasoning: str
 
-Flag categories: qc | clustering | annotation | deg | pathway
-Flag severities: info | warning | critical
-
-## Step 5 — Build ai/coherence_reviewer.py
+## Step 4 — Build ai/downstream_suggester.py
 
 ### Public API
 ```python
-from dataclasses import dataclass, field
-from ai._base import AiResult
+@dataclass
+class DownstreamSuggestion:
+    step_name: str = ""
+    rationale: str = ""
+    expected_output: str = ""
+    relevant_tool: str = ""
 
 @dataclass
-class CoherenceFlag:
-    category: str = ""       # qc | clustering | annotation | deg | pathway
-    severity: str = ""       # info | warning | critical
-    description: str = ""
-    suggestion: str = ""
-
-@dataclass
-class CoherenceReview(AiResult):
-    flags: list[CoherenceFlag] = field(default_factory=list)
-    sub_clustering_candidates: list[str] = field(default_factory=list)
-    rare_cell_candidates: list[str] = field(default_factory=list)
-    overall_assessment: str = ""
-
-def build_analysis_summary(adata, config: dict, study_context: dict) -> dict:
-    """Build the analysis_summary dict from adata. Does NOT call LLM."""
-    ...
+class DownstreamAdvice(AiResult):
+    suggestions: list[DownstreamSuggestion] = field(default_factory=list)
 
 def run(
     adata,
     config: dict,
     study_context: dict,
+    coherence_review=None,       # CoherenceReview | None from B3
     *,
-    summary_path: str | None = None,   # if set, write analysis_summary.json here
+    output_path: str | None = None,   # if set, write NEXT_STEPS.md here
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> CoherenceReview | None:
+) -> DownstreamAdvice | None:
     ...
 ```
 
-### What it reads from adata
-- adata.uns['rank_genes_groups'] — for top_degs (optional, null if missing)
-- adata.uns['leiden_resolution'] or adata.uns['omicsage_cluster'] — resolution
-- adata.obs['leiden'] — cluster labels and cell counts
-- adata.obs['ai_cell_type'] + adata.obs['ai_confidence'] — from B1 (optional)
-- adata.uns['omicsage_qc'] — QC decisions (optional)
-- adata.uns['gsea_results'] or similar — pathway results (optional)
+### Rule-based logic (run BEFORE calling LLM — these always fire)
+These fire based on what is present in adata.obs and adata.uns:
+- Progenitor + mature cell types in obs['ai_cell_type'] → suggest trajectory
+- Immune + non-immune cells both present → suggest cell-cell communication
+- Clinical metadata column present in obs → suggest survival analysis
+- sub_clustering_candidates non-empty in coherence_review → suggest sub-clustering
+- n_conditions > 1 in study_context → suggest pseudobulk DEG if not already done
 
-### Key design rule
-build_analysis_summary() is a pure function — no LLM, no side effects.
-It must be independently testable without mocking anything.
-run() calls build_analysis_summary() then calls the LLM.
+### Output written to NEXT_STEPS.md
+Human-readable markdown. Each suggestion as a section:
+  ## <step_name>
+  **Rationale**: ...
+  **Expected output**: ...
+  **Relevant tool**: ...
 
-### Usage pattern (identical to all feature modules)
+### Usage pattern
 ```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata, config, study_context, *, summary_path, log_dir, runtime_ai):
+def run(adata, config, study_context, coherence_review=None, *, output_path, log_dir, runtime_ai):
     try:
-        check_ai_enabled(config, module="coherence_reviewer", runtime_ai=runtime_ai)
+        check_ai_enabled(config, module="downstream_suggester", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
 ```
 
-## Step 6 — Tests (all without a real API key)
+## Step 5 — Tests (all without a real API key)
 Mock pattern:
-  - patch("ai.coherence_reviewer.call_llm") — returns str only
+  - patch("ai.downstream_suggester.call_llm") — returns str only
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - build_analysis_summary returns correct structure from mock adata
-  - build_analysis_summary handles missing rank_genes_groups gracefully (null)
-  - build_analysis_summary handles missing ai_cell_type gracefully (null)
-  - Returns CoherenceReview when mock LLM returns valid JSON
-  - flags list populated correctly (category, severity, description, suggestion)
-  - sub_clustering_candidates populated from mock response
-  - rare_cell_candidates populated from mock response
-  - analysis_summary.json written to summary_path when provided
-  - analysis_summary.json is valid JSON and matches schema
-  - AiResult base fields (timestamp, model, provider, skill_name) populated
-  - Audit log written to log_dir after successful run
-  - Degraded parse (invalid JSON from LLM) does not crash — returns CoherenceReview
-    with empty flags
+  - Returns DownstreamAdvice when mock LLM returns valid JSON
+  - Trajectory suggestion fires when progenitor + mature cell types present
+  - Communication suggestion fires when immune + non-immune cells present
+  - Sub-clustering suggestion fires when coherence_review has sub_clustering_candidates
+  - suggestions list populated correctly (step_name, rationale, expected_output, tool)
+  - NEXT_STEPS.md written to output_path when provided
+  - NEXT_STEPS.md is valid markdown with correct structure
+  - Degraded parse (invalid JSON) does not crash — returns DownstreamAdvice with empty list
+  - AiResult base fields populated (timestamp, model, provider, skill_name)
+  - coherence_review=None handled gracefully (no crash)
 
 ## Phase 3 Build Order (full reference)
 ```
@@ -184,13 +124,41 @@ Session 1  ✅ DONE — A1: Pipeline advisor (13 tests passing)
 Session 2  ✅ DONE — A2: Clustering advisor (22 tests passing)
 Session 3  ✅ DONE — B1: Cluster annotator (23 tests passing)
 Session 4  ✅ DONE — B2: DEG validator + literature linker (25 tests passing)
-Session 5  ← TODAY — B3: Coherence reviewer + analysis_summary.json
-Session 6  — A3: Downstream analysis suggester
+Session 5  ✅ DONE — B3: Coherence reviewer + analysis_summary.json (22 tests passing)
+Session 6  ← TODAY — A3: Downstream analysis suggester
 Session 7  — C1: Narrative generator
 Session 8  — C2: Full report + PowerPoint
-Session 9  — Milestone validation: groundedness test + end-to-end GSE166635
+Session 9  — D1: Report reviewer (reads final HTML report, not adata)  ← NEW
+Session 10 — Milestone validation: groundedness test + end-to-end GSE166635
 ```
 Full details: .dev_memory/PHASE3_PLAN.md
+
+## FUTURE DESIGN DECISION — Report Reviewer (Session 9)
+A new module `ai/report_reviewer.py` to be built in Session 9, after C2.
+
+What it does:
+  Reads the final HTML report generated by C2 (not adata) and reviews it
+  as a document — checking narrative consistency, figure-caption alignment,
+  methods text accuracy, and whether the conclusions follow from the results.
+  Complements B3 (which reviews adata) with a document-level review.
+
+When it runs: after C2 has written the final HTML report to disk.
+
+Input: path to the final HTML report file
+Output:
+  - report_flags: list of dicts (category, severity, description, suggestion)
+    Categories: narrative | figures | methods | conclusions
+  - overall_report_quality: str (one paragraph)
+  - Written to: reports/<dataset>/report_review.md
+
+Skill file: ai/skills/report_reviewer.yaml
+Module file: ai/report_reviewer.py
+Test file: tests/test_report_reviewer.py
+
+Key design note: reads HTML as plain text — strips tags, extracts section
+text, feeds to LLM. Does NOT require a browser or rendering engine.
+BeautifulSoup4 (already in many envs) for tag stripping if available,
+otherwise regex fallback. Check if bs4 is in omicsage env before building.
 
 ## AI Layer Design Principles (carry into every session)
 - Skills are the prompts — no raw strings in Python, ever
@@ -199,7 +167,7 @@ Full details: .dev_memory/PHASE3_PLAN.md
 - Every LLM call is audit-logged — no exceptions
 - Graceful degradation — a failed AI module returns None, never crashes
 - Context scales quality — more study_context = better AI output
-- analysis_summary.json is load-bearing — design carefully (done this session)
+- analysis_summary.json is load-bearing — designed and built in Session 5
 - Copyright enforced at report layer — PMIDs + titles only, no abstract text
 
 ## Confirmed API Signatures (do not guess — use these exactly)
@@ -263,7 +231,7 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-4 Modules (done, do not modify)
+## Session 1-5 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
@@ -272,8 +240,10 @@ _query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneL
 - ai/skills/cluster_annotator.yaml
 - ai/deg_validator.py               ← 25 tests passing
 - ai/skills/deg_validator.yaml
+- ai/coherence_reviewer.py          ← 22 tests passing
+- ai/skills/coherence_reviewer.yaml
 
-## Bugs Fixed This Session (carry as warnings)
+## Bugs Fixed in Prior Sessions (carry as warnings)
 - rank_genes_groups structured array: rows must have length n_groups (one value
   per group field), NOT n_genes_per_group. The dtype field count is what matters.
   Correct: row rank = (group0_gene_rank, group1_gene_rank, ...)
