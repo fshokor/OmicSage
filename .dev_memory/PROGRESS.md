@@ -71,10 +71,10 @@
   - [x] ai/skills/clustering_advisor.yaml
   - [x] ai/clustering_advisor.py
   - [x] tests/test_clustering_advisor.py
-- [ ] Session 3 — B1: Cluster annotator ← NEXT
-  - [ ] ai/skills/cluster_annotator.yaml (already drafted — refine here)
-  - [ ] ai/cluster_annotator.py
-  - [ ] tests/test_cluster_annotator.py
+- [x] Session 3 — B1: Cluster annotator ← NEXT
+  - [x] ai/skills/cluster_annotator.yaml (already drafted — refine here)
+  - [x] ai/cluster_annotator.py
+  - [x] tests/test_cluster_annotator.py
 - [ ] Session 4 — B2: DEG validator + literature linker
   - [ ] ai/skills/deg_validator.yaml
   - [ ] ai/deg_validator.py

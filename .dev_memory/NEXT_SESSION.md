@@ -1,54 +1,49 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 2 — A2 Clustering Advisor built and tested.
-                      22 tests passing. Fixed: call_llm returns str only
-                      (not 4-tuple), write_audit_record uses token_usage=
-                      dict (not separate kwargs), _advice_to_dict needed
-                      for JSON-serializing tuple + nested dataclasses.
-File last worked on: tests/test_clustering_advisor.py
+Last thing completed: Session 3 — B1 Cluster Annotator built and tested.
+                      23 new tests passing (330 total, 1 skipped).
+                      Fixed: AiResult base field is skill_name (not skill).
+File last worked on: tests/test_cluster_annotator.py
 
 ## Today's Goal
-Phase 3 — Session 3: B1 — Cluster Annotator.
+Phase 3 — Session 4: B2 — DEG Validator + Literature Linker.
 
-First module that writes results back to adata.obs. Nothing else.
+First module that runs PubMed RAG. Nothing else.
 
 Files to create:
-  - ai/skills/cluster_annotator.yaml   ← skill YAML
-  - ai/cluster_annotator.py            ← feature module
-  - tests/test_cluster_annotator.py    ← all tests without a real API key
+  - ai/skills/deg_validator.yaml       ← skill YAML
+  - ai/deg_validator.py                ← feature module
+  - tests/test_deg_validator.py        ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~307 passed, 1 skipped
+# Expected: 330 passed, 1 skipped
 ```
 
-## Step 2 — Read the cluster annotator spec in PHASE3_PLAN.md
-Section: "Session 3 — B1: Cluster Annotator"
+## Step 2 — Read the DEG validator spec in PHASE3_PLAN.md
+Section: "Session 4 — B2: DEG Validator + Literature Linker"
 Read it fully before writing any code.
 
-## Step 3 — Build ai/skills/cluster_annotator.yaml
-Follow pipeline_advisor.yaml pattern exactly.
+## Step 3 — Build ai/skills/deg_validator.yaml
+Follow cluster_annotator.yaml pattern exactly.
 CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
   - tissue, disease_context (from study_context)
-  - cluster_id, n_cells
-  - marker_genes: list of top N marker genes ranked by log2FC
+  - comparison: str (e.g. "tumour_vs_normal")
+  - degs: list of dicts — each with gene, log2fc, padj, cell_type
 
-Output schema (JSON) per cluster:
-  - cell_type: str
-  - confidence: "high" | "medium" | "low"
-  - supporting_markers: list of str
-  - alternative_types: list of str
-  - recommended_db: str
-  - manual_marker_set: list of str
-  - reasoning: str
+Output schema (JSON):
+  - expected_genes: list of str
+  - unexpected_genes: list of str
+  - validation_summary: str
+  - discovery_highlights: list of str
 
-## Step 4 — Build ai/cluster_annotator.py
+## Step 4 — Build ai/deg_validator.py
 
 ### Public API
 ```python
@@ -56,95 +51,85 @@ from dataclasses import dataclass, field
 from ai._base import AiResult
 
 @dataclass
-class ClusterAnnotation(AiResult):
-    cluster_id: str = ""
-    cell_type: str = "unknown"
-    confidence: str = "low"           # "high" | "medium" | "low"
-    supporting_markers: list[str] = field(default_factory=list)
-    alternative_types: list[str] = field(default_factory=list)
-    recommended_db: str = ""
-    manual_marker_set: list[str] = field(default_factory=list)
+class GeneLitRef:
+    gene: str = ""
+    pmid: str = ""
+    title: str = ""
+    context: str = ""   # one-sentence context from PubMed
+
+@dataclass
+class DegValidation(AiResult):
+    comparison: str = ""
+    expected_genes: list[str] = field(default_factory=list)
+    unexpected_genes: list[str] = field(default_factory=list)
+    literature_links: list[GeneLitRef] = field(default_factory=list)
+    validation_summary: str = ""
+    discovery_highlights: list[str] = field(default_factory=list)
 
 def run(
-    adata,                  # AnnData after marker computation — WRITES to obs
+    adata,
     config: dict,
     study_context: dict,
     *,
-    n_markers: int = 20,    # top N markers per cluster to pass to LLM
+    n_top_genes: int = 10,      # top N DEGs per comparison to validate
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> list[ClusterAnnotation] | None:
+) -> list[DegValidation] | None:
     ...
 ```
 
-### What it writes to adata
-- `adata.obs['ai_cell_type']`     — predicted label per cell
-- `adata.obs['ai_confidence']`    — high | medium | low per cell
-- `adata.obs['ai_alt_types']`     — comma-separated alternatives per cell
+### What it reads from adata
+- `adata.uns['rank_genes_groups']` — DEG results per cluster/comparison
+- `adata.obs['ai_cell_type']` if available (from B1), else falls back to
+  cluster ID as cell type label
+- If rank_genes_groups missing → raise informative error
 
-### Input it reads from adata
-- `adata.uns['rank_genes_groups']` — top marker genes per cluster
-  If missing → raise informative error (not silent None)
-- cluster assignments from `adata.obs['leiden']` (or first available
-  clustering column)
+### Two-part analysis per comparison
+1. **Validation (LLM)**: are top DEGs consistent with known biology?
+   Returns expected_genes, unexpected_genes, validation_summary,
+   discovery_highlights.
+2. **Literature linking (PubMed RAG)**: for each top gene, retrieve
+   PMID + title via PubMed search. One PubMed query per gene.
+   Store as GeneLitRef. PMID + title only — never abstract text.
 
-### One LLM call per cluster
-Loop over clusters. Each call is independent. If one cluster fails to
-parse, log a warning and skip that cluster — do not abort the full run.
+### PubMed query pattern per gene
+```
+"{gene} {tissue} {disease_context} single-cell"
+```
+
+### Copyright constraint (carry into every session)
+Only PMIDs + titles stored and reported. Never abstract text, never
+quotes from papers.
 
 ### Usage pattern (identical to all feature modules)
 ```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata, config, study_context, *, n_markers, log_dir, runtime_ai):
+def run(adata, config, study_context, *, n_top_genes, log_dir, runtime_ai):
     try:
-        check_ai_enabled(config, module="cluster_annotator", runtime_ai=runtime_ai)
+        check_ai_enabled(config, module="deg_validator", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
 ```
 
-### call_llm signature (confirmed in Session 2)
-```python
-# Returns str only — not a tuple
-raw_response = call_llm(
-    skill_name="cluster_annotator",
-    inputs=skill_inputs,
-    config=config,
-    log_dir=log_dir,
-    module="cluster_annotator",
-)
-```
-
-### write_audit_record signature (confirmed in Session 1)
-```python
-write_audit_record(
-    log_dir=log_dir,
-    module="cluster_annotator",
-    skill_version="1.0",
-    model=model,          # from config.ai.model
-    provider=provider,    # from config.ai.provider
-    input_summary={...},
-    token_usage=None,     # call_llm already logged tokens; pass None here
-    raw_response=raw_response,
-    parsed_output={...} | None,
-    parse_success=True | False,
-)
-```
-
 ## Step 5 — Tests (all without a real API key)
-Mock pattern: patch("ai.cluster_annotator.call_llm") — returns str only.
+Mock pattern:
+  - patch("ai.deg_validator.call_llm") — returns str only
+  - patch("ai.deg_validator._query_pubmed") — returns list[GeneLitRef]
+    (mock PubMed so tests never hit the network)
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns list[ClusterAnnotation] when mock LLM returns valid JSON
-  - adata.obs columns written correctly (ai_cell_type, ai_confidence, ai_alt_types)
+  - Returns list[DegValidation] when mock LLM returns valid JSON
+  - expected_genes / unexpected_genes populated correctly
+  - literature_links populated from mock PubMed results
   - Missing rank_genes_groups raises informative error
-  - Partial parse failure (1 of 3 clusters fails) — other 2 still written
-  - AiResult base fields (timestamp, model, provider) populated correctly
+  - Empty DEG list returns empty result gracefully
+  - PMID deduplication across genes (same PMID for two genes → stored once)
+  - AiResult base fields (timestamp, model, provider, skill_name) populated
   - Audit log written to log_dir after successful run
-  - Graceful handling of malformed LLM JSON for one cluster (logs warning, skips)
-  - confidence values are always one of: high | medium | low
+  - No abstract text stored in any GeneLitRef field
 
 ## Phase 3 Build Order (full reference)
 ```
@@ -152,8 +137,8 @@ Session 0  ✅ DONE — Infrastructure: _llm_client, _audit_log, _skill_loader,
                       _config_gate, _base
 Session 1  ✅ DONE — A1: Pipeline advisor (13 tests passing)
 Session 2  ✅ DONE — A2: Clustering advisor (22 tests passing)
-Session 3  ← TODAY — B1: Cluster annotator (first module writing to adata.obs)
-Session 4  — B2: DEG validator + literature linker
+Session 3  ✅ DONE — B1: Cluster annotator (23 tests passing)
+Session 4  ← TODAY — B2: DEG validator + literature linker
 Session 5  — B3: Coherence reviewer (build analysis_summary.json here)
 Session 6  — A3: Downstream analysis suggester
 Session 7  — C1: Narrative generator
@@ -177,9 +162,9 @@ Full details: .dev_memory/PHASE3_PLAN.md
 ### call_llm (ai/_llm_client.py)
 ```python
 call_llm(
-    skill_name: str,       # name of skill YAML, e.g. "cluster_annotator"
-    inputs: dict,          # fills user_prompt_template
-    config: dict,          # full pipeline config (not just ai section)
+    skill_name: str,
+    inputs: dict,
+    config: dict,
     *,
     log_dir: str,
     module: str | None,
@@ -197,7 +182,7 @@ write_audit_record(
     model: str,
     provider: str,
     input_summary: dict,
-    token_usage: dict | None,   # dict with prompt_tokens/completion_tokens or None
+    token_usage: dict | None,
     raw_response: str,
     parsed_output: dict | None,
     parse_success: bool,
@@ -210,6 +195,16 @@ check_ai_enabled(config: dict, module: str, runtime_ai: bool = True) -> None
 # Raises AiDisabledError if: global off, module off, or runtime_ai=False
 ```
 
+### AiResult base fields (ai/_base.py)
+```python
+timestamp: str      # ISO-8601 UTC, set automatically
+model: str
+provider: str
+skill_name: str     # ← NOTE: skill_name, NOT skill
+skill_version: str
+reasoning: str
+```
+
 ## Infrastructure Modules (Session 0 — all done, do not modify)
 - ai/_base.py             ← AiResult base dataclass
 - ai/_config_gate.py      ← check_ai_enabled() + AiDisabledError
@@ -217,28 +212,18 @@ check_ai_enabled(config: dict, module: str, runtime_ai: bool = True) -> None
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-2 Modules (done, do not modify)
+## Session 1-3 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
 - ai/skills/clustering_advisor.yaml
+- ai/cluster_annotator.py           ← 23 tests passing
+- ai/skills/cluster_annotator.yaml
 
 ## Bugs Fixed This Session (carry as warnings)
-- call_llm returns str only — never unpack as tuple
-- write_audit_record uses token_usage=dict, not separate prompt_tokens=/completion_tokens=
-- Nested dataclasses and tuples in result objects need explicit _to_dict()
-  helper before passing to parsed_output= in write_audit_record
-- Provider and model always read from config — never hardcoded anywhere
-- Default provider: "ollama", default model: "llama3" (free, local, no key)
-
-## ClawBio Note (added this session)
-ClawBio (clawbio.ai) is an open-source bioinformatics skill library.
-Not a competitor — no report engine, no multi-project, no multiome.
-Potential future integration as optional skill backends (Phase 4-5).
-Potential OpenClaw marketplace listing (Phase 7+).
-Not a dependency for Phase 1-3.
-Monitor: claw-spatial, scRNA Orchestrator updates.
-Entry added to DECISIONS.md.
+- AiResult base field is skill_name (not skill) — confirmed from _base.py
+- Always upload _base.py (and any infrastructure file) at session start
+  if there is any doubt about field names — do not guess from memory
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`
@@ -252,11 +237,15 @@ Entry added to DECISIONS.md.
 - obs[batch_key] must be cast .astype(str) before pandas operations
 - pseudobulk requires layers['counts'] (raw integers) — NOT layers['logcounts']
 - GSE166635 pseudobulk is DISABLED — only 2 samples
-- test_phase0_structure.py: schema fixture uses encoding="utf-8" (cp1252 fix applied)
-- biochatter==0.14.2 pinned — do NOT upgrade without re-running all AI tests
+- test_phase0_structure.py: TestCLI asserts cfg.provider == "ollama" (not "claude")
 - YAML skill files: output_schema must always use block scalar (|)
   Never use bare type annotations: list[{...}], str | null, list[str]
   These are illegal YAML and will cause ScannerError at load time.
+- biochatter==0.14.2 pinned — do NOT upgrade without re-running all AI tests
+- call_llm returns str only — never unpack as tuple
+- write_audit_record uses token_usage=dict (or None), not separate kwargs
+- Provider and model always read from config — never hardcoded anywhere
+- Default provider: "ollama", default model: "llama3"
 
 ## Conda Environment
 Name: omicsage
