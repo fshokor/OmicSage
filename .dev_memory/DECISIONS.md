@@ -43,3 +43,6 @@ Potential future integration as optional skill backends (Phase 4-5).
 Potential OpenClaw marketplace listing (Phase 7+).
 Not a dependency for Phase 1-3.
 Monitor: claw-spatial, claw-gwas, scRNA Orchestrator updates.
+
+Report Reviewer (D1) — text-only analysis, no figure inspection
+Decision: report_reviewer.py strips HTML to plain text before the LLM call. Images referenced in the report are not extracted or passed to the model. The reviewer therefore evaluates narrative quality, methods completeness, and whether conclusions are supported by described results — it cannot visually inspect figures. This was a deliberate scope decision for Phase 3: the module is a scientific writing reviewer, not a figure quality checker. True figure analysis would require a vision-capable model call (Claude vision API or GPT-4o with images), per-figure base64 extraction from the HTML before tag stripping, and a separate prompt designed around visual interpretation. The complexity and token cost do not justify inclusion at this stage. If figure review becomes a priority in a later phase, it should be a standalone module (ai/figure_reviewer.py) rather than an extension of this one, so the two concerns remain independently testable and independently disableable.

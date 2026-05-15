@@ -1,126 +1,105 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 8 — C2 Full Report + PowerPoint Generator
-                      built and tested. 20 new tests passing (448 total, 1 skipped).
-                      Two AI-generated report sections (conclusion.md,
-                      perspectives.md) via separate LLM calls. Rule-based 8-slide
-                      PowerPoint (presentation.pptx) via python-pptx — no LLM.
-                      Speaker notes on all slides from C1 narrative blocks.
-                      Graceful degradation: pptx_path=None if python-pptx missing,
-                      placeholder text if figures missing, sections still written
-                      if narrative_result=None.
-                      python-pptx version confirmed: 1.0.2
-File last worked on: tests/test_report_writer.py
+Last thing completed: Session 9 — D1 Report Reviewer built and tested.
+                      18 new tests passing (466 total, 1 skipped).
+                      Skill YAML with 4 review categories (narrative, figures,
+                      methods, conclusions) and 3 severity levels.
+                      HTML tag stripping via BeautifulSoup with regex fallback.
+                      24000-char truncation before LLM call.
+                      report_review.md written to report_dir.
+                      Graceful degradation: missing HTML → None,
+                      invalid JSON → result with empty flags,
+                      missing report_dir → created automatically.
+File last worked on: tests/test_report_reviewer.py
 
 ## Today's Goal
-Phase 3 — Session 9: D1 — Report Reviewer.
+Phase 3 — Session 10: Milestone validation.
 Nothing else.
 
-Files to create:
-  - ai/skills/report_reviewer.yaml     ← skill YAML
-  - ai/report_reviewer.py              ← feature module
-  - tests/test_report_reviewer.py      ← all tests without a real API key
+Two parts:
+  1. Groundedness test (tests/test_groundedness.py)
+  2. End-to-end pipeline run on GSE166635 with ai_features: true and false
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 448 passed, 1 skipped
+# Expected: 466 passed, 1 skipped
 ```
 
-## Step 2 — Check if bs4 is available
+## Step 2 — Groundedness test
+File to create: tests/test_groundedness.py
+
+What it measures:
+  Score = cited factual sentences / total factual sentences in ai_narrative.md
+  Target: >= 0.85
+
+A factual sentence is any sentence containing:
+  - a numeric value (e.g. "14 clusters", "35% of cells")
+  - a gene name (all-caps 2-6 char token, e.g. PDCD1, CD8A)
+  - a PMID reference
+
+A cited factual sentence is a factual sentence that also contains
+a PMID, a gene name used as evidence, or an explicit metric value
+that matches a value in analysis_summary.json.
+
+Run against: reports/GSE166635/ai_narrative.md
+             reports/GSE166635/analysis_summary.json
+
+## Step 3 — End-to-end GSE166635 with AI on
 ```bash
-conda activate omicsage && python -c "import bs4; print(bs4.__version__)"
-```
-If present: use BeautifulSoup for HTML tag stripping.
-If absent: use regex fallback. Do NOT install bs4 just for this module —
-           the fallback must always work even when bs4 is present.
-
-## Step 3 — Build ai/skills/report_reviewer.yaml
-Follow narrative_generator.yaml / report_writer.yaml pattern exactly.
-CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
-
-Inputs the skill needs:
-  - report_text: str (plain text extracted from the HTML report, tags stripped)
-  - tissue: str
-  - disease_context: str | null
-  - biological_question: str
-
-Output schema (JSON):
-  - report_flags: list of dicts, each with keys:
-      category (narrative | figures | methods | conclusions),
-      severity (info | warning | critical),
-      description, suggestion
-  - overall_report_quality: str (one paragraph)
-  - reasoning: str
-
-## Step 4 — Build ai/report_reviewer.py
-
-### Public API
-```python
-@dataclass
-class ReportFlag:
-    category: str = ""      # narrative | figures | methods | conclusions
-    severity: str = ""      # info | warning | critical
-    description: str = ""
-    suggestion: str = ""
-
-@dataclass
-class ReportReviewerResult(AiResult):
-    report_flags: list[ReportFlag] = field(default_factory=list)
-    overall_report_quality: str = ""
-    review_path: str | None = None   # path to written report_review.md
-
-def run(
-    html_report_path: str,
-    config: dict,
-    study_context: dict,
-    *,
-    report_dir: str,         # required — output directory for this dataset run
-    log_dir: str = "logs/llm",
-    runtime_ai: bool = True,
-) -> ReportReviewerResult | None:
-    ...
+python run_pipeline.py \
+  --config config/runs/GSE166635.yaml \
+  --step all --ai \
+  2>&1 | tee logs/GSE166635_phase3_ai_on.log
 ```
 
-### Key behaviour
+Verify after run:
+  - reports/GSE166635/ai_narrative.md exists and non-empty
+  - reports/GSE166635/report_review.md exists and non-empty
+  - reports/GSE166635/NEXT_STEPS.md exists and non-empty
+  - reports/GSE166635/analysis_summary.json exists and valid JSON
+  - reports/GSE166635/presentation.pptx exists (open and verify 8 slides)
+  - logs/llm/*.jsonl all exist and non-empty
+  - Groundedness score >= 0.85
 
-#### HTML reading
-- Open html_report_path as plain text (UTF-8, errors='replace')
-- Strip HTML tags:
-    - If bs4 available: BeautifulSoup(text, "html.parser").get_text(separator=" ")
-    - Otherwise: re.sub(r"<[^>]+>", " ", text) then collapse whitespace
-- Truncate to 6000 tokens (~24000 chars) — pass the truncated plain text to the LLM
-- If html_report_path does not exist: log warning, return None
+## Step 4 — End-to-end GSE166635 with AI off
+```bash
+python run_pipeline.py \
+  --config config/runs/GSE166635.yaml \
+  --step all \
+  2>&1 | tee logs/GSE166635_phase3_ai_off.log
+```
 
-#### LLM call
-- One call to report_reviewer skill
-- Inputs: report_text (truncated plain text), tissue, disease_context,
-          biological_question
+Verify after run:
+  - Pipeline completes without errors
+  - No files written to logs/llm/
+  - No ai_narrative.md, no report_review.md, no NEXT_STEPS.md
+  - HTML report and figures still generated normally
 
-#### Output written to disk
-- reports/<dataset>/report_review.md
-  Format:
-    # Report Review
+## Step 5 — Ollama local provider test (manual)
+```bash
+# Requires ollama running locally with llama3 pulled
+python run_pipeline.py \
+  --config config/runs/GSE166635_ollama.yaml \
+  --step annotate --ai
+```
+Verify: logs/llm/cluster_annotator.jsonl written, provider field = "ollama"
 
-    ## Overall Quality
-    <overall_report_quality paragraph>
+## Phase 3 Milestone Checklist
 
-    ## Flags
-    ### <CATEGORY> — <SEVERITY>
-    **Issue:** <description>
-    **Suggestion:** <suggestion>
-    (one section per flag)
-
-- review_path in result = path to written file
-
-### Graceful degradation
-- html_report_path does not exist → log warning, return None
-- LLM returns invalid JSON → log warning, return ReportReviewerResult with
-  report_flags=[], overall_report_quality=raw_response[:500], review_path=None
-- report_dir does not exist → create it
+[ ] All prior tests still passing (466+)
+[ ] All AI feature modules have passing tests
+[ ] Full pipeline runs on GSE166635 with ai_features: true
+[ ] Full pipeline runs on GSE166635 with ai_features: false
+[ ] Groundedness score >= 0.85 on GSE166635 narrative
+[ ] All LLM calls written to logs/llm/*.jsonl
+[ ] Ollama provider works locally with llama3
+[ ] PowerPoint generated with all 8 slides
+[ ] NEXT_STEPS.md written to run output directory
+[ ] analysis_summary.json written per run and valid JSON
 
 ## Step 5 — Tests (all without a real API key)
 Mock pattern:
@@ -159,8 +138,8 @@ Session 5  ✅ DONE — B3: Coherence reviewer + analysis_summary.json (22 tests
 Session 6  ✅ DONE — A3: Downstream analysis suggester (20 tests passing)
 Session 7  ✅ DONE — C1: Narrative generator (18 tests passing)
 Session 8  ✅ DONE — C2: Full report + PowerPoint (20 tests passing)
-Session 9  ← TODAY — D1: Report reviewer
-Session 10 — Milestone validation: groundedness test + end-to-end GSE166635
+Session 9  ✅ DONE — D1: Report reviewer (18 tests passing)
+Session 10 ← TODAY — Milestone validatio
 ```
 Full details: .dev_memory/PHASE3_PLAN.md
 
@@ -222,34 +201,20 @@ skill_version: str
 reasoning: str
 ```
 
-### NarrativeResult (ai/narrative_generator.py)
+### ReportReviewerResult (ai/report_reviewer.py)
 ```python
 @dataclass
-class NarrativeBlock:
-    block_name: str = ""
-    narrative_text: str = ""
-    cited_evidence: list[str] = field(default_factory=list)
-    groundedness_score: float = 0.0
+class ReportFlag:
+    category: str = ""      # narrative | figures | methods | conclusions
+    severity: str = ""      # info | warning | critical
+    description: str = ""
+    suggestion: str = ""
 
 @dataclass
-class NarrativeResult(AiResult):
-    blocks: list[NarrativeBlock] = field(default_factory=list)
-    overall_groundedness: float = 0.0
-```
-
-### ReportWriterResult (ai/report_writer.py)
-```python
-@dataclass
-class ReportSection:
-    section_name: str = ""
-    section_text: str = ""
-    key_findings: list[str] = field(default_factory=list)
-    cited_evidence: list[str] = field(default_factory=list)
-
-@dataclass
-class ReportWriterResult(AiResult):
-    sections: list[ReportSection] = field(default_factory=list)
-    pptx_path: str | None = None
+class ReportReviewerResult(AiResult):
+    report_flags: list[ReportFlag] = field(default_factory=list)
+    overall_report_quality: str = ""
+    review_path: str | None = None
 ```
 
 ## Infrastructure Modules (Session 0 — all done, do not modify)
@@ -259,7 +224,7 @@ class ReportWriterResult(AiResult):
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-8 Modules (done, do not modify)
+## Session 1-9 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
@@ -276,6 +241,8 @@ class ReportWriterResult(AiResult):
 - ai/skills/narrative_generator.yaml
 - ai/report_writer.py               ← 20 tests passing
 - ai/skills/report_writer.yaml
+- ai/report_reviewer.py             ← 18 tests passing
+- ai/skills/report_reviewer.yaml
 
 ## Bugs Fixed in Prior Sessions (carry as warnings)
 - rank_genes_groups structured array: rows must have length n_groups (one value
@@ -308,6 +275,7 @@ class ReportWriterResult(AiResult):
 - Default provider: "ollama", default model: "llama3"
 - python-pptx is a soft dependency in report_writer.py — ImportError silently
   skips PowerPoint. Version confirmed: 1.0.2
+- report_reviewer.py: text-only, no figure inspection — see DECISIONS.md
 
 ## Conda Environment
 Name: omicsage
@@ -316,4 +284,4 @@ Python: 3.11.15
 Verified packages: scanpy 1.11.5, numpy 2.4.3, pytest 9.0.3, scrublet, mudata,
                    ipykernel, jupyter, scikit-misc, kneed>=0.8.5, celltypist,
                    gseapy 1.1.3, harmonypy, pydeseq2, biochatter==0.14.2,
-                   python-pptx 1.0.2
+                   python-pptx 1.0.2, beautifulsoup4 4.14.3
