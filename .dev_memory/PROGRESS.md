@@ -67,11 +67,11 @@
   - [x] ai/skills/pipeline_advisor.yaml
   - [x] ai/pipeline_advisor.py
   - [x] tests/test_pipeline_advisor.py
-- [ ] Session 2 — A2: Clustering advisor (first PubMed RAG use) ← NEXT
-  - [ ] ai/skills/clustering_advisor.yaml
-  - [ ] ai/clustering_advisor.py
-  - [ ] tests/test_clustering_advisor.py
-- [ ] Session 3 — B1: Cluster annotator
+- [x] Session 2 — A2: Clustering advisor (first PubMed RAG use) 
+  - [x] ai/skills/clustering_advisor.yaml
+  - [x] ai/clustering_advisor.py
+  - [x] tests/test_clustering_advisor.py
+- [ ] Session 3 — B1: Cluster annotator ← NEXT
   - [ ] ai/skills/cluster_annotator.yaml (already drafted — refine here)
   - [ ] ai/cluster_annotator.py
   - [ ] tests/test_cluster_annotator.py

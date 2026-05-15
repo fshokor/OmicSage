@@ -231,7 +231,7 @@ notes: str
 ## Feature Modules
 
 ### ai/pipeline_advisor.py — Session 1
-**Status:** 🔲 Not yet built
+**Status:** ✅ Complete
 
 **When it runs:** After data loading, before any analysis step.
 

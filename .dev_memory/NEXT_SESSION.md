@@ -1,52 +1,54 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 1 — A1 Pipeline Advisor built and tested.
-                      13 tests passing. YAML parse bug fixed (output_schema
-                      must use block scalar | not bare type annotations like
-                      list[{...}] or str | null — these are illegal in bare YAML).
-File last worked on: tests/test_pipeline_advisor.py
+Last thing completed: Session 2 — A2 Clustering Advisor built and tested.
+                      22 tests passing. Fixed: call_llm returns str only
+                      (not 4-tuple), write_audit_record uses token_usage=
+                      dict (not separate kwargs), _advice_to_dict needed
+                      for JSON-serializing tuple + nested dataclasses.
+File last worked on: tests/test_clustering_advisor.py
 
 ## Today's Goal
-Phase 3 — Session 2: A2 — Clustering Advisor.
+Phase 3 — Session 3: B1 — Cluster Annotator.
 
-First module that uses PubMed RAG. Nothing else.
+First module that writes results back to adata.obs. Nothing else.
 
 Files to create:
-  - ai/skills/clustering_advisor.yaml   ← skill YAML
-  - ai/clustering_advisor.py            ← feature module
-  - tests/test_clustering_advisor.py    ← all tests without a real API key
+  - ai/skills/cluster_annotator.yaml   ← skill YAML
+  - ai/cluster_annotator.py            ← feature module
+  - tests/test_cluster_annotator.py    ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: ~285 passed, 1 skipped
+# Expected: ~307 passed, 1 skipped
 ```
 
-## Step 2 — Read the clustering advisor spec in PHASE3_PLAN.md
-Section: "Session 2 — A2: Clustering Advisor"
+## Step 2 — Read the cluster annotator spec in PHASE3_PLAN.md
+Section: "Session 3 — B1: Cluster Annotator"
 Read it fully before writing any code.
 
-## Step 3 — Build ai/skills/clustering_advisor.yaml
-Follow the pipeline_advisor.yaml pattern exactly.
-CRITICAL: output_schema must use a block scalar (|) — never bare type
-annotations. This was the bug in Session 1.
+## Step 3 — Build ai/skills/cluster_annotator.yaml
+Follow pipeline_advisor.yaml pattern exactly.
+CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
   - tissue, disease_context (from study_context)
-  - resolution_sweep_results: dict of resolution → silhouette_score
-  - n_cells, n_highly_variable_genes
+  - cluster_id, n_cells
+  - marker_genes: list of top N marker genes ranked by log2FC
 
-Output schema (JSON):
-  - suggested_resolution: float
-  - resolution_range: [float, float]   ← reasonable range to explore
-  - expected_n_clusters: int
-  - literature_context: list of {pmid, title, resolution_used, tissue, disease}
+Output schema (JSON) per cluster:
+  - cell_type: str
+  - confidence: "high" | "medium" | "low"
+  - supporting_markers: list of str
+  - alternative_types: list of str
+  - recommended_db: str
+  - manual_marker_set: list of str
   - reasoning: str
 
-## Step 4 — Build ai/clustering_advisor.py
+## Step 4 — Build ai/cluster_annotator.py
 
 ### Public API
 ```python
@@ -54,78 +56,103 @@ from dataclasses import dataclass, field
 from ai._base import AiResult
 
 @dataclass
-class PubMedRef:
-    pmid: str
-    title: str
-    resolution_used: float | None
-    tissue: str
-    disease: str | None
-
-@dataclass
-class ClusteringAdvice(AiResult):
-    suggested_resolution: float = 0.5
-    resolution_range: tuple[float, float] = (0.3, 0.8)
-    expected_n_clusters: int = 0
-    literature_context: list[PubMedRef] = field(default_factory=list)
+class ClusterAnnotation(AiResult):
+    cluster_id: str = ""
+    cell_type: str = "unknown"
+    confidence: str = "low"           # "high" | "medium" | "low"
+    supporting_markers: list[str] = field(default_factory=list)
+    alternative_types: list[str] = field(default_factory=list)
+    recommended_db: str = ""
+    manual_marker_set: list[str] = field(default_factory=list)
 
 def run(
-    adata,                  # AnnData after dim. reduction — reads only, never modifies
+    adata,                  # AnnData after marker computation — WRITES to obs
     config: dict,
     study_context: dict,
-    resolution_sweep_results: dict[float, float],  # resolution → silhouette_score
     *,
+    n_markers: int = 20,    # top N markers per cluster to pass to LLM
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> ClusteringAdvice | None:
+) -> list[ClusterAnnotation] | None:
     ...
 ```
 
-### PubMed RAG query pattern (from PHASE3_PLAN.md)
-Query string: "Leiden clustering resolution {tissue} {disease} single-cell RNA-seq"
-Use BioChatter's built-in retrieval — do NOT call PubMed API directly.
-Return PMIDs + titles only. Never abstract text (copyright rule).
+### What it writes to adata
+- `adata.obs['ai_cell_type']`     — predicted label per cell
+- `adata.obs['ai_confidence']`    — high | medium | low per cell
+- `adata.obs['ai_alt_types']`     — comma-separated alternatives per cell
 
-### Rule-based pre-checks (before LLM call)
-  - Find resolution with highest silhouette score in sweep → anchor suggestion
-  - resolution_sweep_results empty → warn and use default 0.5
-  - n_cells < 1000 → bias toward lower resolution (fewer expected clusters)
-  - n_cells > 50000 → bias toward higher resolution
+### Input it reads from adata
+- `adata.uns['rank_genes_groups']` — top marker genes per cluster
+  If missing → raise informative error (not silent None)
+- cluster assignments from `adata.obs['leiden']` (or first available
+  clustering column)
+
+### One LLM call per cluster
+Loop over clusters. Each call is independent. If one cluster fails to
+parse, log a warning and skip that cluster — do not abort the full run.
 
 ### Usage pattern (identical to all feature modules)
 ```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata, config, study_context, resolution_sweep_results, *, log_dir, runtime_ai=True):
+def run(adata, config, study_context, *, n_markers, log_dir, runtime_ai):
     try:
-        check_ai_enabled(config, module="clustering_advisor", runtime_ai=runtime_ai)
+        check_ai_enabled(config, module="cluster_annotator", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
 ```
 
+### call_llm signature (confirmed in Session 2)
+```python
+# Returns str only — not a tuple
+raw_response = call_llm(
+    skill_name="cluster_annotator",
+    inputs=skill_inputs,
+    config=config,
+    log_dir=log_dir,
+    module="cluster_annotator",
+)
+```
+
+### write_audit_record signature (confirmed in Session 1)
+```python
+write_audit_record(
+    log_dir=log_dir,
+    module="cluster_annotator",
+    skill_version="1.0",
+    model=model,          # from config.ai.model
+    provider=provider,    # from config.ai.provider
+    input_summary={...},
+    token_usage=None,     # call_llm already logged tokens; pass None here
+    raw_response=raw_response,
+    parsed_output={...} | None,
+    parse_success=True | False,
+)
+```
+
 ## Step 5 — Tests (all without a real API key)
-Mock pattern: patch ai.clustering_advisor.call_llm (same as Session 1).
-For PubMed RAG: patch the BioChatter retrieval call separately.
+Mock pattern: patch("ai.cluster_annotator.call_llm") — returns str only.
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns ClusteringAdvice when mock LLM returns valid JSON
-  - suggested_resolution is within the resolution_sweep_results range
-  - resolution_range is a 2-tuple with range[0] < range[1]
-  - Empty resolution_sweep_results handled gracefully (no crash, default used)
-  - PubMed query string constructed correctly from study_context fields
-  - Empty PubMed result handled gracefully (literature_context = [])
+  - Returns list[ClusterAnnotation] when mock LLM returns valid JSON
+  - adata.obs columns written correctly (ai_cell_type, ai_confidence, ai_alt_types)
+  - Missing rank_genes_groups raises informative error
+  - Partial parse failure (1 of 3 clusters fails) — other 2 still written
   - AiResult base fields (timestamp, model, provider) populated correctly
   - Audit log written to log_dir after successful run
-  - Graceful handling of malformed LLM JSON (returns None, logs warning)
+  - Graceful handling of malformed LLM JSON for one cluster (logs warning, skips)
+  - confidence values are always one of: high | medium | low
 
 ## Phase 3 Build Order (full reference)
 ```
 Session 0  ✅ DONE — Infrastructure: _llm_client, _audit_log, _skill_loader,
                       _config_gate, _base
 Session 1  ✅ DONE — A1: Pipeline advisor (13 tests passing)
-Session 2  ← TODAY — A2: Clustering advisor (first PubMed RAG use)
-Session 3  — B1: Cluster annotator
+Session 2  ✅ DONE — A2: Clustering advisor (22 tests passing)
+Session 3  ← TODAY — B1: Cluster annotator (first module writing to adata.obs)
 Session 4  — B2: DEG validator + literature linker
 Session 5  — B3: Coherence reviewer (build analysis_summary.json here)
 Session 6  — A3: Downstream analysis suggester
@@ -145,17 +172,73 @@ Full details: .dev_memory/PHASE3_PLAN.md
 - analysis_summary.json is load-bearing — design carefully in Session 5
 - Copyright enforced at report layer — PMIDs + titles only, no abstract text
 
+## Confirmed API Signatures (do not guess — use these exactly)
+
+### call_llm (ai/_llm_client.py)
+```python
+call_llm(
+    skill_name: str,       # name of skill YAML, e.g. "cluster_annotator"
+    inputs: dict,          # fills user_prompt_template
+    config: dict,          # full pipeline config (not just ai section)
+    *,
+    log_dir: str,
+    module: str | None,
+    runtime_ai: bool,
+) -> str                   # raw response string ONLY — no tuple
+```
+
+### write_audit_record (ai/_audit_log.py)
+```python
+write_audit_record(
+    *,
+    log_dir: str | Path,
+    module: str,
+    skill_version: str,
+    model: str,
+    provider: str,
+    input_summary: dict,
+    token_usage: dict | None,   # dict with prompt_tokens/completion_tokens or None
+    raw_response: str,
+    parsed_output: dict | None,
+    parse_success: bool,
+) -> None
+```
+
+### check_ai_enabled (ai/_config_gate.py)
+```python
+check_ai_enabled(config: dict, module: str, runtime_ai: bool = True) -> None
+# Raises AiDisabledError if: global off, module off, or runtime_ai=False
+```
+
 ## Infrastructure Modules (Session 0 — all done, do not modify)
 - ai/_base.py             ← AiResult base dataclass
 - ai/_config_gate.py      ← check_ai_enabled() + AiDisabledError
 - ai/_audit_log.py        ← write_audit_record()
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
-- ai/skills/cluster_annotator.yaml  ← reference pattern for all skill YAMLs
 
-## Session 1 Modules (done, do not modify)
+## Session 1-2 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
-- ai/skills/pipeline_advisor.yaml   ← block scalar fix applied
+- ai/skills/pipeline_advisor.yaml
+- ai/clustering_advisor.py          ← 22 tests passing
+- ai/skills/clustering_advisor.yaml
+
+## Bugs Fixed This Session (carry as warnings)
+- call_llm returns str only — never unpack as tuple
+- write_audit_record uses token_usage=dict, not separate prompt_tokens=/completion_tokens=
+- Nested dataclasses and tuples in result objects need explicit _to_dict()
+  helper before passing to parsed_output= in write_audit_record
+- Provider and model always read from config — never hardcoded anywhere
+- Default provider: "ollama", default model: "llama3" (free, local, no key)
+
+## ClawBio Note (added this session)
+ClawBio (clawbio.ai) is an open-source bioinformatics skill library.
+Not a competitor — no report engine, no multi-project, no multiome.
+Potential future integration as optional skill backends (Phase 4-5).
+Potential OpenClaw marketplace listing (Phase 7+).
+Not a dependency for Phase 1-3.
+Monitor: claw-spatial, scRNA Orchestrator updates.
+Entry added to DECISIONS.md.
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`

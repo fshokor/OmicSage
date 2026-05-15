@@ -14,11 +14,16 @@ logger = logging.getLogger(__name__)
 
 @dataclass
 class LLMConfig:
-    provider: str = "claude"
-    model: str = "claude-opus-4-5"
+    # Default to Ollama (free, local, no API key required).
+    # Switch to "claude" or "openai" by setting provider + model in config.yaml.
+    provider: str = "ollama"
+    model: str = "llama3"
+    # Anthropic — only used when provider == "claude"
     api_key_env: str = "ANTHROPIC_API_KEY"
+    # OpenAI — only used when provider == "openai"
+    openai_api_key_env: str = "OPENAI_API_KEY"
+    # Ollama — only used when provider == "ollama"
     ollama_host: str = "http://localhost:11434"
-    ollama_model: str = "llama3.2"
     log_calls: bool = True
     log_dir: str = "logs/llm/"
 
@@ -26,6 +31,12 @@ class LLMConfig:
 class OmicSageAIClient:
     """
     Thin wrapper around BioChatter for OmicSage-specific prompting.
+
+    Supported providers (set via LLMConfig.provider):
+      - "ollama"   → local Ollama, free, no API key needed (default)
+      - "claude"   → Anthropic API, requires ANTHROPIC_API_KEY env var
+      - "openai"   → OpenAI API, requires OPENAI_API_KEY env var
+
     Phase 3 implementation target.
     """
 
@@ -54,6 +65,7 @@ class OmicSageAIClient:
             "timestamp": datetime.now(timezone.utc).isoformat(),
             "method": method,
             "model": model,
+            "provider": self.config.provider,
             "prompt_chars": len(prompt),
             "response_chars": len(response),
             "prompt": prompt,

@@ -37,3 +37,9 @@ Cleaner API than argparse. Natural sub-command hierarchy.
 
 ## D012 — GHCR for Docker registry
 Free for public repos. Integrated via GITHUB_TOKEN. Co-located with code.
+
+ClawBio (clawbio.ai): open-source bioinformatics skill library.
+Potential future integration as optional skill backends (Phase 4-5).
+Potential OpenClaw marketplace listing (Phase 7+).
+Not a dependency for Phase 1-3.
+Monitor: claw-spatial, claw-gwas, scRNA Orchestrator updates.

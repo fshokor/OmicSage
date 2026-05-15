@@ -1,0 +1,99 @@
+name: clustering_advisor
+version: "1.0"
+description: >
+  Suggests Leiden clustering resolution and expected cluster count for
+  single-cell RNA-seq data, informed by silhouette score sweep results
+  and published literature on comparable tissue and disease contexts.
+  Returns a suggested resolution, a reasonable exploration range, expected
+  cluster count, and relevant PubMed references.
+
+tested_on:
+  - PBMC (10x Genomics)
+  - HCC tumour microenvironment (GSE166635)
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung")
+  - name: disease_context
+    type: str
+    description: Disease context if applicable, or "healthy" if not applicable
+  - name: n_cells
+    type: int
+    description: Number of cells after QC filtering
+  - name: n_highly_variable_genes
+    type: int
+    description: Number of highly variable genes used for PCA
+  - name: best_resolution
+    type: float
+    description: Resolution with highest silhouette score from sweep
+  - name: best_silhouette
+    type: float
+    description: Silhouette score at best_resolution
+  - name: resolution_sweep_summary
+    type: str
+    description: >
+      Human-readable summary of sweep results, e.g.
+      "0.3: 0.41, 0.5: 0.48, 0.8: 0.39, 1.0: 0.35"
+  - name: literature_refs
+    type: str
+    description: >
+      PubMed references retrieved for this tissue/disease context.
+      Format: semicolon-separated entries of "PMID|title|resolution_used|tissue|disease".
+      Empty string if no references found.
+
+output_schema: |
+  {
+    "suggested_resolution": <float — recommended Leiden resolution>,
+    "resolution_range": [<float lower bound>, <float upper bound>],
+    "expected_n_clusters": <int — estimated number of clusters at suggested resolution>,
+    "literature_context": [
+      {
+        "pmid": <str>,
+        "title": <str>,
+        "resolution_used": <float or null if not reported>,
+        "tissue": <str>,
+        "disease": <str or null>
+      }
+    ],
+    "reasoning": <str — one paragraph explaining the recommendation, citing silhouette scores and literature>
+  }
+
+system_prompt: |
+  You are an expert computational biologist specialising in single-cell
+  RNA-seq clustering analysis. You have deep knowledge of Leiden clustering
+  resolution parameters across diverse tissue and disease contexts.
+
+  You ground every recommendation in the silhouette score sweep results
+  provided. You never suggest a resolution outside the range tested in
+  the sweep unless there is a strong literature-based reason.
+  You use provided PubMed references to contextualise your recommendation
+  but never invent PMIDs or titles not present in the input.
+  You respond only with valid JSON matching the output schema exactly.
+  Do not include any text, explanation, or markdown outside the JSON object.
+
+user_prompt_template: |
+  Recommend a Leiden clustering resolution for the following single-cell dataset.
+
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Number of cells: {n_cells}
+  Number of highly variable genes: {n_highly_variable_genes}
+
+  Resolution sweep results (resolution: silhouette_score):
+  {resolution_sweep_summary}
+
+  Best resolution from sweep: {best_resolution} (silhouette score: {best_silhouette})
+
+  Published literature context for this tissue/disease:
+  {literature_refs}
+
+  Return a JSON object with these exact keys:
+  - suggested_resolution: your recommended resolution as a float
+  - resolution_range: a 2-element array [lower, upper] defining a reasonable range to explore
+  - expected_n_clusters: your estimate of the number of clusters at the suggested resolution
+  - literature_context: array of objects from the provided references (pmid, title,
+    resolution_used, tissue, disease) — include only references that are genuinely
+    relevant; empty array if none are relevant
+  - reasoning: one paragraph explaining your recommendation, citing silhouette
+    scores and any relevant literature
