@@ -1,0 +1,83 @@
+name: deg_validator
+version: "1.0"
+description: >
+  Validates differentially expressed genes (DEGs) against known biology for a given
+  tissue and disease context. Classifies genes as expected (consistent with known biology)
+  or unexpected (novel, potentially artifactual, or worth investigating). Returns a
+  validation summary and discovery highlights for the analysis report.
+
+tested_on:
+  - HCC tumour microenvironment (GSE166635, liver)
+  - PBMC (10x Genomics, healthy donor)
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung")
+  - name: disease_context
+    type: str or null
+    description: Disease context if applicable (e.g. "hepatocellular carcinoma"), null if healthy
+  - name: comparison
+    type: str
+    description: Name of the comparison (e.g. "tumour_vs_normal", "cluster_3_vs_rest")
+  - name: degs
+    type: list of dicts
+    description: >
+      Top N DEGs for this comparison. Each dict has keys:
+        gene (str), log2fc (float), padj (float), cell_type (str or null).
+      Sorted by absolute log2fc descending.
+
+output_schema: |
+  {
+    "expected_genes": ["list of gene symbols consistent with known biology for this tissue/disease/cell type"],
+    "unexpected_genes": ["list of gene symbols that are novel, surprising, or potentially artifactual"],
+    "validation_summary": "one paragraph: overall assessment of the DEG list given the tissue, disease, and comparison",
+    "discovery_highlights": ["list of strings, each describing one gene worth highlighting — e.g. unexpected upregulation in a specific context not previously reported"]
+  }
+
+system_prompt: |
+  You are an expert computational biologist specialising in single-cell RNA-seq
+  differential expression analysis. You have deep knowledge of gene function,
+  cell type biology, and disease-associated expression patterns across tissues.
+
+  You classify DEGs as expected or unexpected based on published literature and
+  known biology for the given tissue, disease, and cell type context.
+
+  Rules you always follow:
+  - A gene is EXPECTED if its differential expression in this context is consistent
+    with published findings or well-established cell type biology.
+  - A gene is UNEXPECTED if its expression change is novel, surprising relative to
+    published literature, or potentially artifactual (e.g. mitochondrial gene with
+    unusually high log2FC suggesting a QC issue).
+  - A gene may appear in BOTH lists only if it is expected in one cell type context
+    but unexpected in another.
+  - Discovery highlights are reserved for genuinely interesting findings — do not
+    list routine housekeeping genes.
+  - You never invent gene names not present in the input list.
+  - You respond only with valid JSON matching the output schema exactly.
+  - You never include abstract text, quotes from papers, or DOIs in your response.
+
+user_prompt_template: |
+  Validate the following differentially expressed genes.
+
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Comparison: {comparison}
+
+  Top DEGs (sorted by absolute log2FC descending):
+  {degs}
+
+  Each entry has: gene, log2fc, padj, cell_type (may be null if annotation not available).
+
+  Return a JSON object with these exact keys:
+  - expected_genes: gene symbols whose differential expression is consistent with
+    known biology for this tissue/disease/cell type
+  - unexpected_genes: gene symbols that are novel, surprising, or potentially
+    artifactual — worth manual investigation
+  - validation_summary: one paragraph assessing the overall DEG list in biological context
+  - discovery_highlights: list of strings, each flagging one notable finding
+    (e.g. "PDCD1 upregulated in CD8+ T cells — consistent with T cell exhaustion
+    phenotype in HCC, supported by multiple published studies")
+
+  If disease_context is null, assess genes relative to healthy tissue biology only.
+  If cell_type is null for all entries, assess at the tissue level without cell-type specificity.

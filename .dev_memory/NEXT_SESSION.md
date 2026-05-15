@@ -1,49 +1,100 @@
 ## Session Context
 Date: next session
 Phase: 3 — AI Layer
-Last thing completed: Session 3 — B1 Cluster Annotator built and tested.
-                      23 new tests passing (330 total, 1 skipped).
-                      Fixed: AiResult base field is skill_name (not skill).
-File last worked on: tests/test_cluster_annotator.py
+Last thing completed: Session 4 — B2 DEG Validator + Literature Linker built and tested.
+                      25 new tests passing (355 total, 1 skipped).
+                      Fixed: rank_genes_groups structured array rows must have length
+                      n_groups (one value per group field), not n_genes_per_group.
+                      Fixed: mock functions patching _query_pubmed must match full
+                      signature (gene, tissue, disease_context) — not just (gene).
+File last worked on: tests/test_deg_validator.py
 
 ## Today's Goal
-Phase 3 — Session 4: B2 — DEG Validator + Literature Linker.
+Phase 3 — Session 5: B3 — Coherence Reviewer.
 
-First module that runs PubMed RAG. Nothing else.
+This session also builds analysis_summary.json — the load-bearing compressed
+run summary consumed by B3, C1, and C2. Design it before writing any module code.
+Nothing else.
 
 Files to create:
-  - ai/skills/deg_validator.yaml       ← skill YAML
-  - ai/deg_validator.py                ← feature module
-  - tests/test_deg_validator.py        ← all tests without a real API key
+  - ai/skills/coherence_reviewer.yaml     ← skill YAML
+  - ai/coherence_reviewer.py              ← feature module
+  - tests/test_coherence_reviewer.py      ← all tests without a real API key
 
 ## Step 1 — Verify all tests still pass
 ```bash
 cd ~/OmicSage
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 330 passed, 1 skipped
+# Expected: 355 passed, 1 skipped
 ```
 
-## Step 2 — Read the DEG validator spec in PHASE3_PLAN.md
-Section: "Session 4 — B2: DEG Validator + Literature Linker"
+## Step 2 — Read the Coherence Reviewer spec in PHASE3_PLAN.md
+Section: "Session 5 — B3: Coherence Reviewer"
 Read it fully before writing any code.
+Pay special attention to the analysis_summary.json schema — it is load-bearing.
 
-## Step 3 — Build ai/skills/deg_validator.yaml
+## Step 3 — Design analysis_summary.json first
+
+This file is written by B3 and consumed by C1 (narrative generator) and C2
+(report writer). It must compress the full run into ~2000 tokens.
+
+Schema (write this to disk as part of the module, not hardcoded in tests):
+```json
+{
+  "study_context": {
+    "tissue": "str",
+    "disease": "str or null",
+    "n_cells": "int",
+    "n_batches": "int"
+  },
+  "qc_decisions": {
+    "min_genes": "int",
+    "max_mt_pct": "float",
+    "cells_removed_pct": "float"
+  },
+  "clustering": {
+    "resolution": "float",
+    "n_clusters": "int",
+    "silhouette_score": "float or null"
+  },
+  "cell_types": [
+    { "cluster": "str", "cell_type": "str", "confidence": "str", "n_cells": "int" }
+  ],
+  "top_degs": [
+    { "comparison": "str", "cluster": "str", "gene": "str", "log2fc": "float" }
+  ],
+  "pathways": [
+    { "cluster": "str", "pathway": "str", "padj": "float" }
+  ]
+}
+```
+
+Rules:
+- top_degs: max 3 genes per comparison (keeps token budget)
+- pathways: max 3 pathways per cluster (keeps token budget)
+- All fields optional except study_context.tissue and clustering.n_clusters
+- Missing fields written as null, never omitted entirely
+- Written to: reports/<dataset>/analysis_summary.json
+
+## Step 4 — Build ai/skills/coherence_reviewer.yaml
 Follow cluster_annotator.yaml pattern exactly.
 CRITICAL: output_schema must use block scalar (|) — never bare type annotations.
 
 Inputs the skill needs:
+  - analysis_summary: str (JSON-serialised analysis_summary.json contents)
   - tissue, disease_context (from study_context)
-  - comparison: str (e.g. "tumour_vs_normal")
-  - degs: list of dicts — each with gene, log2fc, padj, cell_type
 
 Output schema (JSON):
-  - expected_genes: list of str
-  - unexpected_genes: list of str
-  - validation_summary: str
-  - discovery_highlights: list of str
+  - flags: list of dicts — each with category, severity, description, suggestion
+  - sub_clustering_candidates: list of str (cluster IDs)
+  - rare_cell_candidates: list of str (cluster IDs)
+  - overall_assessment: str
 
-## Step 4 — Build ai/deg_validator.py
+Flag categories: qc | clustering | annotation | deg | pathway
+Flag severities: info | warning | critical
+
+## Step 5 — Build ai/coherence_reviewer.py
 
 ### Public API
 ```python
@@ -51,85 +102,79 @@ from dataclasses import dataclass, field
 from ai._base import AiResult
 
 @dataclass
-class GeneLitRef:
-    gene: str = ""
-    pmid: str = ""
-    title: str = ""
-    context: str = ""   # one-sentence context from PubMed
+class CoherenceFlag:
+    category: str = ""       # qc | clustering | annotation | deg | pathway
+    severity: str = ""       # info | warning | critical
+    description: str = ""
+    suggestion: str = ""
 
 @dataclass
-class DegValidation(AiResult):
-    comparison: str = ""
-    expected_genes: list[str] = field(default_factory=list)
-    unexpected_genes: list[str] = field(default_factory=list)
-    literature_links: list[GeneLitRef] = field(default_factory=list)
-    validation_summary: str = ""
-    discovery_highlights: list[str] = field(default_factory=list)
+class CoherenceReview(AiResult):
+    flags: list[CoherenceFlag] = field(default_factory=list)
+    sub_clustering_candidates: list[str] = field(default_factory=list)
+    rare_cell_candidates: list[str] = field(default_factory=list)
+    overall_assessment: str = ""
+
+def build_analysis_summary(adata, config: dict, study_context: dict) -> dict:
+    """Build the analysis_summary dict from adata. Does NOT call LLM."""
+    ...
 
 def run(
     adata,
     config: dict,
     study_context: dict,
     *,
-    n_top_genes: int = 10,      # top N DEGs per comparison to validate
+    summary_path: str | None = None,   # if set, write analysis_summary.json here
     log_dir: str = "logs/llm",
     runtime_ai: bool = True,
-) -> list[DegValidation] | None:
+) -> CoherenceReview | None:
     ...
 ```
 
 ### What it reads from adata
-- `adata.uns['rank_genes_groups']` — DEG results per cluster/comparison
-- `adata.obs['ai_cell_type']` if available (from B1), else falls back to
-  cluster ID as cell type label
-- If rank_genes_groups missing → raise informative error
+- adata.uns['rank_genes_groups'] — for top_degs (optional, null if missing)
+- adata.uns['leiden_resolution'] or adata.uns['omicsage_cluster'] — resolution
+- adata.obs['leiden'] — cluster labels and cell counts
+- adata.obs['ai_cell_type'] + adata.obs['ai_confidence'] — from B1 (optional)
+- adata.uns['omicsage_qc'] — QC decisions (optional)
+- adata.uns['gsea_results'] or similar — pathway results (optional)
 
-### Two-part analysis per comparison
-1. **Validation (LLM)**: are top DEGs consistent with known biology?
-   Returns expected_genes, unexpected_genes, validation_summary,
-   discovery_highlights.
-2. **Literature linking (PubMed RAG)**: for each top gene, retrieve
-   PMID + title via PubMed search. One PubMed query per gene.
-   Store as GeneLitRef. PMID + title only — never abstract text.
-
-### PubMed query pattern per gene
-```
-"{gene} {tissue} {disease_context} single-cell"
-```
-
-### Copyright constraint (carry into every session)
-Only PMIDs + titles stored and reported. Never abstract text, never
-quotes from papers.
+### Key design rule
+build_analysis_summary() is a pure function — no LLM, no side effects.
+It must be independently testable without mocking anything.
+run() calls build_analysis_summary() then calls the LLM.
 
 ### Usage pattern (identical to all feature modules)
 ```python
 from ai._config_gate import check_ai_enabled, AiDisabledError
 
-def run(adata, config, study_context, *, n_top_genes, log_dir, runtime_ai):
+def run(adata, config, study_context, *, summary_path, log_dir, runtime_ai):
     try:
-        check_ai_enabled(config, module="deg_validator", runtime_ai=runtime_ai)
+        check_ai_enabled(config, module="coherence_reviewer", runtime_ai=runtime_ai)
     except AiDisabledError:
         return None
 ```
 
-## Step 5 — Tests (all without a real API key)
+## Step 6 — Tests (all without a real API key)
 Mock pattern:
-  - patch("ai.deg_validator.call_llm") — returns str only
-  - patch("ai.deg_validator._query_pubmed") — returns list[GeneLitRef]
-    (mock PubMed so tests never hit the network)
+  - patch("ai.coherence_reviewer.call_llm") — returns str only
 
 Required tests:
   - Returns None when ai_features=False
   - Returns None when runtime_ai=False
-  - Returns list[DegValidation] when mock LLM returns valid JSON
-  - expected_genes / unexpected_genes populated correctly
-  - literature_links populated from mock PubMed results
-  - Missing rank_genes_groups raises informative error
-  - Empty DEG list returns empty result gracefully
-  - PMID deduplication across genes (same PMID for two genes → stored once)
+  - build_analysis_summary returns correct structure from mock adata
+  - build_analysis_summary handles missing rank_genes_groups gracefully (null)
+  - build_analysis_summary handles missing ai_cell_type gracefully (null)
+  - Returns CoherenceReview when mock LLM returns valid JSON
+  - flags list populated correctly (category, severity, description, suggestion)
+  - sub_clustering_candidates populated from mock response
+  - rare_cell_candidates populated from mock response
+  - analysis_summary.json written to summary_path when provided
+  - analysis_summary.json is valid JSON and matches schema
   - AiResult base fields (timestamp, model, provider, skill_name) populated
   - Audit log written to log_dir after successful run
-  - No abstract text stored in any GeneLitRef field
+  - Degraded parse (invalid JSON from LLM) does not crash — returns CoherenceReview
+    with empty flags
 
 ## Phase 3 Build Order (full reference)
 ```
@@ -138,8 +183,8 @@ Session 0  ✅ DONE — Infrastructure: _llm_client, _audit_log, _skill_loader,
 Session 1  ✅ DONE — A1: Pipeline advisor (13 tests passing)
 Session 2  ✅ DONE — A2: Clustering advisor (22 tests passing)
 Session 3  ✅ DONE — B1: Cluster annotator (23 tests passing)
-Session 4  ← TODAY — B2: DEG validator + literature linker
-Session 5  — B3: Coherence reviewer (build analysis_summary.json here)
+Session 4  ✅ DONE — B2: DEG validator + literature linker (25 tests passing)
+Session 5  ← TODAY — B3: Coherence reviewer + analysis_summary.json
 Session 6  — A3: Downstream analysis suggester
 Session 7  — C1: Narrative generator
 Session 8  — C2: Full report + PowerPoint
@@ -154,7 +199,7 @@ Full details: .dev_memory/PHASE3_PLAN.md
 - Every LLM call is audit-logged — no exceptions
 - Graceful degradation — a failed AI module returns None, never crashes
 - Context scales quality — more study_context = better AI output
-- analysis_summary.json is load-bearing — design carefully in Session 5
+- analysis_summary.json is load-bearing — design carefully (done this session)
 - Copyright enforced at report layer — PMIDs + titles only, no abstract text
 
 ## Confirmed API Signatures (do not guess — use these exactly)
@@ -205,6 +250,12 @@ skill_version: str
 reasoning: str
 ```
 
+### _query_pubmed (ai/deg_validator.py)
+```python
+_query_pubmed(gene: str, tissue: str, disease_context: str | None) -> list[GeneLitRef]
+# Mock functions patching this MUST match all three arguments
+```
+
 ## Infrastructure Modules (Session 0 — all done, do not modify)
 - ai/_base.py             ← AiResult base dataclass
 - ai/_config_gate.py      ← check_ai_enabled() + AiDisabledError
@@ -212,18 +263,23 @@ reasoning: str
 - ai/_llm_client.py       ← call_llm() + _build_conversation()
 - ai/_skill_loader.py     ← load_skill()
 
-## Session 1-3 Modules (done, do not modify)
+## Session 1-4 Modules (done, do not modify)
 - ai/pipeline_advisor.py            ← 13 tests passing
 - ai/skills/pipeline_advisor.yaml
 - ai/clustering_advisor.py          ← 22 tests passing
 - ai/skills/clustering_advisor.yaml
 - ai/cluster_annotator.py           ← 23 tests passing
 - ai/skills/cluster_annotator.yaml
+- ai/deg_validator.py               ← 25 tests passing
+- ai/skills/deg_validator.yaml
 
 ## Bugs Fixed This Session (carry as warnings)
-- AiResult base field is skill_name (not skill) — confirmed from _base.py
-- Always upload _base.py (and any infrastructure file) at session start
-  if there is any doubt about field names — do not guess from memory
+- rank_genes_groups structured array: rows must have length n_groups (one value
+  per group field), NOT n_genes_per_group. The dtype field count is what matters.
+  Correct: row rank = (group0_gene_rank, group1_gene_rank, ...)
+- Mock functions patching _query_pubmed must match the full 3-argument signature
+  (gene, tissue, disease_context). Partial signatures pass patch() silently but
+  explode at call time with "takes 1 positional argument but 3 were given".
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`

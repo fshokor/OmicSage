@@ -71,15 +71,15 @@
   - [x] ai/skills/clustering_advisor.yaml
   - [x] ai/clustering_advisor.py
   - [x] tests/test_clustering_advisor.py
-- [x] Session 3 — B1: Cluster annotator ← NEXT
+- [x] Session 3 — B1: Cluster annotator 
   - [x] ai/skills/cluster_annotator.yaml (already drafted — refine here)
   - [x] ai/cluster_annotator.py
   - [x] tests/test_cluster_annotator.py
-- [ ] Session 4 — B2: DEG validator + literature linker
-  - [ ] ai/skills/deg_validator.yaml
-  - [ ] ai/deg_validator.py
-  - [ ] tests/test_deg_validator.py
-- [ ] Session 5 — B3: Coherence reviewer
+- [x] Session 4 — B2: DEG validator + literature linker
+  - [x] ai/skills/deg_validator.yaml
+  - [x] ai/deg_validator.py
+  - [x] tests/test_deg_validator.py
+- [ ] Session 5 — B3: Coherence reviewer ← NEXT
   - [ ] ai/skills/coherence_reviewer.yaml
   - [ ] ai/coherence_reviewer.py
   - [ ] tests/test_coherence_reviewer.py
