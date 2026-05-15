@@ -1,0 +1,95 @@
+name: report_writer
+version: "1.0"
+description: >
+  Generates two narrative sections for the final OmicSage analysis report:
+  (1) conclusion — 3-5 key findings as bullet points plus a summary paragraph,
+  (2) perspectives — open questions, suggested follow-up experiments, and
+  potential clinical relevance. All claims must cite a metric value, gene name,
+  or PMID present in the provided inputs.
+
+tested_on:
+  - HCC tumour microenvironment (GSE166635)
+  - BMMC CITE-seq (GSE194122 NeurIPS 2021)
+
+inputs:
+  - name: tissue
+    type: str
+    description: Tissue of origin (e.g. "liver", "PBMC", "lung")
+  - name: disease_context
+    type: str | null
+    description: Disease context if applicable, null for healthy tissue
+  - name: biological_question
+    type: str
+    description: The study's biological question (from study_context or inferred)
+  - name: objectives
+    type: str
+    description: JSON-serialised list of study objectives
+  - name: analysis_summary
+    type: str
+    description: JSON-serialised analysis_summary.json from B3 (coherence reviewer)
+  - name: ai_narrative
+    type: str
+    description: Contents of ai_narrative.md from C1, or "not available"
+  - name: coherence_review
+    type: str
+    description: JSON-serialised CoherenceReview from B3, or "not available"
+  - name: report_section
+    type: str
+    description: Which section to generate — one of "conclusion" or "perspectives"
+
+output_schema: |
+  {
+    "section_text": "string — the full generated text for this report section",
+    "key_findings": ["string — finding 1", "string — finding 2"],
+    "cited_evidence": ["string — metric value or gene name or PMID cited"],
+    "reasoning": "string — one paragraph explaining how the section was assembled"
+  }
+
+system_prompt: |
+  You are an expert computational biologist writing the final sections of a
+  peer-reviewed single-cell RNA-seq analysis report. Your writing is precise,
+  evidence-grounded, and accessible to both biologists and bioinformaticians.
+
+  Rules you always follow:
+  - Every factual claim must cite a metric value, gene name, or PMID present
+    in the provided inputs. Do not invent evidence.
+  - For the conclusion section: summarise only what the data actually showed.
+    Do not extrapolate beyond the results.
+  - For the perspectives section: suggest follow-up experiments and open
+    questions that logically follow from the findings. Be specific — name
+    the assay, the cell population, or the pathway when relevant.
+  - Never reproduce abstract text from PubMed references. Use PMIDs as
+    citations only.
+  - Write in scientific prose. No marketing language.
+  - Respond only with valid JSON matching the output schema exactly.
+
+user_prompt_template: |
+  Generate the {report_section} section for a single-cell RNA-seq analysis report.
+
+  Study details:
+  Tissue: {tissue}
+  Disease context: {disease_context}
+  Biological question: {biological_question}
+  Objectives: {objectives}
+
+  Analysis summary (JSON):
+  {analysis_summary}
+
+  AI narrative from C1 (use as source of biological interpretation):
+  {ai_narrative}
+
+  Coherence review from B3 (flags and suggestions to address):
+  {coherence_review}
+
+  Section to generate: {report_section}
+
+  For "conclusion": write a summary paragraph (3-5 sentences) followed by
+  3-5 key findings as bullet points. Each bullet must cite at least one
+  specific metric, gene name, or cluster number from the analysis summary.
+
+  For "perspectives": write 3-5 paragraphs covering open questions, suggested
+  follow-up experiments, and potential clinical or translational relevance.
+  Each paragraph must link back to a specific finding from the results.
+
+  Return a JSON object with keys: section_text, key_findings, cited_evidence,
+  reasoning.

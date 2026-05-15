@@ -93,10 +93,10 @@
   - [x] ai/narrative_generator.py
   - [x] tests/test_narrative_generator.py
   - [x] reports/<dataset>/ai_narrative.md
-- [ ] Session 8 — C2: Full report + PowerPoint
-  - [ ] ai/skills/report_writer.yaml
-  - [ ] ai/report_writer.py 
-  - [ ] tests/test_report_writer.py
+- [x] Session 8 — C2: Full report + PowerPoint
+  - [x] ai/skills/report_writer.yaml
+  - [x] ai/report_writer.py 
+  - [x] tests/test_report_writer.py
 - [ ] Session 9 — Milestone validation
   - [ ] tests/test_groundedness.py
   - [ ] End-to-end GSE166635 with ai_features: true
