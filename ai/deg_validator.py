@@ -416,12 +416,3 @@ def run(
         )
 
     return results
-.get("expected_genes", []),
-                unexpected_genes=parsed.get("unexpected_genes", []),
-                literature_links=deduped_refs,
-                validation_summary=parsed.get("validation_summary", ""),
-                discovery_highlights=parsed.get("discovery_highlights", []),
-            )
-        )
-
-    return results
