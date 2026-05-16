@@ -19,6 +19,8 @@ testpaths = ["tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
+# AI/LLM tests require a running Ollama instance — excluded until AI layer is reactivated
+addopts = "-v"
 
 [tool.ruff]
 line-length = 100
