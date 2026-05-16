@@ -221,13 +221,8 @@ def _rule_based_checks(
 def _parse_llm_response(raw: str, module: str) -> dict | None:
     """Parse the raw LLM string as JSON.  Returns None on failure."""
     try:
-        # Strip accidental markdown fences
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = "\n".join(cleaned.split("\n")[1:])
-        if cleaned.endswith("```"):
-            cleaned = "\n".join(cleaned.split("\n")[:-1])
-        return json.loads(cleaned)
+        from ai._json_utils import extract_json_from_response
+        return json.loads(extract_json_from_response(raw))
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("[%s] Failed to parse LLM JSON: %s", module, exc)
         return None

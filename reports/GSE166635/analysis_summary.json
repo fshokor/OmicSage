@@ -1,0 +1,431 @@
+{
+  "study_context": {
+    "tissue": "liver",
+    "disease": "hepatocellular carcinoma",
+    "n_cells": 18568,
+    "n_batches": 1
+  },
+  "qc_decisions": {
+    "min_genes": null,
+    "max_mt_pct": null,
+    "cells_removed_pct": null
+  },
+  "clustering": {
+    "resolution": null,
+    "n_clusters": 32,
+    "silhouette_score": null
+  },
+  "cell_types": [
+    {
+      "cluster": "0",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 846
+    },
+    {
+      "cluster": "1",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 174
+    },
+    {
+      "cluster": "10",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 1412
+    },
+    {
+      "cluster": "11",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 567
+    },
+    {
+      "cluster": "12",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 1247
+    },
+    {
+      "cluster": "13",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 1229
+    },
+    {
+      "cluster": "14",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 865
+    },
+    {
+      "cluster": "15",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 717
+    },
+    {
+      "cluster": "16",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 81
+    },
+    {
+      "cluster": "17",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 205
+    },
+    {
+      "cluster": "18",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 162
+    },
+    {
+      "cluster": "19",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 219
+    },
+    {
+      "cluster": "2",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 420
+    },
+    {
+      "cluster": "20",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 132
+    },
+    {
+      "cluster": "21",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 296
+    },
+    {
+      "cluster": "22",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 470
+    },
+    {
+      "cluster": "23",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 684
+    },
+    {
+      "cluster": "24",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 680
+    },
+    {
+      "cluster": "25",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 251
+    },
+    {
+      "cluster": "26",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 487
+    },
+    {
+      "cluster": "27",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 166
+    },
+    {
+      "cluster": "28",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 832
+    },
+    {
+      "cluster": "29",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 1137
+    },
+    {
+      "cluster": "3",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 732
+    },
+    {
+      "cluster": "30",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 157
+    },
+    {
+      "cluster": "31",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 236
+    },
+    {
+      "cluster": "4",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 338
+    },
+    {
+      "cluster": "5",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 760
+    },
+    {
+      "cluster": "6",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 1038
+    },
+    {
+      "cluster": "7",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 542
+    },
+    {
+      "cluster": "8",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 956
+    },
+    {
+      "cluster": "9",
+      "cell_type": null,
+      "confidence": null,
+      "n_cells": 530
+    }
+  ],
+  "top_degs": [
+    {
+      "comparison": "DC2",
+      "cluster": "DC2",
+      "gene": "LST1",
+      "log2fc": 3.339
+    },
+    {
+      "comparison": "DC2",
+      "cluster": "DC2",
+      "gene": "CST3",
+      "log2fc": 3.053
+    },
+    {
+      "comparison": "DC2",
+      "cluster": "DC2",
+      "gene": "COTL1",
+      "log2fc": 2.455
+    },
+    {
+      "comparison": "Endothelial cells",
+      "cluster": "Endothelial cells",
+      "gene": "IGFBP7",
+      "log2fc": 8.5
+    },
+    {
+      "comparison": "Endothelial cells",
+      "cluster": "Endothelial cells",
+      "gene": "IGFBP4",
+      "log2fc": 5.722
+    },
+    {
+      "comparison": "Endothelial cells",
+      "cluster": "Endothelial cells",
+      "gene": "SPARC",
+      "log2fc": 6.415
+    },
+    {
+      "comparison": "Epithelial cells",
+      "cluster": "Epithelial cells",
+      "gene": "SPINK1",
+      "log2fc": 5.549
+    },
+    {
+      "comparison": "Epithelial cells",
+      "cluster": "Epithelial cells",
+      "gene": "KRT18",
+      "log2fc": 5.548
+    },
+    {
+      "comparison": "Epithelial cells",
+      "cluster": "Epithelial cells",
+      "gene": "TMSB4X",
+      "log2fc": -4.278
+    },
+    {
+      "comparison": "Fibroblasts",
+      "cluster": "Fibroblasts",
+      "gene": "SPARC",
+      "log2fc": 9.075
+    },
+    {
+      "comparison": "Fibroblasts",
+      "cluster": "Fibroblasts",
+      "gene": "COL1A2",
+      "log2fc": 9.526
+    },
+    {
+      "comparison": "Fibroblasts",
+      "cluster": "Fibroblasts",
+      "gene": "CALD1",
+      "log2fc": 6.729
+    },
+    {
+      "comparison": "Macrophages",
+      "cluster": "Macrophages",
+      "gene": "TYROBP",
+      "log2fc": 5.879
+    },
+    {
+      "comparison": "Macrophages",
+      "cluster": "Macrophages",
+      "gene": "CTSB",
+      "log2fc": 5.482
+    },
+    {
+      "comparison": "Macrophages",
+      "cluster": "Macrophages",
+      "gene": "NPC2",
+      "log2fc": 4.094
+    },
+    {
+      "comparison": "Mast cells",
+      "cluster": "Mast cells",
+      "gene": "TPSB2",
+      "log2fc": 13.62
+    },
+    {
+      "comparison": "Mast cells",
+      "cluster": "Mast cells",
+      "gene": "TPSAB1",
+      "log2fc": 13.249
+    },
+    {
+      "comparison": "Mast cells",
+      "cluster": "Mast cells",
+      "gene": "CPA3",
+      "log2fc": 12.268
+    },
+    {
+      "comparison": "Memory B cells",
+      "cluster": "Memory B cells",
+      "gene": "CD79A",
+      "log2fc": 7.558
+    },
+    {
+      "comparison": "Memory B cells",
+      "cluster": "Memory B cells",
+      "gene": "MALAT1",
+      "log2fc": 2.138
+    },
+    {
+      "comparison": "Memory B cells",
+      "cluster": "Memory B cells",
+      "gene": "EZR",
+      "log2fc": 3.61
+    },
+    {
+      "comparison": "Plasma cells",
+      "cluster": "Plasma cells",
+      "gene": "FTH1",
+      "log2fc": -2.51
+    },
+    {
+      "comparison": "Plasma cells",
+      "cluster": "Plasma cells",
+      "gene": "ITM2B",
+      "log2fc": -2.768
+    },
+    {
+      "comparison": "Plasma cells",
+      "cluster": "Plasma cells",
+      "gene": "SH3BGRL3",
+      "log2fc": -2.472
+    },
+    {
+      "comparison": "Regulatory T cells",
+      "cluster": "Regulatory T cells",
+      "gene": "IL32",
+      "log2fc": 4.581
+    },
+    {
+      "comparison": "Regulatory T cells",
+      "cluster": "Regulatory T cells",
+      "gene": "TRAC",
+      "log2fc": 4.066
+    },
+    {
+      "comparison": "Regulatory T cells",
+      "cluster": "Regulatory T cells",
+      "gene": "TNFRSF18",
+      "log2fc": 5.514
+    },
+    {
+      "comparison": "Tem/Effector helper T cells",
+      "cluster": "Tem/Effector helper T cells",
+      "gene": "CST3",
+      "log2fc": -5.195
+    },
+    {
+      "comparison": "Tem/Effector helper T cells",
+      "cluster": "Tem/Effector helper T cells",
+      "gene": "MARCKS",
+      "log2fc": -5.669
+    },
+    {
+      "comparison": "Tem/Effector helper T cells",
+      "cluster": "Tem/Effector helper T cells",
+      "gene": "IL7R",
+      "log2fc": 4.292
+    },
+    {
+      "comparison": "Tem/Trm cytotoxic T cells",
+      "cluster": "Tem/Trm cytotoxic T cells",
+      "gene": "CCL5",
+      "log2fc": 5.234
+    },
+    {
+      "comparison": "Tem/Trm cytotoxic T cells",
+      "cluster": "Tem/Trm cytotoxic T cells",
+      "gene": "CXCR4",
+      "log2fc": 3.651
+    },
+    {
+      "comparison": "Tem/Trm cytotoxic T cells",
+      "cluster": "Tem/Trm cytotoxic T cells",
+      "gene": "CST7",
+      "log2fc": 4.348
+    },
+    {
+      "comparison": "Trm cytotoxic T cells",
+      "cluster": "Trm cytotoxic T cells",
+      "gene": "HSPA1A",
+      "log2fc": 3.771
+    },
+    {
+      "comparison": "Trm cytotoxic T cells",
+      "cluster": "Trm cytotoxic T cells",
+      "gene": "HSPA1B",
+      "log2fc": 3.628
+    },
+    {
+      "comparison": "Trm cytotoxic T cells",
+      "cluster": "Trm cytotoxic T cells",
+      "gene": "DNAJB1",
+      "log2fc": 3.93
+    }
+  ],
+  "pathways": []
+}

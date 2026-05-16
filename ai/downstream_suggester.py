@@ -244,12 +244,8 @@ def _parse_response(raw: str) -> tuple[list[DownstreamSuggestion], str]:
     Returns ([], "") on any parse failure — never raises.
     """
     try:
-        # Strip markdown fences if present
-        text = raw.strip()
-        if text.startswith("```"):
-            lines = text.splitlines()
-            text = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-        data = json.loads(text)
+        from ai._json_utils import extract_json_from_response
+        data = json.loads(extract_json_from_response(raw))
         suggestions = []
         for item in data.get("suggestions", []):
             suggestions.append(DownstreamSuggestion(

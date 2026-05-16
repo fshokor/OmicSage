@@ -107,19 +107,10 @@ def _parse_response(raw: str, cluster_id: str) -> dict | None:
     Returns the parsed dict on success, None on any parse/validation failure.
     Logs a warning (not an error) on failure so the caller can skip gracefully.
     """
-    # Strip markdown fences if the model wrapped the JSON despite instructions
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        # Drop opening fence (```json or ```) and closing fence
-        text = "\n".join(
-            line for line in lines
-            if not line.strip().startswith("```")
-        ).strip()
-
     try:
-        parsed = json.loads(text)
-    except json.JSONDecodeError as exc:
+        from ai._json_utils import extract_json_from_response
+        parsed = json.loads(extract_json_from_response(raw))
+    except (json.JSONDecodeError, ValueError) as exc:
         logger.warning(
             "Cluster %s: JSON parse failed — %s. Raw response: %.200s",
             cluster_id, exc, raw,

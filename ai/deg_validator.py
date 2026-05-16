@@ -188,19 +188,11 @@ def _extract_degs(
 
 def _parse_llm_response(raw: str) -> dict:
     """
-    Parse LLM JSON response. Strips markdown fences if present.
+    Parse LLM JSON response. Extracts JSON from any preamble/fence pattern.
     Returns dict with expected keys or raises ValueError.
     """
-    clean = raw.strip()
-    if not clean:
-        raise ValueError("LLM returned an empty response")
-
-    if clean.startswith("```"):
-        lines = clean.splitlines()
-        # Drop first and last fence lines
-        clean = "\n".join(lines[1:-1] if lines[-1].strip() == "```" else lines[1:])
-
-    parsed = json.loads(clean)
+    from ai._json_utils import extract_json_from_response
+    parsed = json.loads(extract_json_from_response(raw))
 
     required_keys = {
         "expected_genes",

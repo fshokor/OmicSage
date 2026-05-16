@@ -195,12 +195,8 @@ def _parse_llm_response(raw: str, sweep_range: tuple[float, float]) -> Clusterin
     import json
 
     try:
-        cleaned = raw.strip()
-        if cleaned.startswith("```"):
-            cleaned = "\n".join(cleaned.split("\n")[1:])
-        if cleaned.endswith("```"):
-            cleaned = "\n".join(cleaned.split("\n")[:-1])
-        data = json.loads(cleaned)
+        from ai._json_utils import extract_json_from_response
+        data = json.loads(extract_json_from_response(raw))
     except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("clustering_advisor: JSON parse failed — %s", exc)
         return None

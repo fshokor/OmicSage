@@ -98,7 +98,8 @@ def build_analysis_summary(adata, config: dict, study_context: dict) -> dict:
     # ---- clustering ---------------------------------------------------
     resolution = (
         adata.uns.get("leiden_resolution")
-        or (adata.uns.get("omicsage_cluster") or {}).get("resolution")
+        or (adata.uns.get("omicsage_cluster") or {}).get("best_resolution")
+        or (adata.uns.get("omicsage_cluster") or {}).get("resolution")  # fallback alias
         or None
     )
     leiden_labels = adata.obs.get("leiden")
@@ -270,18 +271,10 @@ def _parse_response(raw: str, config: dict) -> CoherenceReview:
         reasoning="",
     )
 
-    # Strip markdown fences if present
-    text = raw.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        text = "\n".join(
-            line for line in lines
-            if not line.strip().startswith("```")
-        ).strip()
-
     try:
-        data = json.loads(text)
-    except json.JSONDecodeError as exc:
+        from ai._json_utils import extract_json_from_response
+        data = json.loads(extract_json_from_response(raw))
+    except (json.JSONDecodeError, ValueError) as exc:
         logger.warning("coherence_reviewer: JSON parse failed: %s", exc)
         return CoherenceReview(**base_kwargs)
 

@@ -44,7 +44,6 @@ AI module order
 ---------------
   clustering_advisor → cluster_annotator → pipeline_advisor → deg_validator
   → coherence_reviewer → downstream_suggester → narrative_generator
-  → report_writer → report_reviewer
 
 Checkpointing
 -------------
@@ -117,8 +116,6 @@ AI_MODULE_ORDER = [
     "coherence_reviewer",
     "downstream_suggester",
     "narrative_generator",
-    "report_writer",
-    "report_reviewer",
 ]
 
 # Output filename for each step
@@ -675,9 +672,7 @@ def _run_ai_layer(
     B2  deg_validator        — DEG literature links  (reads deg/gsea adata)
     B3  coherence_reviewer   — analysis coherence + analysis_summary.json
     A3  downstream_suggester — NEXT_STEPS.md
-    C1  narrative_generator  — ai_narrative.md
-    C2  report_writer        — presentation.pptx + report sections
-    D1  report_reviewer      — report_review.md (reviews combined HTML)
+    C1  narrative_generator  — ai_narrative.md + AI tab in combined HTML
     """
     import scanpy as sc
 
@@ -800,7 +795,7 @@ def _run_ai_layer(
             )
             if result:
                 print(f"[ai/clustering_advisor] done — "
-                      f"recommended resolution={result.recommended_resolution}", flush=True)
+                      f"suggested resolution={result.suggested_resolution}", flush=True)
             return result
         cluster_advice = _safe("clustering_advisor", _clustering)
     elif not _should_run("clustering_advisor"):
@@ -823,6 +818,15 @@ def _run_ai_layer(
             )
             if result:
                 print(f"[ai/cluster_annotator] done — annotated {len(result)} clusters", flush=True)
+                # Propagate ai_cell_type into final_adata so downstream modules
+                # (coherence_reviewer, narrative_generator) can read it.
+                # leiden_adata and final_adata share the same cell barcodes.
+                if "ai_cell_type" in leiden_adata.obs.columns:
+                    final_adata.obs["ai_cell_type"] = (
+                        leiden_adata.obs["ai_cell_type"]
+                        .reindex(final_adata.obs.index)
+                    )
+                    print("[ai/cluster_annotator] ai_cell_type propagated to final_adata", flush=True)
             return result
         annotations = _safe("cluster_annotator", _annotator)
     elif not _should_run("cluster_annotator"):
@@ -926,48 +930,6 @@ def _run_ai_layer(
         narrative_result = _safe("narrative_generator", _narrative)
     else:
         print("[ai/narrative_generator] skipped", flush=True)
-
-    # ------------------------------------------------------------------
-    # C2 — Report writer + presentation.pptx
-    # ------------------------------------------------------------------
-    if _should_run("report_writer"):
-        def _report_writer():
-            from ai import report_writer
-            result = report_writer.run(
-                final_adata, cfg, study_context,
-                narrative_result=narrative_result,
-                coherence_review=coherence_review,
-                cluster_annotations=annotations,
-                deg_validation=deg_validation,
-                report_dir=str(reports_dir),
-                figures_dir=str(reports_dir),
-                log_dir=log_dir, runtime_ai=True,
-            )
-            if result:
-                print("[ai/report_writer] done — presentation.pptx written", flush=True)
-            return result
-        _safe("report_writer", _report_writer)
-    else:
-        print("[ai/report_writer] skipped", flush=True)
-
-    # ------------------------------------------------------------------
-    # D1 — Report reviewer + report_review.md
-    # ------------------------------------------------------------------
-    if _should_run("report_reviewer"):
-        def _report_reviewer():
-            from ai import report_reviewer
-            combined_html = str(reports_dir / "00_combined_report.html")
-            result = report_reviewer.run(
-                combined_html, cfg, study_context,
-                report_dir=str(reports_dir),
-                log_dir=log_dir, runtime_ai=True,
-            )
-            if result:
-                print("[ai/report_reviewer] done — report_review.md written", flush=True)
-            return result
-        _safe("report_reviewer", _report_reviewer)
-    else:
-        print("[ai/report_reviewer] skipped", flush=True)
 
     print()
     print("=" * 60)
@@ -1247,4 +1209,18 @@ def main():
         _run_ai_layer(cfg, study_context, processed_dir, reports_dir, log_dir,
                       active_ai_modules=active_ai_modules)
 
-    # ── footer ────────────────────
+    # ── footer ─────────────────────────────────────────────────────────────────
+    end_time = datetime.now()
+    elapsed  = end_time - start_time
+    hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+    minutes, seconds = divmod(remainder, 60)
+    print()
+    print("=" * 60)
+    print("Pipeline complete.")
+    print(f"Reports   : {reports_dir}")
+    print(f"Elapsed   : {hours:02d}h {minutes:02d}m {seconds:02d}s")
+    print("=" * 60)
+
+
+if __name__ == "__main__":
+    main()

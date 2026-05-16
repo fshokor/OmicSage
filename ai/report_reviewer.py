@@ -120,12 +120,9 @@ def _parse_response(raw: str) -> tuple[list[ReportFlag], str, str, bool]:
     Returns (flags, overall_report_quality, reasoning, parse_success).
     On failure returns ([], raw[:500], "", False).
     """
-    # Strip optional markdown fences
-    cleaned = re.sub(r"^```(?:json)?\s*", "", raw.strip())
-    cleaned = re.sub(r"\s*```$", "", cleaned)
-
     try:
-        data = json.loads(cleaned)
+        from ai._json_utils import extract_json_from_response
+        data = json.loads(extract_json_from_response(raw))
     except (json.JSONDecodeError, ValueError):
         logger.warning("report_reviewer: failed to parse LLM response as JSON")
         return [], raw[:500], "", False

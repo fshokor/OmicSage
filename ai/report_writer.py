@@ -49,13 +49,10 @@ class ReportWriterResult(AiResult):
 
 def _parse_section(raw: str, section_name: str) -> ReportSection:
     """Parse LLM JSON response into a ReportSection. Tolerates partial output."""
-    import re
-
-    # Strip markdown fences if present
-    cleaned = re.sub(r"```json\s*|```\s*", "", raw).strip()
+    from ai._json_utils import extract_json_from_response
     try:
-        data = json.loads(cleaned)
-    except json.JSONDecodeError:
+        data = json.loads(extract_json_from_response(raw))
+    except (json.JSONDecodeError, ValueError):
         log.warning("report_writer: JSON parse failed for %s — using raw text", section_name)
         return ReportSection(
             section_name=section_name,

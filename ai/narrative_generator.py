@@ -104,7 +104,8 @@ def _parse_block_response(raw: str, block_name: str) -> NarrativeBlock | None:
     """Parse a raw LLM response string into a NarrativeBlock.
     Returns None if parsing fails."""
     try:
-        data = json.loads(raw)
+        from ai._json_utils import extract_json_from_response
+        data = json.loads(extract_json_from_response(raw))
         return NarrativeBlock(
             block_name=block_name,
             narrative_text=str(data.get("narrative_text", "")),
