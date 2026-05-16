@@ -37,8 +37,30 @@ SUMMARY_PATH = REPO_ROOT / "reports" / "GSE166635" / "analysis_summary.json"
 # ---------------------------------------------------------------------------
 # Module-level skip flag — lets the whole TestGroundedness class be skipped
 # gracefully in CI where pipeline output hasn't been generated yet.
+#
+# A narrative file that only contains the metadata header (no ## sections)
+# means the pipeline ran but produced no content (e.g. because adata.uns
+# lacked 'omicsage_analysis_summary').  Treat that the same as missing.
 # ---------------------------------------------------------------------------
-_REPORTS_MISSING = not (NARRATIVE_PATH.exists() and SUMMARY_PATH.exists())
+
+def _narrative_has_content(path: pathlib.Path) -> bool:
+    """Return True if the narrative contains at least one real content line
+    (i.e. a non-blank line that is not a metadata/header line starting with
+    '#' or '*')."""
+    if not path.exists():
+        return False
+    for line in path.read_text(encoding="utf-8").splitlines():
+        stripped = line.strip()
+        if stripped and not stripped.startswith("#") and not stripped.startswith("*"):
+            return True
+    return False
+
+
+_REPORTS_MISSING = not (
+    NARRATIVE_PATH.exists()
+    and SUMMARY_PATH.exists()
+    and _narrative_has_content(NARRATIVE_PATH)
+)
 
 GROUNDEDNESS_THRESHOLD = 0.85
 

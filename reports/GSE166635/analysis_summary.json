@@ -11,200 +11,200 @@
     "cells_removed_pct": null
   },
   "clustering": {
-    "resolution": null,
+    "resolution": 1.5,
     "n_clusters": 32,
     "silhouette_score": null
   },
   "cell_types": [
     {
       "cluster": "0",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 846
     },
     {
       "cluster": "1",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 174
     },
     {
       "cluster": "10",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 1412
     },
     {
       "cluster": "11",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 567
     },
     {
       "cluster": "12",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 1247
     },
     {
       "cluster": "13",
-      "cell_type": null,
+      "cell_type": "Tumor-infiltrating T cell",
       "confidence": null,
       "n_cells": 1229
     },
     {
       "cluster": "14",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 865
     },
     {
       "cluster": "15",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 717
     },
     {
       "cluster": "16",
-      "cell_type": null,
+      "cell_type": "unknown",
       "confidence": null,
       "n_cells": 81
     },
     {
       "cluster": "17",
-      "cell_type": null,
+      "cell_type": "Stellate Cell",
       "confidence": null,
       "n_cells": 205
     },
     {
       "cluster": "18",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 162
     },
     {
       "cluster": "19",
-      "cell_type": null,
+      "cell_type": "Plasma cell",
       "confidence": null,
       "n_cells": 219
     },
     {
       "cluster": "2",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 420
     },
     {
       "cluster": "20",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 132
     },
     {
       "cluster": "21",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 296
     },
     {
       "cluster": "22",
-      "cell_type": null,
+      "cell_type": "unknown",
       "confidence": null,
       "n_cells": 470
     },
     {
       "cluster": "23",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 684
     },
     {
       "cluster": "24",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 680
     },
     {
       "cluster": "25",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 251
     },
     {
       "cluster": "26",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 487
     },
     {
       "cluster": "27",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 166
     },
     {
       "cluster": "28",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 832
     },
     {
       "cluster": "29",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 1137
     },
     {
       "cluster": "3",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 732
     },
     {
       "cluster": "30",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 157
     },
     {
       "cluster": "31",
-      "cell_type": null,
+      "cell_type": "Tumor-infiltrating immune cell",
       "confidence": null,
       "n_cells": 236
     },
     {
       "cluster": "4",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 338
     },
     {
       "cluster": "5",
-      "cell_type": null,
+      "cell_type": "Kupffer cell",
       "confidence": null,
       "n_cells": 760
     },
     {
       "cluster": "6",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 1038
     },
     {
       "cluster": "7",
-      "cell_type": null,
+      "cell_type": "Hepatocyte",
       "confidence": null,
       "n_cells": 542
     },
     {
       "cluster": "8",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 956
     },
     {
       "cluster": "9",
-      "cell_type": null,
+      "cell_type": "Tumor-associated macrophage",
       "confidence": null,
       "n_cells": 530
     }

@@ -57,8 +57,6 @@ ai:
     coherence_reviewer:  true
     downstream_suggester: true
     narrative_generator: true
-    report_writer:       true
-    report_reviewer:     true
 
 steps:
 

@@ -189,10 +189,25 @@ def _extract_degs(
 def _parse_llm_response(raw: str) -> dict:
     """
     Parse LLM JSON response. Extracts JSON from any preamble/fence pattern.
-    Returns dict with expected keys or raises ValueError.
+    Returns dict with expected keys or raises ValueError / json.JSONDecodeError.
+
+    Raises
+    ------
+    json.JSONDecodeError
+        If the response contains no valid JSON at all.
+    ValueError
+        If JSON is parsed but required keys are missing.
     """
     from ai._json_utils import extract_json_from_response
-    parsed = json.loads(extract_json_from_response(raw))
+    try:
+        json_str = extract_json_from_response(raw)
+    except ValueError:
+        # No extractable JSON block — let json.loads raise the canonical
+        # json.JSONDecodeError so callers (and tests) get the right type.
+        json.loads(raw)  # always raises json.JSONDecodeError for bad input
+        raise  # unreachable; satisfies type checkers
+
+    parsed = json.loads(json_str)
 
     required_keys = {
         "expected_genes",
@@ -393,6 +408,15 @@ def run(
                 reasoning=parsed.get("validation_summary", ""),
                 comparison=group,
                 expected_genes=parsed.get("expected_genes", []),
+                unexpected_genes=parsed.get("unexpected_genes", []),
+                literature_links=deduped_refs,
+                validation_summary=parsed.get("validation_summary", ""),
+                discovery_highlights=parsed.get("discovery_highlights", []),
+            )
+        )
+
+    return results
+.get("expected_genes", []),
                 unexpected_genes=parsed.get("unexpected_genes", []),
                 literature_links=deduped_refs,
                 validation_summary=parsed.get("validation_summary", ""),
