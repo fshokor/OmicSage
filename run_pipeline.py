@@ -1026,10 +1026,10 @@ def parse_args():
 
 
 def resolve_ai_module_window(
-    ai_module: str | None,
-    ai_from_module: str | None,
-    ai_to_module: str | None,
-) -> "set[str] | None":
+    ai_module,       # str | None
+    ai_from_module,  # str | None
+    ai_to_module,    # str | None
+):
     """
     Return the set of AI module names to run.
 

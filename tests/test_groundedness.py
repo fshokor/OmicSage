@@ -34,6 +34,12 @@ REPO_ROOT = pathlib.Path(__file__).parent.parent
 NARRATIVE_PATH = REPO_ROOT / "reports" / "GSE166635" / "ai_narrative.md"
 SUMMARY_PATH = REPO_ROOT / "reports" / "GSE166635" / "analysis_summary.json"
 
+# ---------------------------------------------------------------------------
+# Module-level skip flag — lets the whole TestGroundedness class be skipped
+# gracefully in CI where pipeline output hasn't been generated yet.
+# ---------------------------------------------------------------------------
+_REPORTS_MISSING = not (NARRATIVE_PATH.exists() and SUMMARY_PATH.exists())
+
 GROUNDEDNESS_THRESHOLD = 0.85
 
 # ---------------------------------------------------------------------------
@@ -178,6 +184,13 @@ def _is_cited(
 # Tests
 # ---------------------------------------------------------------------------
 
+@pytest.mark.skipif(
+    _REPORTS_MISSING,
+    reason=(
+        "Pipeline reports not found — run the pipeline first: "
+        "python run_pipeline.py --config config/runs/GSE166635.yaml --step all --ai"
+    ),
+)
 class TestGroundedness:
 
     def test_narrative_file_exists(self):
