@@ -33,7 +33,8 @@ from pathlib import Path
 # ---------------------------------------------------------------------------
 
 TAB_REGISTRY = [
-    ("01_qc_report.html",             "QC",          "🔬"),
+    ("00_data_report.html",            "Data Intake", "📋"),
+    ("01_qc_report.html",              "QC",          "🔬"),
     ("02_normalization_report.html",   "Normalize",   "📐"),
     ("03_reduce_report.html",          "Reduce",      "🔭"),
     ("04_cluster_report.html",         "Cluster",     "🫧"),

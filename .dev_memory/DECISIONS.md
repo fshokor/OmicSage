@@ -44,5 +44,29 @@ Potential OpenClaw marketplace listing (Phase 7+).
 Not a dependency for Phase 1-3.
 Monitor: claw-spatial, claw-gwas, scRNA Orchestrator updates.
 
+## D013 — Stop AI Pipeline Development; Keep Manual Version (2026-05-17)
+After completing all 10 sessions of Phase 3 (AI layer) with 466+ tests passing, we evaluated
+the trade-off between AI pipeline complexity and project stage priorities and decided:
+
+**What we decided:**
+- Stop all AI pipeline development immediately after Phase 3 milestone validation
+- The manual pipeline (ai_features: false) is the sole primary path going forward
+- All AI layer code stays in the repo — intact, tested, and importable — but is not extended
+- No new AI modules will be added until Phase 8 (benchmarking) or later, if at all
+
+**Why:**
+- Phase 1 (annotation) is still incomplete — SingleR-based annotation not yet built
+- The AI layer adds significant complexity with diminishing returns at this project stage
+- The manual pipeline already reproduces Wang et al. 2025 HCC findings correctly
+- For job interviews and freelance (Month 1-4 goals), a clean manual pipeline > a buggy AI one
+- The architecture still allows ai_features: true — the option is preserved, not removed
+
+**What this means in practice:**
+- Default config: ai_features: false
+- ai/ directory: frozen at current state, no new modules
+- Next steps: complete Phase 1 annotation → Phase 4 scATAC → Phase 5 Spatial
+
+---
+
 Report Reviewer (D1) — text-only analysis, no figure inspection
 Decision: report_reviewer.py strips HTML to plain text before the LLM call. Images referenced in the report are not extracted or passed to the model. The reviewer therefore evaluates narrative quality, methods completeness, and whether conclusions are supported by described results — it cannot visually inspect figures. This was a deliberate scope decision for Phase 3: the module is a scientific writing reviewer, not a figure quality checker. True figure analysis would require a vision-capable model call (Claude vision API or GPT-4o with images), per-figure base64 extraction from the HTML before tag stripping, and a separate prompt designed around visual interpretation. The complexity and token cost do not justify inclusion at this stage. If figure review becomes a priority in a later phase, it should be a standalone module (ai/figure_reviewer.py) rather than an extension of this one, so the two concerns remain independently testable and independently disableable.

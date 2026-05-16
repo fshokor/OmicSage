@@ -264,12 +264,30 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[qc] running …")
+    import re as _re
     import scanpy as sc
     from pipeline.modules.qc.ingest import load_dataset
     from pipeline.modules.qc.qc import run_qc as _run_qc
+    from pipeline.modules.qc.data_report import run_data_report
 
     sample_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
     adata = load_dataset(input_path, sample_name=sample_name)
+
+    # Data intake report — generated from raw data, before any QC filtering
+    _dataset_id   = cfg["dataset"]["id"]
+    _geo_accession = _dataset_id if _re.match(r"^GSE\d+$", _dataset_id, _re.IGNORECASE) else None
+    _data_report_path = reports_dir / "00_data_report.html"
+    try:
+        run_data_report(
+            adata,
+            input_path=input_path,
+            output_path=_data_report_path,
+            geo_accession=_geo_accession,
+        )
+        print(f"[data_report] → {_data_report_path}")
+    except Exception as _exc:
+        print(f"[data_report] WARNING: could not generate data intake report: {_exc}")
+
     mdata, metrics = _run_qc(
         adata,
         min_genes=params.get("min_genes", 200),

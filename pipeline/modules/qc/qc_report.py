@@ -363,7 +363,7 @@ def _section_scatter_doublet(plots: dict) -> str:
     <section>
       <h2>Cell-Level Diagnostics</h2>
       <div class="fig-grid">
-        <div class="fig-wrap wide">
+        <div class="fig-wrap">
           <h3>UMI vs Genes (colour = MT%)</h3>
           <img src="data:image/png;base64,{plots['scatter']}" alt="UMI vs genes scatter">
         </div>

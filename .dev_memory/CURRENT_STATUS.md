@@ -1,8 +1,8 @@
 # OmicSage — Current Status
-> Last updated: 2026-05-15 (Phase 3 Session 0 complete)
+> Last updated: 2026-05-17
 
 ## Phase
-Phase 3 — AI Layer (Phase 2 complete ✅)
+Phase 1 (annotation step) — AI layer complete but PAUSED by decision. Manual pipeline is primary.
 
 ## What Is Built and Tested Right Now
 
@@ -143,6 +143,34 @@ Phase 3 — AI Layer (Phase 2 complete ✅)
 
 ---
 
+## ✅ Phase 3 — AI Layer (ALL 10 SESSIONS COMPLETE / ⏸ PAUSED)
+**Decision (2026-05-17)**: After completing all AI modules (466+ tests passing), we decided
+to stop AI pipeline development and keep the manual pipeline as the sole primary path.
+The AI layer code is fully built and tested — it is NOT deleted. `ai_features: false` is
+the default going forward. See DECISIONS.md for full rationale.
+
+Completed AI modules:
+- ai/pipeline_advisor.py (13 tests)
+- ai/clustering_advisor.py (22 tests)
+- ai/cluster_annotator.py (23 tests)
+- ai/deg_validator.py (25 tests)
+- ai/coherence_reviewer.py (22 tests)
+- ai/downstream_suggester.py (20 tests)
+- ai/narrative_generator.py (18 tests)
+- ai/report_writer.py (20 tests)
+- ai/report_reviewer.py (18 tests)
+- Infrastructure (_base, _config_gate, _audit_log, _llm_client, _skill_loader): 20 tests
+
+**Total tests: 466+ passing, 1 skipped**
+
+---
+
+## ⬅ NEXT: Annotation Module (Phase 1 completion)
+Build `pipeline/modules/annotation/` — SingleR + marker review + annotation report tab.
+See NEXT_SESSION.md for full plan.
+
+---
+
 ## ✅ Phase 3 Session 0 — AI Infrastructure (COMPLETE)
 
 ### ai/_base.py
@@ -203,35 +231,11 @@ Phase 3 — AI Layer (Phase 2 complete ✅)
 
 ---
 
-## Phase 3 — What Is Being Built Next
-
-Session 1 (next): A1 — Pipeline Advisor
-  - ai/skills/pipeline_advisor.yaml
-  - ai/pipeline_advisor.py
-  - tests/test_pipeline_advisor.py
-
-Remaining sessions:
-  Session 2  — A2: Clustering advisor (first PubMed RAG use)
-  Session 3  — B1: Cluster annotator
-  Session 4  — B2: DEG validator + literature linker
-  Session 5  — B3: Coherence reviewer
-  Session 6  — A3: Downstream analysis suggester
-  Session 7  — C1: Narrative generator
-  Session 8  — C2: Full report + PowerPoint
-  Session 9  — Milestone validation
-
 ## Total Tests Passing
-~251 (231 Phase 1-2 + 20 Phase 3 infrastructure)
+466+ passing, 1 skipped (as of 2026-05-17)
 
 ## What Is NOT Built Yet
-- Phase 3: Pipeline advisor (Session 1 — next)
-- Phase 3: Clustering advisor
-- Phase 3: Cluster annotator
-- Phase 3: DEG validator + literature linker
-- Phase 3: Coherence reviewer
-- Phase 3: Downstream analysis suggester
-- Phase 3: Narrative generator
-- Phase 3: Full report + PowerPoint
+- Annotation module (Phase 1 completion — NEXT)
 - scVI batch correction → deferred to Phase 6
 - ADT QC + CLR normalization
 - scATAC module (Phase 4)

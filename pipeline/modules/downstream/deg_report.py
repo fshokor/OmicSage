@@ -85,6 +85,7 @@ def generate_deg_report(
 
     sections.append(_section_summary_stats(provenance, results))
     sections.append(_section_summary_table(summary_df))
+    sections.append(_section_global_volcano(results, provenance, top_n=top_n_volcano))
     sections.append(_section_volcano_plots(
         adata, results, provenance,
         top_n=top_n_volcano,
@@ -203,6 +204,48 @@ def _section_summary_table(summary_df: pd.DataFrame) -> str:
         </thead>
         <tbody>{rows}</tbody>
       </table>
+    </section>
+    """
+
+
+def _section_global_volcano(
+    results: dict,
+    provenance: dict,
+    top_n: int = 10,
+) -> str:
+    """Single volcano plot pooling DEGs from all groups combined."""
+    frames = [df for df in results.values() if not df.empty]
+    if not frames:
+        return (
+            "<section><h2>Global Volcano Plot — All Groups Combined</h2>"
+            "<p>No significant DEGs found across any group.</p></section>"
+        )
+
+    combined = pd.concat(frames, ignore_index=True)
+    min_logfc    = float(provenance.get("min_logfc", 0.25))
+    max_pval_adj = float(provenance.get("max_pval_adj", 0.05))
+
+    img_b64 = _render_volcano(
+        combined, "All Groups Combined",
+        min_logfc=min_logfc,
+        max_pval_adj=max_pval_adj,
+        top_n=top_n,
+        figsize=(7, 5),
+    )
+    n_groups = len(results)
+    n_genes  = len(combined)
+    return f"""
+    <section>
+      <h2>Global Volcano Plot — All Groups Combined</h2>
+      <p>
+        All {n_genes:,} tested gene-entries across {n_groups} group(s) shown in a single plot.
+        Dashed lines mark thresholds: |log₂FC| ≥ {min_logfc}, adj. p ≤ {max_pval_adj}.
+        Top {top_n} genes by significance are labelled.
+      </p>
+      <div style="max-width:640px;">
+        <img src="data:image/png;base64,{img_b64}" alt="Global volcano plot"
+             style="width:100%; border-radius:6px; border:1px solid #e8eaf6;">
+      </div>
     </section>
     """
 
@@ -368,6 +411,7 @@ def _render_volcano(
     min_logfc: float,
     max_pval_adj: float,
     top_n: int = 10,
+    figsize: tuple = (5, 4),
 ) -> str:
     """Render a single volcano plot; return base64-encoded PNG string."""
     plot_df = df.copy()
@@ -381,7 +425,7 @@ def _render_volcano(
     sig_down = (plot_df["pval_adj"] <= max_pval_adj) & (plot_df["logfc"] <= -min_logfc)
     ns       = ~(sig_up | sig_down)
 
-    fig, ax = plt.subplots(figsize=(5, 4))
+    fig, ax = plt.subplots(figsize=figsize)
     ax.scatter(plot_df.loc[ns,       "logfc"], plot_df.loc[ns,       "neg_log_p"],
                s=8, color="#aaaaaa", alpha=0.5, label="NS", rasterized=True)
     ax.scatter(plot_df.loc[sig_up,   "logfc"], plot_df.loc[sig_up,   "neg_log_p"],

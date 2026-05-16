@@ -1,5 +1,5 @@
 # OmicSage — Progress
-> Last updated: 2026-05-15 (Phase 3 Session 0 complete)
+> Last updated: 2026-05-17
 
 ## Phase 0 — Foundation ✅ COMPLETE
 - [x] GitHub repo created
@@ -51,57 +51,30 @@
 - [x] Wired into run_pipeline.py — auto-generates at end of every run
 - [x] MILESTONE: 00_combined_report.html generated automatically — 7 tabs ✅
 
-## Phase 3 — AI Layer ← CURRENT PHASE
-- [x] Session 0 — Shared infrastructure ✅
-  - [x] ai/_base.py — AiResult base dataclass
-  - [x] ai/_config_gate.py — three-level check_ai_enabled()
-  - [x] ai/_audit_log.py — write_audit_record() → logs/llm/*.jsonl
-  - [x] ai/_llm_client.py — BioChatter wrapper, provider routing
-  - [x] ai/_skill_loader.py — YAML skill loader (built prior session)
-  - [x] ai/skills/cluster_annotator.yaml — reference skill pattern
-  - [x] config/study_context_template.yaml
-  - [x] tests/test_ai_infrastructure.py — 20 tests passing
-  - [x] biochatter==0.14.2 installed and verified
-  - [x] test_phase0_structure.py encoding fix (utf-8)
-- [x] Session 1 — A1: Pipeline advisor 
-  - [x] ai/skills/pipeline_advisor.yaml
-  - [x] ai/pipeline_advisor.py
-  - [x] tests/test_pipeline_advisor.py
-- [x] Session 2 — A2: Clustering advisor (first PubMed RAG use) 
-  - [x] ai/skills/clustering_advisor.yaml
-  - [x] ai/clustering_advisor.py
-  - [x] tests/test_clustering_advisor.py
-- [x] Session 3 — B1: Cluster annotator 
-  - [x] ai/skills/cluster_annotator.yaml (already drafted — refine here)
-  - [x] ai/cluster_annotator.py
-  - [x] tests/test_cluster_annotator.py
-- [x] Session 4 — B2: DEG validator + literature linker
-  - [x] ai/skills/deg_validator.yaml
-  - [x] ai/deg_validator.py
-  - [x] tests/test_deg_validator.py
-- [x] Session 5 — B3: Coherence reviewer ← NEXT
-  - [x] ai/skills/coherence_reviewer.yaml
-  - [x] ai/coherence_reviewer.py
-  - [x] tests/test_coherence_reviewer.py
-  - [x] reports/<dataset>/analysis_summary.json (schema designed here)
-- [x] Session 6 — A3: Downstream analysis suggester
-  - [x] ai/skills/downstream_suggester.yaml
-  - [x] ai/downstream_suggester.py
-  - [x] tests/test_downstream_suggester.py
-- [x] Session 7 — C1: Narrative generator
-  - [x] ai/skills/narrative_generator.yaml
-  - [x] ai/narrative_generator.py
-  - [x] tests/test_narrative_generator.py
-  - [x] reports/<dataset>/ai_narrative.md
-- [x] Session 8 — C2: Full report + PowerPoint
-  - [x] ai/skills/report_writer.yaml
-  - [x] ai/report_writer.py 
-  - [x] tests/test_report_writer.py
-- [ ] Session 9 — Milestone validation
-  - [ ] tests/test_groundedness.py
-  - [ ] End-to-end GSE166635 with ai_features: true
-  - [ ] End-to-end GSE166635 with ai_features: false
-  - [ ] MILESTONE: groundedness score ≥ 0.85 ← PHASE 3 COMPLETE
+## Phase 3 — AI Layer ✅ BUILT / ⏸ PAUSED BY DECISION (2026-05-17)
+> All modules built and tested (466+ tests passing). Development stopped.
+> Manual pipeline is the primary path. ai_features: false is the default.
+> See DECISIONS.md for full rationale. Code is NOT deleted — stays intact.
+
+- [x] Session 0 — Shared infrastructure (20 tests)
+- [x] Session 1 — A1: Pipeline advisor (13 tests)
+- [x] Session 2 — A2: Clustering advisor (22 tests)
+- [x] Session 3 — B1: Cluster annotator (23 tests)
+- [x] Session 4 — B2: DEG validator + literature linker (25 tests)
+- [x] Session 5 — B3: Coherence reviewer (22 tests)
+- [x] Session 6 — A3: Downstream analysis suggester (20 tests)
+- [x] Session 7 — C1: Narrative generator (18 tests)
+- [x] Session 8 — C2: Full report + PowerPoint (20 tests)
+- [x] Session 9 — D1: Report reviewer (18 tests)
+- [x] Session 10 — Milestone validation complete
+
+## Phase 1 — Annotation Module (remaining) ← NEXT
+- [ ] pipeline/modules/annotation/singler_annotate.R
+- [ ] pipeline/modules/annotation/marker_review.py
+- [ ] pipeline/modules/annotation/scrna_annotation.nf
+- [ ] Annotated h5ad output with cell_type column (SingleR-based)
+- [ ] Annotation section in 00_combined_report.html
+- [ ] MILESTONE: Full Phase 1 pipeline with annotation on GSE166635
 
 ## Phase 4 — scATAC Module
 - [ ] Fragment file ingestion and QC

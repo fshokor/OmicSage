@@ -160,30 +160,46 @@ def _plot_pca_qc(adata_reduced: AnnData) -> str:
     return _fig_to_b64(fig)
 
 
-def _plot_umap_batch(adata_reduced: AnnData, batch_key: Optional[str]) -> Optional[str]:
-    if batch_key is None or "X_umap" not in adata_reduced.obsm:
+def _plot_umap_by_key(adata_reduced: AnnData, key: Optional[str]) -> Optional[str]:
+    """Render a UMAP coloured by any categorical obs column (batch, sample, etc.)."""
+    if key is None or "X_umap" not in adata_reduced.obsm:
         return None
-    if batch_key not in adata_reduced.obs.columns:
-        logger.warning("batch_key='%s' not in obs -- skipping batch UMAP", batch_key)
+    if key not in adata_reduced.obs.columns:
+        logger.warning("key='%s' not in obs -- skipping UMAP panel", key)
         return None
     umap    = adata_reduced.obsm["X_umap"]
-    batches = adata_reduced.obs[batch_key].astype(str)
-    unique  = sorted(batches.unique())
-    cmap    = plt.get_cmap("tab20", len(unique))
+    labels  = adata_reduced.obs[key].astype(str)
+    unique  = sorted(labels.unique())
+    cmap    = plt.get_cmap("tab20", max(len(unique), 2))
     cmap_   = {b: cmap(i) for i, b in enumerate(unique)}
     fig, ax = plt.subplots(figsize=(7, 5))
     for b in unique:
-        mask = batches == b
+        mask = labels == b
         ax.scatter(umap[mask, 0], umap[mask, 1], s=2, alpha=0.6,
                    color=cmap_[b], label=b, rasterized=True)
     ax.legend(markerscale=4, frameon=False, fontsize=8,
               loc="upper right", ncol=max(1, len(unique) // 10))
-    ax.set_title(f"UMAP -- coloured by {batch_key}", fontsize=13, fontweight="bold")
+    ax.set_title(f"UMAP — coloured by {key}", fontsize=13, fontweight="bold")
     ax.set_xlabel("UMAP 1", fontsize=10); ax.set_ylabel("UMAP 2", fontsize=10)
     ax.set_xticks([]); ax.set_yticks([])
     ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
     fig.tight_layout()
     return _fig_to_b64(fig)
+
+
+# Keep old name as alias for backwards compatibility
+def _plot_umap_batch(adata_reduced: AnnData, batch_key: Optional[str]) -> Optional[str]:
+    return _plot_umap_by_key(adata_reduced, batch_key)
+
+
+def _detect_sample_key(adata_reduced: AnnData) -> Optional[str]:
+    """Auto-detect a sample column from common obs column names."""
+    candidates = ["sample", "sample_id", "sample_name", "sampleid",
+                  "Sample", "SampleID", "sample_batch", "donor"]
+    for col in candidates:
+        if col in adata_reduced.obs.columns:
+            return col
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -316,28 +332,37 @@ def _section_scree(fig_scree: str) -> str:
     """
 
 
-def _section_umap_qc(fig_umap: str, fig_pca: str, fig_batch: Optional[str],
-                     batch_key: Optional[str]) -> str:
+def _section_umap_qc(fig_umap: str, fig_pca: str,
+                     fig_batch: Optional[str], batch_key: Optional[str],
+                     fig_sample: Optional[str], sample_key: Optional[str]) -> str:
     batch_html = ""
     if fig_batch is not None:
         batch_html = f"""
-        <div class="fig-wrap wide">
-          <h3>UMAP -- coloured by {batch_key}</h3>
+        <div class="fig-wrap">
+          <h3>UMAP — coloured by {batch_key}</h3>
           <img src="data:image/png;base64,{fig_batch}" alt="UMAP batch">
+        </div>"""
+    sample_html = ""
+    if fig_sample is not None:
+        sample_html = f"""
+        <div class="fig-wrap">
+          <h3>UMAP — coloured by {sample_key}</h3>
+          <img src="data:image/png;base64,{fig_sample}" alt="UMAP sample">
         </div>"""
     return f"""
     <section>
       <h2>Embeddings</h2>
       <div class="fig-grid">
         <div class="fig-wrap wide">
-          <h3>UMAP -- QC Metric Overlays</h3>
+          <h3>UMAP — QC Metric Overlays</h3>
           <img src="data:image/png;base64,{fig_umap}" alt="UMAP QC">
         </div>
         <div class="fig-wrap wide">
-          <h3>PCA -- QC Metric Overlays (PC1 vs PC2)</h3>
+          <h3>PCA — QC Metric Overlays (PC1 vs PC2)</h3>
           <img src="data:image/png;base64,{fig_pca}" alt="PCA QC">
         </div>
         {batch_html}
+        {sample_html}
       </div>
     </section>
     """
@@ -375,6 +400,7 @@ def run_reduce_report(
     report_path: str = "reports/reduce_report.html",
     dataset_name: str = "dataset",
     batch_key: Optional[str] = None,
+    sample_key: Optional[str] = "auto",
 ) -> str:
     """
     Generate the dimensionality reduction HTML report and write it to disk.
@@ -391,6 +417,11 @@ def run_reduce_report(
         Label shown in the report header.
     batch_key : str, optional
         obs column for the batch UMAP panel. Omitted if None.
+    sample_key : str, optional
+        obs column for the sample UMAP panel.
+        Pass "auto" (default) to auto-detect from common column names
+        (sample, sample_id, sample_name, donor, …).
+        Pass None to skip the sample panel entirely.
 
     Returns
     -------
@@ -401,6 +432,14 @@ def run_reduce_report(
     out.parent.mkdir(parents=True, exist_ok=True)
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    # Resolve sample_key
+    if sample_key == "auto":
+        sample_key = _detect_sample_key(adata_reduced)
+
+    # Avoid duplicate panels if batch and sample point to the same column
+    if sample_key is not None and sample_key == batch_key:
+        sample_key = None
+
     print(f"Building dimensionality reduction report for '{dataset_name}' ...", flush=True)
     print("  Rendering scree plot ...", flush=True)
     fig_scree = _plot_scree(adata_reduced, metrics)
@@ -408,14 +447,17 @@ def run_reduce_report(
     fig_umap  = _plot_umap_qc(adata_reduced)
     print("  Rendering PCA QC overlays ...", flush=True)
     fig_pca   = _plot_pca_qc(adata_reduced)
-    fig_batch = _plot_umap_batch(adata_reduced, batch_key)
+    fig_batch = _plot_umap_by_key(adata_reduced, batch_key)
     if fig_batch is not None:
-        print("  Rendering batch UMAP ...", flush=True)
+        print(f"  Rendering batch UMAP ({batch_key}) ...", flush=True)
+    fig_sample = _plot_umap_by_key(adata_reduced, sample_key)
+    if fig_sample is not None:
+        print(f"  Rendering sample UMAP ({sample_key}) ...", flush=True)
 
     sections = [
         _section_summary(metrics, dataset_name, timestamp),
         _section_scree(fig_scree),
-        _section_umap_qc(fig_umap, fig_pca, fig_batch, batch_key),
+        _section_umap_qc(fig_umap, fig_pca, fig_batch, batch_key, fig_sample, sample_key),
         _section_provenance(adata_reduced),
     ]
 

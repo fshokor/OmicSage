@@ -604,9 +604,11 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 # ── Tag helpers ─────────────────────────────────────────────────────────────
 
 def tags(items: list, cls: str = "") -> str:
+    """Return a flex-wrapped tag-list div so all items stay inside the table cell."""
     if not items:
         return '<span style="color:#9CA3AF;font-size:0.85rem">none detected</span>'
-    return "".join(f'<span class="tag {cls}">{i}</span>' for i in items)
+    spans = "".join(f'<span class="tag {cls}">{i}</span>' for i in items)
+    return f'<div class="tag-list">{spans}</div>'
 
 
 def _fmt_num(n: int) -> str:
@@ -721,12 +723,54 @@ def build_html(input_path: Path, metrics: dict,
         batch_cols_html   = tags(metrics["batch_cols"], "orange"),
         embeddings_html   = tags(metrics["embeddings"]),
         layers_html       = tags(metrics["layers"]),
-        obs_cols_html     = tags(metrics["obs_cols"][:20]),
-        var_cols_html     = tags(metrics["var_cols"][:20]),
+        obs_cols_html     = tags(metrics["obs_cols"]),
+        var_cols_html     = tags(metrics["var_cols"]),
         label_preview_section = label_preview_section,
         scanpy_version    = sc.__version__,
         numpy_version     = np.__version__,
     )
+
+
+# ── Programmatic entry point (called by run_pipeline.py) ────────────────────
+
+def run_data_report(
+    adata: sc.AnnData,
+    input_path: "Path | str",
+    output_path: "Path | str",
+    geo_accession: str | None = None,
+) -> str:
+    """
+    Generate a data intake HTML report without going through the CLI.
+
+    Parameters
+    ----------
+    adata         : AnnData loaded from input_path (raw, before QC filtering)
+    input_path    : original .h5ad path shown in the report header
+    output_path   : where to write the .html report
+    geo_accession : optional GEO accession (e.g. "GSE166635") for metadata fetch
+
+    Returns
+    -------
+    str
+        Absolute path to the written report.
+    """
+    input_path  = Path(input_path)
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+
+    metrics = analyse(adata)
+
+    geo: dict = {}
+    if geo_accession:
+        try:
+            geo = fetch_geo_metadata(geo_accession)
+        except Exception:
+            geo = {}
+
+    plots = make_plots(metrics)
+    html  = build_html(input_path, metrics, plots, geo)
+    output_path.write_text(html, encoding="utf-8")
+    return str(output_path.resolve())
 
 
 # ── Main ────────────────────────────────────────────────────────────────────

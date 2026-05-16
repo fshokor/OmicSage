@@ -274,7 +274,7 @@ def _section_figures(plots: dict) -> str:
     <section>
       <h2>Figures</h2>
       <div class="fig-grid">
-        <div class="fig-wrap wide">
+        <div class="fig-wrap">
           <h3>Highly Variable Genes — Mean vs Variance</h3>
           <img src="data:image/png;base64,{plots['hvg']}" alt="HVG scatter">
         </div>

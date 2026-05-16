@@ -106,7 +106,7 @@ steps:
   deg:
     enabled: true
     params:
-      groupby: cell_type_vote
+      groupby: sample
       method: wilcoxon
       min_logfc: 0.25
       max_pval_adj: 0.05

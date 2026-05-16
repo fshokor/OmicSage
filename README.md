@@ -116,8 +116,16 @@ python -m pytest tests/ -v
 
 ## AI Layer
 
-OmicSage uses [BioChatter](https://github.com/biocypher/biochatter) for AI features. Set your provider in `config.yaml`:
+OmicSage includes a full AI layer built on [BioChatter](https://github.com/biocypher/biochatter), covering QC threshold suggestions, cluster interpretation, DEG validation, narrative generation, and report review. The AI layer is **fully implemented and tested** but is currently **not the active development focus** — the manual pipeline is the primary path.
 
+The default configuration runs the full pipeline with no API key required:
+
+```yaml
+ai:
+  enabled: false   # default — full pipeline runs without any LLM
+```
+
+To enable AI features:
 ```yaml
 ai:
   enabled: true
@@ -140,9 +148,9 @@ export ANTHROPIC_API_KEY=sk-ant-...
 | Phase | Scope | Target Week |
 |-------|-------|------------|
 | 0 ✅ | Foundation — repo, Docker, CI/CD | 1-2 |
-| 1 🔧 | Core scRNA-seq pipeline | 2-6 |
+| 1 🔧 | Core scRNA-seq pipeline (annotation in progress) | 2-6 |
 | 2 ✅ | Report engine — combined tabbed HTML report | 6-9 |
-| 3 | AI layer (BioChatter integration) | 9-13 |
+| 3 ✅⏸ | AI layer — built & tested; development paused (manual pipeline is primary) | 9-13 |
 | 4 | scATAC-seq module | 13-16 |
 | 5 | Spatial transcriptomics | 16-19 |
 | 6 | Multiome integration | 19-22 |
