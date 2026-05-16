@@ -3,8 +3,9 @@ OmicSage — Generic Pipeline Runner
 ====================================
 Usage
 -----
-  # Run all enabled steps
+  # Run all enabled steps (two equivalent forms)
   python run_pipeline.py --config config/runs/GSE194122.yaml
+  python run_pipeline.py --config config/runs/GSE194122.yaml --step all
 
   # Stop at a checkpoint (inclusive)
   python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
@@ -17,6 +18,33 @@ Usage
 
   # Run exactly one step
   python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+
+  # Run all steps with AI features enabled
+  python run_pipeline.py --config config/runs/GSE166635.yaml --step all --ai
+
+  # Run only the AI layer (pipeline steps already cached)
+  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only
+
+  # Run only one specific AI module (all pipeline steps already cached)
+  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-module coherence_reviewer
+
+  # Run AI layer starting from a specific module
+  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module narrative_generator
+
+  # Run AI layer up to a specific module (inclusive)
+  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-to-module deg_validator
+
+  # Run a range of AI modules
+  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module cluster_annotator --ai-to-module coherence_reviewer
+
+  # Disable AI entirely even when --ai is passed (useful for testing)
+  python run_pipeline.py --config config/runs/GSE166635.yaml --step all --ai --ai-module off
+
+AI module order
+---------------
+  clustering_advisor → cluster_annotator → pipeline_advisor → deg_validator
+  → coherence_reviewer → downstream_suggester → narrative_generator
+  → report_writer → report_reviewer
 
 Checkpointing
 -------------
@@ -37,9 +65,11 @@ Resolution override
 
 import sys
 import io
+import logging
 
-sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
-sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
+# Force line-buffered stdout so print() appears immediately even when piped
+sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace", line_buffering=True)
+sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace", line_buffering=True)
 
 import argparse
 import os
@@ -52,6 +82,10 @@ import yaml
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
+
+# Suppress streamlit "missing ScriptRunContext" noise from biochatter imports
+logging.getLogger("streamlit").setLevel(logging.ERROR)
+logging.getLogger("streamlit.runtime.scriptrunner_utils.script_run_context").setLevel(logging.ERROR)
 
 # ── repo root ──────────────────────────────────────────────────────────────────
 root = Path(__file__).resolve().parent
@@ -72,6 +106,19 @@ STEP_ORDER = [
     "harmony",
     "cluster_harmony",
     "pseudobulk",
+]
+
+# ── AI module execution order (canonical) ──────────────────────────────────────
+AI_MODULE_ORDER = [
+    "clustering_advisor",
+    "cluster_annotator",
+    "pipeline_advisor",
+    "deg_validator",
+    "coherence_reviewer",
+    "downstream_suggester",
+    "narrative_generator",
+    "report_writer",
+    "report_reviewer",
 ]
 
 # Output filename for each step
@@ -594,6 +641,340 @@ def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
     return out
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+# AI LAYER
+# ══════════════════════════════════════════════════════════════════════════════
+
+def _run_ai_layer(
+    cfg: dict,
+    study_context: dict,
+    processed_dir: Path,
+    reports_dir: Path,
+    log_dir: str,
+    active_ai_modules: "set[str] | None" = None,
+) -> None:
+    """
+    Run Phase 3 AI modules in sequence after the analysis pipeline.
+
+    Called only when --ai is passed on the CLI.  Every module call is wrapped
+    in try/except so a single failure never aborts the rest of the layer.
+    Results are threaded forward so later modules benefit from earlier ones.
+
+    Parameters
+    ----------
+    active_ai_modules
+        If None, all modules run (default).
+        If a set, only modules whose names are in the set run.
+        Controlled at runtime via --ai-module / --ai-from-module / --ai-to-module.
+
+    Module order
+    ------------
+    A2  clustering_advisor   — resolution recommendation (reads cluster adata)
+    B1  cluster_annotator    — LLM cluster labels    (reads annotated adata)
+    A1  pipeline_advisor     — overall QC advice     (reads final adata)
+    B2  deg_validator        — DEG literature links  (reads deg/gsea adata)
+    B3  coherence_reviewer   — analysis coherence + analysis_summary.json
+    A3  downstream_suggester — NEXT_STEPS.md
+    C1  narrative_generator  — ai_narrative.md
+    C2  report_writer        — presentation.pptx + report sections
+    D1  report_reviewer      — report_review.md (reviews combined HTML)
+    """
+    import scanpy as sc
+
+    def _should_run(module_name: str) -> bool:
+        """Return True if this module should execute given the active_ai_modules filter."""
+        if active_ai_modules is None:
+            return True
+        return module_name in active_ai_modules
+
+    # Build a display string of which modules will run
+    if active_ai_modules is None:
+        modules_label = "all"
+    else:
+        modules_label = ", ".join(
+            m for m in AI_MODULE_ORDER if m in active_ai_modules
+        ) or "none"
+
+    print()
+    print("=" * 60)
+    print(f"AI Layer — starting  (modules: {modules_label})")
+    print("=" * 60)
+
+    def _safe(label: str, fn):
+        """
+        Call fn(); return result or None on any error.
+        Catches BaseException (including KeyboardInterrupt) so a single
+        module failure or user interrupt never kills the rest of the layer.
+        """
+        print(f"[ai/{label}] starting …", flush=True)
+        try:
+            return fn()
+        except BaseException as exc:
+            print(f"[ai/{label}] ERROR: {type(exc).__name__}: {exc}", flush=True)
+            return None
+
+    # ------------------------------------------------------------------
+    # Locate adata files
+    # ------------------------------------------------------------------
+    cluster_path = processed_dir / STEP_OUTPUT["cluster"]
+    ann_path     = processed_dir / STEP_OUTPUT["annotate"]
+    deg_path     = processed_dir / STEP_OUTPUT["deg"]
+    gsea_path    = processed_dir / STEP_OUTPUT["gsea"]
+
+    # Richest available adata for modules that just need analysis context
+    final_adata = None
+    for p in [gsea_path, deg_path, ann_path, cluster_path]:
+        if p.exists():
+            print(f"[ai] loading {p.name} as primary adata …", flush=True)
+            final_adata = sc.read_h5ad(p)
+            break
+
+    if final_adata is None:
+        print("[ai] no processed adata found — skipping AI layer")
+        return
+
+    # Adata whose rank_genes_groups is grouped by cell type
+    # (used by deg_validator — needs cell-type-level DEGs)
+    rgg_adata = None
+    for p in [gsea_path, deg_path, ann_path]:
+        if p.exists():
+            tmp = sc.read_h5ad(p)
+            if "rank_genes_groups" in tmp.uns:
+                rgg_adata = tmp
+                break
+
+    # Adata whose rank_genes_groups is grouped by leiden cluster IDs
+    # (used by cluster_annotator — needs per-cluster marker genes)
+    # The annotate step stores leiden-based rank_genes_groups in 05_annotated.h5ad,
+    # but the deg step overwrites it with cell_type_vote grouping.
+    # We reload 05_annotated.h5ad and re-run rank_genes_groups if needed.
+    def _leiden_rgg_adata():
+        """Return adata with rank_genes_groups grouped by leiden IDs."""
+        leiden_col = None
+        # Determine cluster column name from annotated adata
+        for col in ("leiden", "louvain"):
+            if ann_path.exists():
+                tmp = sc.read_h5ad(ann_path)
+                if col in tmp.obs.columns:
+                    leiden_col = col
+                    ann_adata = tmp
+                    break
+
+        if leiden_col is None:
+            return None
+
+        rgg = ann_adata.uns.get("rank_genes_groups", {})
+        groupby = (rgg.get("params") or {}).get("groupby", "")
+        if groupby == leiden_col:
+            # Already grouped by leiden — use as-is
+            return ann_adata
+
+        # Re-run rank_genes_groups with leiden groupby (in-memory only)
+        print(f"[ai/cluster_annotator] re-running rank_genes_groups "
+              f"with groupby='{leiden_col}' for marker extraction …", flush=True)
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")   # suppress PerformanceWarning flood
+            sc.tl.rank_genes_groups(
+                ann_adata,
+                groupby=leiden_col,
+                method="wilcoxon",
+                n_genes=20,
+                key_added="rank_genes_groups",
+            )
+        return ann_adata
+
+    # ------------------------------------------------------------------
+    # A2 — Clustering advisor
+    # ------------------------------------------------------------------
+    cluster_advice = None
+    if cluster_path.exists() and _should_run("clustering_advisor"):
+        def _clustering():
+            from ai import clustering_advisor
+            adata_cl = sc.read_h5ad(cluster_path)
+            sweep_raw = adata_cl.uns.get("omicsage_cluster", {}).get("silhouette_scores", {})
+            sweep = {float(k): float(v) for k, v in sweep_raw.items()}
+            result = clustering_advisor.run(
+                adata_cl, cfg, study_context,
+                resolution_sweep_results=sweep,
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print(f"[ai/clustering_advisor] done — "
+                      f"recommended resolution={result.recommended_resolution}", flush=True)
+            return result
+        cluster_advice = _safe("clustering_advisor", _clustering)
+    elif not _should_run("clustering_advisor"):
+        print("[ai/clustering_advisor] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # B1 — Cluster annotator
+    # ------------------------------------------------------------------
+    annotations = None
+    if ann_path.exists() and _should_run("cluster_annotator"):
+        def _annotator():
+            from ai import cluster_annotator
+            leiden_adata = _leiden_rgg_adata()
+            if leiden_adata is None:
+                print("[ai/cluster_annotator] no leiden column found — skipping", flush=True)
+                return None
+            result = cluster_annotator.run(
+                leiden_adata, cfg, study_context,
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print(f"[ai/cluster_annotator] done — annotated {len(result)} clusters", flush=True)
+            return result
+        annotations = _safe("cluster_annotator", _annotator)
+    elif not _should_run("cluster_annotator"):
+        print("[ai/cluster_annotator] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # A1 — Pipeline advisor
+    # ------------------------------------------------------------------
+    pipeline_advice = None
+    if _should_run("pipeline_advisor"):
+        def _pipeline():
+            from ai import pipeline_advisor
+            result = pipeline_advisor.run(
+                final_adata, cfg, study_context,
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print(f"[ai/pipeline_advisor] done — "
+                      f"{len(result.recommendations)} recommendations", flush=True)
+            return result
+        pipeline_advice = _safe("pipeline_advisor", _pipeline)
+    else:
+        print("[ai/pipeline_advisor] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # B2 — DEG validator
+    # ------------------------------------------------------------------
+    deg_validation = None
+    if rgg_adata is not None and _should_run("deg_validator"):
+        def _deg_val():
+            from ai import deg_validator
+            result = deg_validator.run(
+                rgg_adata, cfg, study_context,
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print(f"[ai/deg_validator] done — validated {len(result)} groups", flush=True)
+            return result
+        deg_validation = _safe("deg_validator", _deg_val)
+    elif not _should_run("deg_validator"):
+        print("[ai/deg_validator] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # B3 — Coherence reviewer + analysis_summary.json
+    # ------------------------------------------------------------------
+    coherence_review = None
+    if _should_run("coherence_reviewer"):
+        def _coherence():
+            from ai import coherence_reviewer
+            summary_path = str(reports_dir / "analysis_summary.json")
+            result = coherence_reviewer.run(
+                final_adata, cfg, study_context,
+                summary_path=summary_path,
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print("[ai/coherence_reviewer] done — analysis_summary.json written", flush=True)
+            return result
+        coherence_review = _safe("coherence_reviewer", _coherence)
+    else:
+        print("[ai/coherence_reviewer] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # A3 — Downstream suggester + NEXT_STEPS.md
+    # ------------------------------------------------------------------
+    if _should_run("downstream_suggester"):
+        def _downstream():
+            from ai import downstream_suggester
+            result = downstream_suggester.run(
+                final_adata, cfg, study_context,
+                coherence_review=coherence_review,
+                output_path=str(reports_dir / "NEXT_STEPS.md"),
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print("[ai/downstream_suggester] done — NEXT_STEPS.md written", flush=True)
+            return result
+        _safe("downstream_suggester", _downstream)
+    else:
+        print("[ai/downstream_suggester] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # C1 — Narrative generator + ai_narrative.md
+    # ------------------------------------------------------------------
+    narrative_result = None
+    if _should_run("narrative_generator"):
+        def _narrative():
+            from ai import narrative_generator
+            result = narrative_generator.run(
+                final_adata, cfg, study_context,
+                pipeline_advice=pipeline_advice,
+                cluster_annotations=annotations,
+                deg_validation=deg_validation,
+                coherence_review=coherence_review,
+                output_path=str(reports_dir / "ai_narrative.md"),
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print("[ai/narrative_generator] done — ai_narrative.md written", flush=True)
+            return result
+        narrative_result = _safe("narrative_generator", _narrative)
+    else:
+        print("[ai/narrative_generator] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # C2 — Report writer + presentation.pptx
+    # ------------------------------------------------------------------
+    if _should_run("report_writer"):
+        def _report_writer():
+            from ai import report_writer
+            result = report_writer.run(
+                final_adata, cfg, study_context,
+                narrative_result=narrative_result,
+                coherence_review=coherence_review,
+                cluster_annotations=annotations,
+                deg_validation=deg_validation,
+                report_dir=str(reports_dir),
+                figures_dir=str(reports_dir),
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print("[ai/report_writer] done — presentation.pptx written", flush=True)
+            return result
+        _safe("report_writer", _report_writer)
+    else:
+        print("[ai/report_writer] skipped", flush=True)
+
+    # ------------------------------------------------------------------
+    # D1 — Report reviewer + report_review.md
+    # ------------------------------------------------------------------
+    if _should_run("report_reviewer"):
+        def _report_reviewer():
+            from ai import report_reviewer
+            combined_html = str(reports_dir / "00_combined_report.html")
+            result = report_reviewer.run(
+                combined_html, cfg, study_context,
+                report_dir=str(reports_dir),
+                log_dir=log_dir, runtime_ai=True,
+            )
+            if result:
+                print("[ai/report_reviewer] done — report_review.md written", flush=True)
+            return result
+        _safe("report_reviewer", _report_reviewer)
+    else:
+        print("[ai/report_reviewer] skipped", flush=True)
+
+    print()
+    print("=" * 60)
+    print("AI Layer — complete")
+    print("=" * 60)
+
+
 # Map step name → runner function
 STEP_RUNNERS = {
     "qc":              run_qc,
@@ -626,7 +1007,89 @@ def parse_args():
                         help="Stop execution at this step (inclusive)")
     parser.add_argument("--step", metavar="STEP", default=None,
                         help="Run exactly one step (shorthand for --from-step X --to-step X)")
+    parser.add_argument("--ai", action="store_true", default=False,
+                        help="Enable AI features (requires ai section in config and LLM provider)")
+    parser.add_argument("--ai-only", action="store_true", default=False,
+                        help="Skip all pipeline steps and run only the AI layer "
+                             "(implies --ai; requires cached processed data)")
+    parser.add_argument("--ai-module", metavar="MODULE", default=None,
+                        help="Run exactly one AI module (e.g. coherence_reviewer). "
+                             "Use 'all' to run all modules (default), 'off' to disable AI entirely. "
+                             f"Valid: all, off, {', '.join(AI_MODULE_ORDER)}")
+    parser.add_argument("--ai-from-module", metavar="MODULE", default=None,
+                        help="Start the AI layer from this module (inclusive), skip earlier ones. "
+                             f"Valid: {', '.join(AI_MODULE_ORDER)}")
+    parser.add_argument("--ai-to-module", metavar="MODULE", default=None,
+                        help="Stop the AI layer at this module (inclusive). "
+                             f"Valid: {', '.join(AI_MODULE_ORDER)}")
     return parser.parse_args()
+
+
+def resolve_ai_module_window(
+    ai_module: str | None,
+    ai_from_module: str | None,
+    ai_to_module: str | None,
+) -> "set[str] | None":
+    """
+    Return the set of AI module names to run.
+
+    Returns
+    -------
+    None
+        No filter — all modules run (default behaviour).
+    set[str]
+        Only these module names will execute.
+        An empty set means AI is disabled (--ai-module off).
+    """
+    # Special values
+    if ai_module == "off":
+        return set()
+    if ai_module == "all":
+        return None   # same as not specifying → run all
+
+    # --ai-module and --ai-from/to-module are mutually exclusive
+    if ai_module and (ai_from_module or ai_to_module):
+        print("Error: --ai-module cannot be combined with --ai-from-module / --ai-to-module")
+        sys.exit(1)
+
+    # Single module
+    if ai_module:
+        if ai_module not in AI_MODULE_ORDER:
+            print(f"Error: unknown AI module '{ai_module}' for --ai-module")
+            print(f"Valid: all, off, {', '.join(AI_MODULE_ORDER)}")
+            sys.exit(1)
+        return {ai_module}
+
+    # Range (--ai-from-module and/or --ai-to-module)
+    from_idx = 0
+    to_idx   = len(AI_MODULE_ORDER) - 1
+
+    if ai_from_module:
+        if ai_from_module not in AI_MODULE_ORDER:
+            print(f"Error: unknown AI module '{ai_from_module}' for --ai-from-module")
+            print(f"Valid: {', '.join(AI_MODULE_ORDER)}")
+            sys.exit(1)
+        from_idx = AI_MODULE_ORDER.index(ai_from_module)
+
+    if ai_to_module:
+        if ai_to_module not in AI_MODULE_ORDER:
+            print(f"Error: unknown AI module '{ai_to_module}' for --ai-to-module")
+            print(f"Valid: {', '.join(AI_MODULE_ORDER)}")
+            sys.exit(1)
+        to_idx = AI_MODULE_ORDER.index(ai_to_module)
+
+    if from_idx > to_idx:
+        print(
+            f"Error: --ai-from-module '{ai_from_module}' comes after "
+            f"--ai-to-module '{ai_to_module}' in the module order"
+        )
+        sys.exit(1)
+
+    # If neither flag was given, no filtering needed
+    if ai_from_module is None and ai_to_module is None:
+        return None
+
+    return set(AI_MODULE_ORDER[from_idx : to_idx + 1])
 
 
 def resolve_step_window(from_step, to_step, step) -> tuple[int, int]:
@@ -650,13 +1113,17 @@ def resolve_step_window(from_step, to_step, step) -> tuple[int, int]:
 def main():
     args = parse_args()
 
+    # ── "all" shorthand — treat --step all as no step filter (run everything) ───
+    if args.step == "all":
+        args.step = None
+
     # ── validate step names ────────────────────────────────────────────────────
     for arg_name, val in [("--from-step", args.from_step),
                            ("--to-step",   args.to_step),
                            ("--step",      args.step)]:
         if val and val not in STEP_ORDER:
             print(f"Error: unknown step '{val}' for {arg_name}")
-            print(f"Valid steps: {', '.join(STEP_ORDER)}")
+            print(f"Valid steps: all, {', '.join(STEP_ORDER)}")
             sys.exit(1)
 
     cfg = load_config(args.config)
@@ -667,6 +1134,60 @@ def main():
     reports_dir   = Path(cfg["paths"]["reports_dir"])
     processed_dir.mkdir(parents=True, exist_ok=True)
     reports_dir.mkdir(parents=True, exist_ok=True)
+
+    # ── AI setup ───────────────────────────────────────────────────────────────
+    runtime_ai = args.ai or args.ai_only   # --ai-only implies --ai
+    log_dir = "logs/llm"
+    study_context: dict = {}
+
+    # Resolve which AI modules to run (may set runtime_ai=False if 'off')
+    active_ai_modules = resolve_ai_module_window(
+        getattr(args, "ai_module", None),
+        getattr(args, "ai_from_module", None),
+        getattr(args, "ai_to_module", None),
+    )
+    # --ai-module off disables AI entirely even if --ai was passed
+    if active_ai_modules is not None and len(active_ai_modules) == 0:
+        runtime_ai = False
+
+    if runtime_ai:
+        from ai.pipeline_advisor import load_study_context
+        study_context_path = Path("config/runs") / dataset_id / "study_context.yaml"
+        study_context = load_study_context(study_context_path)
+        Path(log_dir).mkdir(parents=True, exist_ok=True)
+        provider = cfg.get("ai", {}).get("provider", "ollama")
+        if active_ai_modules is None:
+            modules_info = "all modules"
+        else:
+            modules_info = f"modules: {', '.join(m for m in AI_MODULE_ORDER if m in active_ai_modules)}"
+        print(f"[ai] AI features ENABLED  (provider={provider}, {modules_info})")
+    else:
+        if getattr(args, "ai_module", None) == "off":
+            print("[ai] AI features OFF  (disabled via --ai-module off)")
+        else:
+            print("[ai] AI features OFF  (pass --ai to enable)")
+
+    # ── --ai-only: skip pipeline steps entirely ───────────────────────────────
+    if args.ai_only:
+        start_time = datetime.now()
+        print("=" * 60)
+        print(f"OmicSage — {dataset_name}")
+        print("Mode     : AI layer only (pipeline steps skipped)")
+        print(f"Started  : {start_time.strftime('%Y-%m-%d %H:%M:%S')}")
+        print("=" * 60)
+        _run_ai_layer(cfg, study_context, processed_dir, reports_dir, log_dir,
+                      active_ai_modules=active_ai_modules)
+        end_time = datetime.now()
+        elapsed  = end_time - start_time
+        hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
+        minutes, seconds = divmod(remainder, 60)
+        print()
+        print("=" * 60)
+        print("AI layer complete.")
+        print(f"Reports   : {reports_dir}")
+        print(f"Elapsed   : {hours:02d}h {minutes:02d}m {seconds:02d}s")
+        print("=" * 60)
+        return
 
     # ── build active step list ─────────────────────────────────────────────────
     from_idx, to_idx = resolve_step_window(args.from_step, args.to_step, args.step)
@@ -721,20 +1242,9 @@ def main():
         output_path=reports_dir / "00_combined_report.html",
     )
 
-    # ── footer ─────────────────────────────────────────────────────────────────
-    end_time = datetime.now()
-    elapsed  = end_time - start_time
-    hours, remainder = divmod(int(elapsed.total_seconds()), 3600)
-    minutes, seconds = divmod(remainder, 60)
+    # ── AI layer (runs after combined report so reviewer can inspect it) ───────
+    if runtime_ai:
+        _run_ai_layer(cfg, study_context, processed_dir, reports_dir, log_dir,
+                      active_ai_modules=active_ai_modules)
 
-    print()
-    print("=" * 60)
-    print("Pipeline complete.")
-    print(f"Processed : {processed_dir}")
-    print(f"Reports   : {reports_dir}")
-    print(f"Elapsed   : {hours:02d}h {minutes:02d}m {seconds:02d}s")
-    print("=" * 60)
-
-
-if __name__ == "__main__":
-    main()
+    # ── footer ────────────────────

@@ -89,3 +89,4 @@ node_modules/
 
 # Always track empty directory markers
 # Always track empty directory markers >> .gitignore*/.gitkeep
+*.html

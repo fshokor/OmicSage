@@ -192,6 +192,9 @@ def _parse_llm_response(raw: str) -> dict:
     Returns dict with expected keys or raises ValueError.
     """
     clean = raw.strip()
+    if not clean:
+        raise ValueError("LLM returned an empty response")
+
     if clean.startswith("```"):
         lines = clean.splitlines()
         # Drop first and last fence lines
@@ -313,25 +316,38 @@ def run(
             "degs": json.dumps(degs, indent=2),
         }
 
-        raw_response = call_llm(
-            skill_name="deg_validator",
-            inputs=inputs,
-            config=config,
-            log_dir=log_dir,
-            module="deg_validator",
-            runtime_ai=runtime_ai,
-        )
-
         parse_success = False
         parsed: dict = {}
-        try:
-            parsed = _parse_llm_response(raw_response)
-            parse_success = True
-        except (json.JSONDecodeError, ValueError) as exc:
+        last_exc: Exception | None = None
+
+        for attempt in range(1, 3):   # up to 2 attempts
+            raw_response = call_llm(
+                skill_name="deg_validator",
+                inputs=inputs,
+                config=config,
+                log_dir=log_dir,
+                module="deg_validator",
+                runtime_ai=runtime_ai,
+            )
+            try:
+                parsed = _parse_llm_response(raw_response)
+                parse_success = True
+                break
+            except (json.JSONDecodeError, ValueError) as exc:
+                last_exc = exc
+                if attempt < 2:
+                    logger.warning(
+                        "DEG validator: attempt %d failed for group %s: %s — retrying",
+                        attempt,
+                        group,
+                        exc,
+                    )
+
+        if not parse_success:
             logger.warning(
-                "DEG validator: failed to parse LLM response for group %s: %s",
+                "DEG validator: failed to parse LLM response for group %s after 2 attempts: %s",
                 group,
-                exc,
+                last_exc,
             )
 
         # ------------------------------------------------------------------
