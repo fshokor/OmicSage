@@ -256,6 +256,15 @@ def _section_summary(adata_annotated: AnnData, prov: dict,
     if "cell_type_confidence" in adata_annotated.obs.columns:
         conf_median = f"{adata_annotated.obs['cell_type_confidence'].median():.3f}"
 
+    # Mean scANVI posterior probability (shown only when scANVI ran)
+    scanvi_stat = ""
+    if "cell_type_scanvi" in adata_annotated.obs.columns:
+        scanvi_types = adata_annotated.obs["cell_type_scanvi"].nunique()
+        scanvi_stat = (
+            f'<div class="stat-card"><div class="stat-value">{scanvi_types}</div>'
+            f'<div class="stat-label">scANVI types</div></div>'
+        )
+
     stat_cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
@@ -267,13 +276,18 @@ def _section_summary(adata_annotated: AnnData, prov: dict,
                                    if "cell_type_vote" in adata_annotated.obs else "?")),
             ("Med. confidence", conf_median),
         ]
-    )
+    ) + scanvi_stat
+
+    sctype_tissue = prov.get("sctype_tissue", "—")
+    scanvi_model  = prov.get("scanvi_model_path", "—")
     param_rows = "".join(
         f"<tr><td>{k}</td><td>{v}</td></tr>"
         for k, v in [
-            ("Methods run",        ", ".join(methods_run) if methods_run else "?"),
-            ("CellTypist models",  ", ".join(prov.get("celltypist_models", []))),
-            ("Marker sets used",   str(len(prov.get("marker_sets_keys", [])))),
+            ("Methods run",           ", ".join(methods_run) if methods_run else "?"),
+            ("CellTypist models",     ", ".join(prov.get("celltypist_models", []))),
+            ("Marker sets used",      str(len(prov.get("marker_sets_keys", [])))),
+            ("ScType tissue",         sctype_tissue),
+            ("scANVI model",          scanvi_model),
             ("CellTypist models dir", prov.get("celltypist_models_dir", "?")),
         ]
     )
@@ -318,6 +332,8 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         f"<td>{_mode('celltypist_coarse', cl)}</td>"
         f"<td>{_mode('celltypist_fine', cl)}</td>"
         f"<td>{_mode('cell_type_markers', cl)}</td>"
+        f"<td>{_mode('cell_type_sctype', cl)}</td>"
+        f"<td>{_mode('cell_type_scanvi', cl)}</td>"
         f"<td><strong>{_mode('cell_type_vote', cl)}</strong></td>"
         f"<td>{_conf_badge(cl)}</td></tr>"
         for cl in clusters
@@ -325,11 +341,12 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
     return f"""
     <section>
       <h2>Cluster to Cell Type Assignment</h2>
-      <p>Per-cluster label from each method. Confidence = fraction of active methods agreeing.</p>
+      <p>Per-cluster label from each method. Confidence = weighted fraction of active methods agreeing.</p>
       <table>
         <thead>
           <tr><th>Cluster</th><th>n cells</th><th>CellTypist coarse</th>
               <th>CellTypist fine</th><th>Marker score</th>
+              <th>ScType</th><th>scANVI</th>
               <th>Consensus</th><th>Confidence</th></tr>
         </thead>
         <tbody>{rows}</tbody>
@@ -341,11 +358,13 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
 def _section_figures(figs: dict, methods_run: list) -> str:
     panels = []
 
-    # CellTypist coarse / fine / marker — half-width each
+    # CellTypist coarse / fine / marker / sctype / scanvi — half-width each
     for key, title in [
-        ("coarse",  "UMAP -- CellTypist Coarse Labels (Immune_All_High)"),
-        ("fine",    "UMAP -- CellTypist Fine Labels (Immune_All_Low)"),
-        ("markers", "UMAP -- Marker Gene Score Labels"),
+        ("coarse",  "UMAP — CellTypist Coarse Labels (Immune_All_High)"),
+        ("fine",    "UMAP — CellTypist Fine Labels (Immune_All_Low)"),
+        ("markers", "UMAP — Marker Gene Score Labels"),
+        ("sctype",  "UMAP — ScType Labels"),
+        ("scanvi",  "UMAP — scANVI Transfer Labels"),
     ]:
         if figs.get(key):
             panels.append(
@@ -455,14 +474,20 @@ def run_annotate_report(
 
     figs = {
         "coarse":  _plot_umap_labels(adata_annotated, "celltypist_coarse",
-                                     "UMAP -- CellTypist Coarse Labels",
+                                     "UMAP — CellTypist Coarse Labels",
                                      "Majority-voted label per cluster"),
         "fine":    _plot_umap_labels(adata_annotated, "celltypist_fine",
-                                     "UMAP -- CellTypist Fine Labels",
+                                     "UMAP — CellTypist Fine Labels",
                                      "Majority-voted label per cluster"),
         "markers": _plot_umap_labels(adata_annotated, "cell_type_markers",
-                                     "UMAP -- Marker Gene Score Labels",
+                                     "UMAP — Marker Gene Score Labels",
                                      "Best-scoring cell type per cluster"),
+        "sctype":  _plot_umap_labels(adata_annotated, "cell_type_sctype",
+                                     "UMAP — ScType Labels",
+                                     "Best ScType label per cluster"),
+        "scanvi":  _plot_umap_labels(adata_annotated, "cell_type_scanvi",
+                                     "UMAP — scANVI Transfer Labels",
+                                     "Per-cell label from scANVI model"),
     }
 
     if "vote" in methods_run:

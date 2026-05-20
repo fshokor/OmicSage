@@ -22,7 +22,10 @@ vote         — Majority vote across all methods that were run.
 Methods planned for a future session
 --------------------------------------
 singler      — SingleR-py with HCA Census API reference (reference source TBD)
-scanvi       — scANVI transfer learning via scvi-hub (optional, GPU-accelerated)
+scanvi       — scANVI transfer learning via scvi-hub (optional, GPU-accelerated).
+               Requires a pre-trained scANVI model directory (scanvi_model param).
+               Posterior probability per cell is used as fractional vote weight.
+               All scANVI tests are skipped in CI (OMICSAGE_CI=true).
 
 Public API
 ----------
@@ -35,6 +38,7 @@ Public API
         celltypist_models=["Immune_All_High.pkl", "Immune_All_Low.pkl"],
         celltypist_models_dir=None,   # → data/references/celltypist/
         marker_sets=None,             # → built-in MARKER_SETS
+        scanvi_model=None,            # → path to pre-trained scANVI model dir
         inplace=False,
     )
 
@@ -44,6 +48,7 @@ obs columns written
   celltypist_fine        — Low  model majority-vote label per cluster
   cell_type_markers      — best marker-score label per cluster
   cell_type_sctype       — ScType best label per cluster (when "sctype" in methods)
+  cell_type_scanvi       — scANVI transfer label per cell (when "scanvi" in methods)
   cell_type_groundtruth  — copy of obs['cell_type'] if it existed before annotation
                            (preserves publication ground-truth from being overwritten)
   cell_type_vote         — final consensus label  (written when "vote" in methods)
@@ -134,6 +139,7 @@ def annotate(
     celltypist_models_dir: Optional[Path] = None,
     marker_sets: Optional[Dict[str, List[str]]] = None,
     tissue: str = "Immune system",
+    scanvi_model: Optional[str] = None,
     inplace: bool = False,
 ) -> Tuple[sc.AnnData, dict]:
     """
@@ -165,6 +171,11 @@ def annotate(
         "Breast", "Cervix", "Eye", "Muscle", "Ovary", "Prostate",
         "Stomach", "Thyroid".
         Only used when "sctype" is in methods.
+    scanvi_model : str or None
+        Path to a pre-trained scANVI model directory (output of
+        SCVI_Model.save() or SCANVI_Model.save()).  Required when "scanvi"
+        is in methods; ignored otherwise.
+        The model must have been trained with the same gene set as adata.
     inplace : bool
         If False (default), work on a copy; caller's object is unchanged.
 
@@ -202,13 +213,20 @@ def annotate(
         _check_vote_prerequisites(methods)
 
     # Warn about not-yet-implemented methods
-    for m in ("singler", "scanvi"):
+    for m in ("singler",):
         if m in methods:
             warnings.warn(
                 f"Method '{m}' is not yet implemented and will be skipped.",
                 UserWarning, stacklevel=2,
             )
-    methods = [m for m in methods if m not in ("singler", "scanvi")]
+    methods = [m for m in methods if m not in ("singler",)]
+
+    # Validate scanvi_model is provided when scanvi is requested
+    if "scanvi" in methods and scanvi_model is None:
+        raise ValueError(
+            "'scanvi' is in methods but scanvi_model=None. "
+            "Provide the path to a pre-trained scANVI model directory."
+        )
 
     # ── Copy guard ─────────────────────────────────────────────────────────────
     adata_ann = adata if inplace else adata.copy()
@@ -256,8 +274,34 @@ def annotate(
                 UserWarning, stacklevel=2,
             )
 
+    if "scanvi" in methods:
+        try:
+            cluster_posteriors = _run_scanvi(adata_ann, leiden_col, scanvi_model)
+            ann_dict["scanvi_posteriors"] = cluster_posteriors
+            methods_run.append("scanvi")
+            logger.info("scANVI annotation complete.")
+        except ImportError:
+            warnings.warn(
+                "scvi-tools is not installed — skipping scANVI annotation. "
+                "Install with: pip install scvi-tools",
+                UserWarning, stacklevel=2,
+            )
+        except Exception as e:
+            warnings.warn(
+                f"scANVI annotation failed ({e}) — skipping.",
+                UserWarning, stacklevel=2,
+            )
+
     if "vote" in methods and "celltypist" in methods_run and "markers" in methods_run:
-        vote_df = _run_majority_vote(adata_ann, ann_dict["marker_score_df"], leiden_col)
+        # Collect per-cluster mean posterior probabilities from scANVI if run
+        scanvi_posteriors = (
+            ann_dict.get("scanvi_posteriors")  # dict: cluster → mean_prob
+            if "scanvi" in methods_run else None
+        )
+        vote_df = _run_majority_vote(
+            adata_ann, ann_dict["marker_score_df"], leiden_col,
+            scanvi_posteriors=scanvi_posteriors,
+        )
         ann_dict["vote_df"] = vote_df
         methods_run.append("vote")
         logger.info("Majority vote complete.")
@@ -278,6 +322,7 @@ def annotate(
         "celltypist_models_dir":  str(celltypist_models_dir),
         "marker_sets_keys":       list(marker_sets.keys()),
         "sctype_tissue":          tissue,
+        "scanvi_model_path":      str(scanvi_model) if scanvi_model else None,
         "n_clusters":             int(adata_ann.obs[leiden_col].nunique()),
         "n_cells":                int(adata_ann.n_obs),
         "celltypist_version":     ct_version,
@@ -455,25 +500,28 @@ def _run_majority_vote(
     adata: sc.AnnData,
     score_df: pd.DataFrame,
     leiden_col: str,
+    scanvi_posteriors: Optional[Dict[str, float]] = None,
 ) -> pd.DataFrame:
     """
-    Combine available method labels into a consensus via majority vote.
+    Combine available method labels into a consensus via N-way weighted vote.
 
-    Evidence sources (up to 3-way):
-      1. celltypist_fine    (CellTypist Low model, cluster-level majority)
-      2. cell_type_markers  (marker gene scoring)
-      3. cell_type_sctype   (ScType — active when "sctype" in methods)
-
-    Reserved for a future session (slot present, skipped when column absent):
-      4. cell_type_singler  (SingleR-py)
-
-    ScType gets double weight for parenchymal types when present.
+    Evidence sources (up to 4-way):
+      1. celltypist_fine    (CellTypist Low model, cluster-level majority)  weight=1
+      2. cell_type_markers  (marker gene scoring)                           weight=1
+      3. cell_type_sctype   (ScType)                                        weight=1
+                            +1 extra for parenchymal types (double weight)
+      4. cell_type_scanvi   (scANVI transfer)
+                            weight = mean posterior probability × _SCANVI_MAX_VOTES
+                            (fractional: high-confidence calls get more influence)
+      5. cell_type_singler  (reserved; skipped when column absent)
 
     Writes
     ------
-    obs['cell_type']           — final consensus label
-    obs['cell_type_confidence']— fraction of active methods agreeing (0.0–1.0)
+    obs['cell_type_vote']       — final consensus label
+    obs['cell_type_confidence'] — fraction of active vote weight agreeing (0.0–1.0)
     """
+    _SCANVI_MAX_VOTES = 2  # max fractional votes scANVI can contribute per cluster
+
     def _cluster_majority(series: pd.Series) -> str:
         vc = series.dropna().value_counts()
         return vc.index[0] if len(vc) > 0 else "Unknown"
@@ -481,12 +529,11 @@ def _run_majority_vote(
     # ── Build per-cluster evidence table ──────────────────────────────────────
     vote_rows: List[dict] = []
 
-    # All potential evidence columns, in priority order
-    # slot_name → (obs_col, weight, available)
-    evidence_slots = [
+    # Integer-weight slots (name, obs_col, weight)
+    int_slots = [
         ("CellTypist",   "celltypist_fine",   1),
         ("Markers",      "cell_type_markers", 1),
-        ("ScType",       "cell_type_sctype",  1),   # +1 extra for parenchymal types
+        ("ScType",       "cell_type_sctype",  1),   # +1 extra for parenchymal
         ("SingleR",      "cell_type_singler", 1),   # future
     ]
 
@@ -496,28 +543,47 @@ def _run_majority_vote(
     for cl in clusters:
         mask   = adata.obs[leiden_col] == str(cl)
         row    = {"cluster": str(cl), "n_cells": int(mask.sum())}
-        votes: List[str] = []
+        vote_weight: Dict[str, float] = {}  # label → accumulated weight
+        total_weight = 0.0
 
-        for slot_name, obs_col, weight in evidence_slots:
+        # ── Integer-weight slots ─────────────────────────────────────────────
+        for slot_name, obs_col, weight in int_slots:
             if obs_col not in adata.obs.columns:
                 row[slot_name] = None
                 continue
             label = _cluster_majority(adata.obs.loc[mask, obs_col])
             row[slot_name] = label
 
-            # Add to vote pool (repeated weight times)
             if label and label not in ("not_run", "Unknown", "nan"):
-                votes.extend([label] * weight)
-
+                w = float(weight)
                 # Double weight for parenchymal types when ScType labels them
                 if slot_name == "ScType" and label in _PARENCHYMAL:
-                    votes.append(label)
+                    w += 1.0
+                vote_weight[label] = vote_weight.get(label, 0.0) + w
+                total_weight += w
 
-        # Compute winner and confidence
-        if votes:
-            counts  = Counter(votes)
-            winner, top_count = counts.most_common(1)[0]
-            confidence = round(top_count / len(votes), 4)
+        # ── Fractional scANVI slot ───────────────────────────────────────────
+        if "cell_type_scanvi" in adata.obs.columns:
+            scanvi_label = _cluster_majority(adata.obs.loc[mask, "cell_type_scanvi"])
+            row["scANVI"] = scanvi_label
+
+            if scanvi_label and scanvi_label not in ("not_run", "Unknown", "nan"):
+                # Use per-cluster mean posterior as fractional weight
+                mean_prob = (
+                    float(scanvi_posteriors[str(cl)])
+                    if scanvi_posteriors and str(cl) in scanvi_posteriors
+                    else 0.5  # fallback if posteriors not available
+                )
+                w = mean_prob * _SCANVI_MAX_VOTES
+                vote_weight[scanvi_label] = vote_weight.get(scanvi_label, 0.0) + w
+                total_weight += w
+        else:
+            row["scANVI"] = None
+
+        # ── Compute winner and confidence ────────────────────────────────────
+        if vote_weight:
+            winner = max(vote_weight, key=vote_weight.__getitem__)
+            confidence = round(vote_weight[winner] / total_weight, 4)
         else:
             winner, confidence = "Unknown", 0.0
 
@@ -545,12 +611,15 @@ def _run_majority_vote(
     )
 
     n_types = adata.obs["cell_type_vote"].nunique()
-    active_methods = [s for s, c, _ in evidence_slots if c in adata.obs.columns
-                      and adata.obs[c].iloc[0] != "not_run"]
-    print(f"  Majority vote ({len(active_methods)} methods): {n_types} consensus types")
+    active_slots = [s for s, c, _ in int_slots if c in adata.obs.columns
+                    and adata.obs[c].iloc[0] != "not_run"]
+    if "cell_type_scanvi" in adata.obs.columns:
+        active_slots.append("scANVI")
+    print(f"  Majority vote ({len(active_slots)} methods): {n_types} consensus types")
     print(vote_df[["n_cells", "final_label", "confidence"]].to_string())
 
     return vote_df
+
 
 
 
@@ -708,6 +777,83 @@ def _run_sctype(
 
     n_types = adata.obs["cell_type_sctype"].nunique()
     print(f"  ScType ({tissue}): {n_types} cell types across {len(clusters)} clusters")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# scANVI transfer learning annotation
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _run_scanvi(
+    adata: sc.AnnData,
+    leiden_col: str,
+    model_path: str,
+) -> Dict[str, float]:
+    """
+    Run scANVI transfer label annotation on adata using a pre-trained model.
+
+    The model is loaded with SCANVI.load() (scvi-tools ≥ 1.0).  If the model
+    directory contains a SCVI base model rather than a SCANVI model, scvi-tools
+    will raise; callers should ensure the model type matches.
+
+    Posterior probabilities are extracted per cell via
+    model.predict() which returns a DataFrame with columns:
+      - 'prediction'    : predicted cell type label
+      - 'probability'   : softmax probability for the winning class
+
+    Parameters
+    ----------
+    adata : AnnData
+        Must share the same gene set the model was trained on.
+    leiden_col : str
+        obs column with cluster labels (used for per-cluster posterior summary).
+    model_path : str
+        Path to a saved SCANVI model directory.
+
+    Returns
+    -------
+    cluster_posteriors : dict
+        {cluster_label: mean_posterior_probability} — used by vote as
+        fractional weight for each cluster's scANVI call.
+
+    Writes
+    ------
+    obs['cell_type_scanvi']  — per-cell predicted label (category dtype)
+    """
+    import scvi.model as _scvi_model  # type: ignore  # noqa: F401
+
+    logger.info(f"Loading scANVI model from {model_path} ...")
+    model = _scvi_model.SCANVI.load(model_path, adata=adata)
+
+    # predict() returns a DataFrame: index = cell barcode, columns vary by version
+    # scvi-tools ≥ 1.0: columns are 'prediction' and 'probability'
+    pred_df = model.predict(adata, soft=False)
+
+    if isinstance(pred_df, pd.DataFrame):
+        if "prediction" in pred_df.columns and "probability" in pred_df.columns:
+            labels      = pred_df["prediction"].values
+            posteriors  = pred_df["probability"].values.astype(float)
+        else:
+            # Fallback: first column is label, second is probability
+            labels     = pred_df.iloc[:, 0].values
+            posteriors = pred_df.iloc[:, 1].values.astype(float) \
+                         if pred_df.shape[1] > 1 else np.full(len(labels), 0.5)
+    else:
+        # Some versions return a plain array of labels
+        labels     = np.asarray(pred_df)
+        posteriors = np.full(len(labels), 0.5)
+
+    adata.obs["cell_type_scanvi"] = pd.Categorical(labels)
+    n_types = adata.obs["cell_type_scanvi"].nunique()
+    print(f"  scANVI: {n_types} cell types predicted")
+    logger.info(f"  scANVI mean posterior probability: {posteriors.mean():.3f}")
+
+    # ── Compute per-cluster mean posterior ────────────────────────────────────
+    cluster_posteriors: Dict[str, float] = {}
+    for cl in adata.obs[leiden_col].unique():
+        mask = (adata.obs[leiden_col] == cl).values
+        cluster_posteriors[str(cl)] = float(posteriors[mask].mean())
+
+    return cluster_posteriors
 
 
 # ─────────────────────────────────────────────────────────────────────────────

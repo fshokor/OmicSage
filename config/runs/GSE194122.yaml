@@ -68,8 +68,10 @@ steps:
   annotate:
     enabled: true
     params:
-      methods: [celltypist, markers, vote]
+      methods: ["celltypist", "markers", "sctype", "vote"]
       leiden_col: leiden
+      tissue: "Immune system"
+      scanvi_model: null   # set to path when model is ready
       celltypist_models:
         - Immune_All_High.pkl
         - Immune_All_Low.pkl

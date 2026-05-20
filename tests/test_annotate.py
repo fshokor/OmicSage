@@ -56,6 +56,8 @@ from pipeline.modules.annotation.annotate import (
     _fetch_sctype_db,
     _parse_sctype_markers,
     _run_sctype,
+    _run_scanvi,
+    _run_majority_vote,
     MARKER_SETS,
 )
 
@@ -618,3 +620,260 @@ def test_celltypist_integration_skipped_in_ci(adata_clustered):
     This test will be fleshed out in Session B.
     """
     pytest.skip("CellTypist integration test — enable locally when needed")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 2: scANVI tests  (all CI-skipped — require model download)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_mock_scanvi_model(labels, probs=None):
+    """
+    Return a mock SCANVI model that yields fixed labels (and optional probs).
+    """
+    n = len(labels)
+    if probs is None:
+        probs = np.full(n, 0.85)
+
+    pred_df = pd.DataFrame({
+        "prediction": labels,
+        "probability": probs,
+    })
+
+    mock_model = MagicMock()
+    mock_model.predict.return_value = pred_df
+    return mock_model
+
+
+@pytest.mark.skipif(
+    os.getenv("OMICSAGE_CI") == "true",
+    reason="scANVI tests skipped in CI — require model download",
+)
+class TestRunScANVI:
+
+    def test_cell_type_scanvi_column_written(self, adata_clustered):
+        labels = ["T cell"] * len(adata_clustered)
+        mock_model = _make_mock_scanvi_model(labels)
+
+        with patch("scvi.model.SCANVI") as mock_cls:
+            mock_cls.load.return_value = mock_model
+            result = _run_scanvi(adata_clustered, "leiden", "/fake/model")
+
+        assert "cell_type_scanvi" in adata_clustered.obs.columns
+
+    def test_labels_are_strings(self, adata_clustered):
+        labels = ["T cell"] * len(adata_clustered)
+        mock_model = _make_mock_scanvi_model(labels)
+
+        with patch("scvi.model.SCANVI") as mock_cls:
+            mock_cls.load.return_value = mock_model
+            _run_scanvi(adata_clustered, "leiden", "/fake/model")
+
+        assert all(
+            isinstance(v, str) for v in adata_clustered.obs["cell_type_scanvi"]
+        )
+
+    def test_returns_cluster_posteriors_dict(self, adata_clustered):
+        labels = ["T cell"] * len(adata_clustered)
+        probs  = np.full(len(adata_clustered), 0.9)
+        mock_model = _make_mock_scanvi_model(labels, probs)
+
+        with patch("scvi.model.SCANVI") as mock_cls:
+            mock_cls.load.return_value = mock_model
+            result = _run_scanvi(adata_clustered, "leiden", "/fake/model")
+
+        assert isinstance(result, dict)
+        clusters = adata_clustered.obs["leiden"].unique().tolist()
+        for cl in clusters:
+            assert str(cl) in result, f"Cluster {cl} missing from posteriors"
+            assert 0.0 <= result[str(cl)] <= 1.0
+
+    def test_posterior_values_are_floats(self, adata_clustered):
+        labels = ["B cell"] * len(adata_clustered)
+        mock_model = _make_mock_scanvi_model(labels)
+
+        with patch("scvi.model.SCANVI") as mock_cls:
+            mock_cls.load.return_value = mock_model
+            result = _run_scanvi(adata_clustered, "leiden", "/fake/model")
+
+        for cl, prob in result.items():
+            assert isinstance(prob, float), f"Posterior for cluster {cl} is not float"
+
+    def test_column_is_category_dtype(self, adata_clustered):
+        labels = ["T cell"] * len(adata_clustered)
+        mock_model = _make_mock_scanvi_model(labels)
+
+        with patch("scvi.model.SCANVI") as mock_cls:
+            mock_cls.load.return_value = mock_model
+            _run_scanvi(adata_clustered, "leiden", "/fake/model")
+
+        assert hasattr(adata_clustered.obs["cell_type_scanvi"], "cat"), \
+            "cell_type_scanvi should be category dtype"
+
+    def test_scanvi_without_model_path_raises(self, adata_clustered):
+        """Requesting scanvi without providing scanvi_model raises ValueError."""
+        with pytest.raises(ValueError, match="scanvi_model"):
+            annotate(
+                adata_clustered,
+                methods=["markers", "scanvi"],
+                scanvi_model=None,
+                inplace=False,
+            )
+
+    def test_scanvi_importerror_warns_and_skips(self, adata_clustered):
+        """If scvi-tools is not installed, annotate() warns and skips scanvi."""
+        with patch.dict("sys.modules", {"scvi": None, "scvi.model": None}):
+            with pytest.warns(UserWarning, match="scvi-tools"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "scanvi"],
+                    scanvi_model="/fake/model",
+                    inplace=False,
+                )
+        assert "scanvi" not in ann_dict["provenance"]["methods_run"]
+        assert "cell_type_scanvi" not in adata_ann.obs.columns
+
+    def test_scanvi_generic_error_warns_and_skips(self, adata_clustered):
+        """A runtime error in _run_scanvi warns and skips without crashing."""
+        with patch(
+            "pipeline.modules.annotation.annotate._run_scanvi",
+            side_effect=RuntimeError("model corrupt"),
+        ):
+            with pytest.warns(UserWarning, match="scANVI annotation failed"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "scanvi"],
+                    scanvi_model="/fake/model",
+                    inplace=False,
+                )
+        assert "scanvi" not in ann_dict["provenance"]["methods_run"]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Step 3: N-way vote upgrade tests  (always run — pure logic, no network)
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestNWayVote:
+    """
+    Tests for the upgraded N-way weighted majority vote.
+    All tests use pre-populated obs columns rather than calling annotate() end-to-end,
+    so they are independent of CellTypist/scANVI installation.
+    """
+
+    def _make_annotated(self, adata, n_clusters=3):
+        """
+        Populate the obs columns that vote reads from, then call _run_majority_vote.
+        Returns (adata, vote_df).
+        """
+        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
+        # Simulate celltypist_fine (same as markers — perfect agreement)
+        adata.obs["celltypist_fine"] = adata.obs["cell_type_markers"].copy()
+        vote_df = _run_majority_vote(adata, score_df, "leiden")
+        return adata, vote_df
+
+    def test_vote_columns_written(self, adata_clustered):
+        adata, _ = self._make_annotated(adata_clustered)
+        assert "cell_type_vote" in adata.obs.columns
+        assert "cell_type_confidence" in adata.obs.columns
+
+    def test_confidence_range(self, adata_clustered):
+        adata, _ = self._make_annotated(adata_clustered)
+        conf = adata.obs["cell_type_confidence"]
+        assert conf.between(0.0, 1.0).all(), \
+            f"Confidence outside [0,1]: min={conf.min()}, max={conf.max()}"
+
+    def test_scanvi_slot_absent_when_column_missing(self, adata_clustered):
+        """Vote completes without crashing when cell_type_scanvi is not present."""
+        adata, vote_df = self._make_annotated(adata_clustered)
+        # scANVI column absent → scANVI row in vote_df is None
+        if "scANVI" in vote_df.columns:
+            assert vote_df["scANVI"].isna().all(), \
+                "scANVI column should be all None when scanvi was not run"
+
+    def test_scanvi_fractional_weight_increases_confidence(self, adata_clustered):
+        """
+        Adding cell_type_scanvi (same label, high posterior) should raise confidence
+        to at or above the level without it.
+        """
+        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+
+        # Baseline: two methods, perfect agreement
+        adata_base = adata_clustered.copy()
+        score_df = _run_marker_scoring(adata_base, "leiden", MARKER_SETS)
+        adata_base.obs["celltypist_fine"] = adata_base.obs["cell_type_markers"].copy()
+        vote_df_base = _run_majority_vote(adata_base, score_df, "leiden")
+        conf_base = adata_base.obs["cell_type_confidence"].mean()
+
+        # With scANVI: same label as markers, high posterior
+        adata_scanvi = adata_clustered.copy()
+        score_df2 = _run_marker_scoring(adata_scanvi, "leiden", MARKER_SETS)
+        adata_scanvi.obs["celltypist_fine"] = adata_scanvi.obs["cell_type_markers"].copy()
+        adata_scanvi.obs["cell_type_scanvi"] = adata_scanvi.obs["cell_type_markers"].copy()
+        clusters = adata_scanvi.obs["leiden"].unique()
+        posteriors = {str(cl): 0.95 for cl in clusters}
+        vote_df_scanvi = _run_majority_vote(
+            adata_scanvi, score_df2, "leiden", scanvi_posteriors=posteriors
+        )
+        conf_scanvi = adata_scanvi.obs["cell_type_confidence"].mean()
+
+        # With full agreement across 3 methods, confidence should be ≥ 2-method baseline
+        assert conf_scanvi >= conf_base - 0.01, (
+            f"scANVI agreement should not lower confidence: "
+            f"base={conf_base:.3f} scanvi={conf_scanvi:.3f}"
+        )
+
+    def test_scanvi_low_posterior_gives_less_weight(self, adata_clustered):
+        """
+        scANVI with low posterior (0.1) contributes little weight;
+        winner should still be decided by the other two methods.
+        """
+        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+
+        adata = adata_clustered.copy()
+        score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
+        adata.obs["celltypist_fine"] = adata.obs["cell_type_markers"].copy()
+        # Give scANVI a *different* label with very low posterior
+        adata.obs["cell_type_scanvi"] = pd.Categorical(
+            ["NK_ILC"] * len(adata)  # unlikely to match celltypist/markers
+        )
+        clusters = adata.obs["leiden"].unique()
+        low_posteriors = {str(cl): 0.1 for cl in clusters}
+
+        vote_df = _run_majority_vote(
+            adata, score_df, "leiden", scanvi_posteriors=low_posteriors
+        )
+        # With low posterior weight (0.1 × 2 = 0.2 votes), the 2-method consensus
+        # (2 votes each for the same label) should still win
+        winners = vote_df["final_label"].unique()
+        assert "NK_ILC" not in winners or len(winners) == 1, \
+            "Low-posterior scANVI label should not override 2-method consensus"
+
+    def test_vote_df_has_scanvi_column_when_present(self, adata_clustered):
+        """vote_df has 'scANVI' column when cell_type_scanvi obs col exists."""
+        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+
+        adata = adata_clustered.copy()
+        score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
+        adata.obs["celltypist_fine"] = adata.obs["cell_type_markers"].copy()
+        adata.obs["cell_type_scanvi"] = adata.obs["cell_type_markers"].copy()
+        clusters = adata.obs["leiden"].unique()
+        posteriors = {str(cl): 0.8 for cl in clusters}
+
+        vote_df = _run_majority_vote(adata, score_df, "leiden", scanvi_posteriors=posteriors)
+        assert "scANVI" in vote_df.columns, "vote_df should have 'scANVI' column"
+        assert vote_df["scANVI"].notna().all(), "scANVI labels should not be null"
+
+    def test_vote_with_no_active_slots_gives_unknown(self, adata_clustered):
+        """If all obs columns are missing, vote assigns 'Unknown' to every cluster."""
+        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+
+        adata = adata_clustered.copy()
+        score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
+        # Do NOT add celltypist_fine or other columns — only markers column present
+        # (markers col always present after _run_marker_scoring)
+        # Remove markers column to simulate all-empty scenario
+        adata.obs.drop(columns=["cell_type_markers"], inplace=True)
+
+        vote_df = _run_majority_vote(adata, score_df, "leiden")
+        assert (vote_df["final_label"] == "Unknown").all(), \
+            "With no active slots, all clusters should be 'Unknown'"

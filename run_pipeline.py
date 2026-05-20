@@ -258,8 +258,8 @@ def validate_plan(active_steps: list[str], cfg: dict, processed_dir: Path) -> No
 # ══════════════════════════════════════════════════════════════════════════════
 
 def run_qc(input_path: Path, out: Path, reports_dir: Path,
-           params: dict, cfg: dict) -> Path:
-    if out.exists():
+           params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[qc] cached → {out}")
         return out
 
@@ -310,8 +310,8 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_normalize(input_path: Path, out: Path, reports_dir: Path,
-                  params: dict, cfg: dict) -> Path:
-    if out.exists():
+                  params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[normalize] cached → {out}")
         return out
 
@@ -344,8 +344,8 @@ def run_normalize(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_reduce(input_path: Path, out: Path, reports_dir: Path,
-               params: dict, cfg: dict) -> Path:
-    if out.exists():
+               params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[reduce] cached → {out}")
         return out
 
@@ -383,11 +383,11 @@ def run_reduce(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_cluster(input_path: Path, out: Path, reports_dir: Path,
-                params: dict, cfg: dict) -> Path:
+                params: dict, cfg: dict, force: bool = False) -> Path:
     # Always re-run cluster if best_resolution_override is set
     # (user inspected and made a decision — honour it)
     best_resolution_override = params.get("best_resolution_override")
-    if out.exists() and best_resolution_override is None:
+    if out.exists() and best_resolution_override is None and not force:
         print(f"[cluster] cached → {out}")
         return out
     if out.exists() and best_resolution_override is not None:
@@ -424,8 +424,8 @@ def run_cluster(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_annotate(input_path: Path, out: Path, reports_dir: Path,
-                 params: dict, cfg: dict) -> Path:
-    if out.exists():
+                 params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[annotate] cached → {out}")
         return out
 
@@ -458,7 +458,7 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_deg(input_path: Path, out: Path, reports_dir: Path,
-            params: dict, cfg: dict) -> tuple[Path, dict]:
+            params: dict, cfg: dict, force: bool = False) -> tuple[Path, dict]:
     print("[deg] running …")
     import scanpy as sc
     from pipeline.modules.downstream.deg import deg
@@ -510,7 +510,7 @@ def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
 
 
 def run_gsea(input_path: Path, out: Path, reports_dir: Path,
-             params: dict, cfg: dict, deg_dict: dict) -> Path:
+             params: dict, cfg: dict, deg_dict: dict, force: bool = False) -> Path:
     print("[gsea] running …")
     import scanpy as sc
     from pipeline.modules.downstream.gsea import gsea
@@ -547,8 +547,8 @@ def run_gsea(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_harmony(input_path: Path, out: Path, reports_dir: Path,
-                params: dict, cfg: dict) -> Path:
-    if out.exists():
+                params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[harmony] cached → {out}")
         return out
 
@@ -580,8 +580,8 @@ def run_harmony(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
-                        params: dict, cfg: dict) -> Path:
-    if out.exists():
+                        params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
         print(f"[cluster_harmony] cached → {out}")
         return out
 
@@ -617,7 +617,7 @@ def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
-                   params: dict, cfg: dict) -> Path:
+                   params: dict, cfg: dict, force: bool = False) -> Path:
     print("[pseudobulk] running …")
     import scanpy as sc
     from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
@@ -996,6 +996,8 @@ def parse_args():
                         help="Run exactly one AI module (e.g. coherence_reviewer). "
                              "Use 'all' to run all modules (default), 'off' to disable AI entirely. "
                              f"Valid: all, off, {', '.join(AI_MODULE_ORDER)}")
+    parser.add_argument("--force", action="store_true", default=False,
+                        help="Re-run steps even if their output file already exists (bypass cache)")
     parser.add_argument("--ai-from-module", metavar="MODULE", default=None,
                         help="Start the AI layer from this module (inclusive), skip earlier ones. "
                              f"Valid: {', '.join(AI_MODULE_ORDER)}")
@@ -1190,7 +1192,8 @@ def main():
     print("=" * 60)
 
     # ── run ────────────────────────────────────────────────────────────────────
-    deg_dict = None   # carried from deg → gsea
+    force     = args.force
+    deg_dict  = None   # carried from deg → gsea
 
     import scanpy as sc
     sc.settings.verbosity = 1
@@ -1202,17 +1205,17 @@ def main():
         out        = processed_dir / STEP_OUTPUT[step]
 
         if step == "deg":
-            out, deg_dict = run_deg(input_path, out, reports_dir, params, cfg)
+            out, deg_dict = run_deg(input_path, out, reports_dir, params, cfg, force=force)
 
         elif step == "gsea":
             # deg_dict may not have been computed this run if deg was cached/skipped
             if deg_dict is None:
                 deg_params = get_step_cfg(cfg, "deg")["params"]
                 _, deg_dict = _reload_deg_dict(processed_dir, deg_params)
-            run_gsea(input_path, out, reports_dir, params, cfg, deg_dict)
+            run_gsea(input_path, out, reports_dir, params, cfg, deg_dict, force=force)
 
         else:
-            STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg)
+            STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg, force=force)
 
     # ── combined report ────────────────────────────────────────────────────
     from reports.combined_report import generate_combined_report
