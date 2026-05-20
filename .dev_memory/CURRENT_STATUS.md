@@ -165,9 +165,8 @@ Completed AI modules:
 
 ---
 
-## ⬅ NEXT: Annotation Module (Phase 1 completion)
+## ✅ Annotation Module (Phase 1 completion)
 Build `pipeline/modules/annotation/` — SingleR + marker review + annotation report tab.
-See NEXT_SESSION.md for full plan.
 
 ---
 
@@ -235,7 +234,6 @@ See NEXT_SESSION.md for full plan.
 466+ passing, 1 skipped (as of 2026-05-17)
 
 ## What Is NOT Built Yet
-- Annotation module (Phase 1 completion — NEXT)
 - scVI batch correction → deferred to Phase 6
 - ADT QC + CLR normalization
 - scATAC module (Phase 4)

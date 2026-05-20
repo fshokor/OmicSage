@@ -68,15 +68,12 @@
 - [x] Session 9 — D1: Report reviewer (18 tests)
 - [x] Session 10 — Milestone validation complete
 
-## Phase 1 — Annotation Module (remaining) ← NEXT
-- [ ] pipeline/modules/annotation/singler_annotate.R
-- [ ] pipeline/modules/annotation/marker_review.py
-- [ ] pipeline/modules/annotation/scrna_annotation.nf
-- [ ] Annotated h5ad output with cell_type column (SingleR-based)
-- [ ] Annotation section in 00_combined_report.html
-- [ ] MILESTONE: Full Phase 1 pipeline with annotation on GSE166635
+## Phase 1 — Annotation Module 
+- [x] Annotated h5ad output with cell_type column (SingleR-based)
+- [x] Annotation section in 00_combined_report.html
+- [x] MILESTONE: Full Phase 1 pipeline with annotation on GSE166635
 
-## Phase 4 — scATAC Module
+## Phase 4 — scATAC Module ← NEXT
 - [ ] Fragment file ingestion and QC
 - [ ] Peak calling (MACS3)
 - [ ] LSI + ArchR/Signac clustering

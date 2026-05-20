@@ -72,11 +72,13 @@ sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="repla
 
 import argparse
 import os
+import re
 import warnings
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Optional
 
+import scanpy as sc
 import yaml
 
 warnings.filterwarnings("ignore", category=UserWarning)
@@ -264,18 +266,16 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[qc] running …")
-    import re as _re
-    import scanpy as sc
     from pipeline.modules.qc.ingest import load_dataset
-    from pipeline.modules.qc.qc import run_qc as _run_qc
+    from pipeline.modules.qc.qc import run_qc
     from pipeline.modules.qc.data_report import run_data_report
 
     sample_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
     adata = load_dataset(input_path, sample_name=sample_name)
 
     # Data intake report — generated from raw data, before any QC filtering
-    _dataset_id   = cfg["dataset"]["id"]
-    _geo_accession = _dataset_id if _re.match(r"^GSE\d+$", _dataset_id, _re.IGNORECASE) else None
+    _dataset_id    = cfg["dataset"]["id"]
+    _geo_accession = _dataset_id if re.match(r"^GSE\d+$", _dataset_id, re.IGNORECASE) else None
     _data_report_path = reports_dir / "00_data_report.html"
     try:
         run_data_report(
@@ -288,7 +288,7 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
     except Exception as _exc:
         print(f"[data_report] WARNING: could not generate data intake report: {_exc}")
 
-    mdata, metrics = _run_qc(
+    mdata, metrics = run_qc(
         adata,
         min_genes=params.get("min_genes", 200),
         max_genes=params.get("max_genes", 2500),
@@ -316,7 +316,6 @@ def run_normalize(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[normalize] running …")
-    import scanpy as sc
     from pipeline.modules.qc.normalize import normalize
     from pipeline.modules.qc.normalization_report import run_normalization_report
 
@@ -344,13 +343,12 @@ def run_normalize(input_path: Path, out: Path, reports_dir: Path,
 
 
 def run_reduce(input_path: Path, out: Path, reports_dir: Path,
-               params: dict, cfg: dict, force: bool = False) -> Path:
+               params: dict, cfg: dict, force: bool = False, batch_key: Optional[str] = None) -> Path:
     if out.exists() and not force:
         print(f"[reduce] cached → {out}")
         return out
 
     print("[reduce] running …")
-    import scanpy as sc
     from pipeline.modules.qc.reduce import reduce
     from pipeline.modules.qc.reduce_report import run_reduce_report
 
@@ -370,6 +368,7 @@ def run_reduce(input_path: Path, out: Path, reports_dir: Path,
         metrics=metrics,
         report_path=str(reports_dir / "03_reduce_report.html"),
         dataset_name=dataset_name,
+        batch_key=batch_key
     )
 
     adata_reduced.write_h5ad(out)
@@ -394,14 +393,13 @@ def run_cluster(input_path: Path, out: Path, reports_dir: Path,
         print(f"[cluster] best_resolution_override={best_resolution_override}, re-running …")
 
     print("[cluster] running …")
-    import scanpy as sc
     from pipeline.modules.clustering.cluster import cluster
     from pipeline.modules.clustering.cluster_report import run_cluster_report
 
     adata = sc.read_h5ad(input_path)
     adata_clustered, metrics = cluster(
         adata,
-        resolution_range=params.get("resolution_range", [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]),
+        resolution_range=params.get("resolution_range", [0.2, 0.4, 0.5, 0.6, 0.8, 1.0, 1.2]),
         best_resolution_override=best_resolution_override,
         inplace=False,
     )
@@ -430,7 +428,6 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[annotate] running …")
-    import scanpy as sc
     from pipeline.modules.annotation.annotate import annotate
     from pipeline.modules.annotation.annotate_report import run_annotate_report
 
@@ -465,7 +462,6 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
 def run_deg(input_path: Path, out: Path, reports_dir: Path,
             params: dict, cfg: dict, force: bool = False) -> tuple[Path, dict]:
     print("[deg] running …")
-    import scanpy as sc
     from pipeline.modules.downstream.deg import deg
     from pipeline.modules.downstream.deg_report import generate_deg_report
 
@@ -497,7 +493,6 @@ def run_deg(input_path: Path, out: Path, reports_dir: Path,
 
 def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
     """Reconstruct deg_dict from cached file (needed when gsea runs after skipping deg)."""
-    import scanpy as sc
     from pipeline.modules.downstream.deg import deg
 
     deg_path = processed_dir / STEP_OUTPUT["deg"]
@@ -517,7 +512,6 @@ def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
 def run_gsea(input_path: Path, out: Path, reports_dir: Path,
              params: dict, cfg: dict, deg_dict: dict, force: bool = False) -> Path:
     print("[gsea] running …")
-    import scanpy as sc
     from pipeline.modules.downstream.gsea import gsea
     from pipeline.modules.downstream.gsea_report import generate_gsea_report
 
@@ -558,7 +552,6 @@ def run_harmony(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[harmony] running …")
-    import scanpy as sc
     from pipeline.modules.integration.harmony_correct import harmony_correct
     from pipeline.modules.integration.harmony_report import generate_harmony_report
 
@@ -591,7 +584,6 @@ def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[cluster_harmony] running …")
-    import scanpy as sc
     from pipeline.modules.clustering.cluster import cluster, compute_ari
 
     adata = sc.read_h5ad(input_path)
@@ -624,7 +616,6 @@ def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
 def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
                    params: dict, cfg: dict, force: bool = False) -> Path:
     print("[pseudobulk] running …")
-    import scanpy as sc
     from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
     from pipeline.modules.downstream.pseudobulk_deg_report import generate_pseudobulk_deg_report
 
@@ -697,7 +688,6 @@ def _run_ai_layer(
     A3  downstream_suggester — NEXT_STEPS.md
     C1  narrative_generator  — ai_narrative.md + AI tab in combined HTML
     """
-    import scanpy as sc
 
     def _should_run(module_name: str) -> bool:
         """Return True if this module should execute given the active_ai_modules filter."""
@@ -1200,7 +1190,6 @@ def main():
     force     = args.force
     deg_dict  = None   # carried from deg → gsea
 
-    import scanpy as sc
     sc.settings.verbosity = 1
 
     for step in active_steps:
@@ -1218,6 +1207,11 @@ def main():
                 deg_params = get_step_cfg(cfg, "deg")["params"]
                 _, deg_dict = _reload_deg_dict(processed_dir, deg_params)
             run_gsea(input_path, out, reports_dir, params, cfg, deg_dict, force=force)
+
+        elif step == "reduce":
+            batch_key = params.get("batch_key")
+            STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg,
+                               force=force, batch_key=batch_key)
 
         else:
             STEP_RUNNERS[step](input_path, out, reports_dir, params, cfg, force=force)

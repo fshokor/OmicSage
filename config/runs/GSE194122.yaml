@@ -58,6 +58,7 @@ steps:
       n_pcs_method: elbow   # elbow | cumvar | fixed
       n_pcs: null           # set a number to override n_pcs_method
       n_neighbors: 15
+      batch_key: batch
 
   cluster:
     enabled: true
@@ -68,7 +69,7 @@ steps:
   annotate:
     enabled: true
     params:
-      methods: ["celltypist", "markers", "sctype", "singler", "vote"]
+      methods: ["celltypist", "markers", "sctype", "singler", "vote"] #
       leiden_col: leiden
       tissue: "Immune system"
       scanvi_model: null   # set to path when model is ready
@@ -77,7 +78,7 @@ steps:
       celltypist_models:
         - Immune_All_High.pkl
         - Immune_All_Low.pkl
-        - Healthy_COVID19_PBMC.pkl
+        # - Healthy_COVID19_PBMC.pkl
 
       # ScType — pin DB locally after first download to avoid network call each run
       # To download once: see run_pipeline.py comments or docs

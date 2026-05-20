@@ -1250,3 +1250,252 @@ class TestSinglerNamedCelldexRef:
                 )
         assert "cell_type_singler" in adata_ann.obs.columns
         assert ann_dict["provenance"]["singler_ref"] == "novershtern_hematopoietic"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Majority vote — label normalisation and tiebreak tests
+# ─────────────────────────────────────────────────────────────────────────────
+
+from pipeline.modules.annotation.annotate import _normalise_label, _run_majority_vote
+
+
+class TestNormaliseLabel:
+    """Unit tests for _normalise_label() — the semantic deduplication helper."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("Erythroid cells",                          "erythroid"),
+        ("Late erythroid",                           "erythroid"),
+        ("Erythroid-like and erythroid precursor cells", "erythroid"),
+        ("Erythroid cell",                           "erythroid"),
+        ("Classical monocytes",                      "monocyte"),
+        ("Classical Monocytes",                      "monocyte"),
+        ("Monocytes",                                "monocyte"),
+        ("CD4+ T cells",                             "t"),
+        ("Tcm/Naive helper T cells",                 "tcm"),   # T central memory — kept specific
+        ("Small pre-B cells",                        "b"),
+        ("Naive B cells",                            "b"),
+        ("Natural killer cells",                     "natural killer"),
+        ("NK cells",                                 "nk"),
+        ("HSC/MPP",                                  "hsc"),
+        ("Plasma cells",                             "plasma"),
+        ("Monocyte",                                 "monocyte"),
+        ("pDC",                                      "pdc"),
+        ("B cells",                                  "b"),
+        ("T_cell",                                   "t"),
+        ("B_cell",                                   "b"),
+    ])
+    def test_normalisation(self, raw, expected):
+        assert _normalise_label(raw) == expected, (
+            f"_normalise_label({raw!r}) = {_normalise_label(raw)!r}, expected {expected!r}"
+        )
+
+
+class TestMajorityVoteFixes:
+    """
+    Integration tests for both vote bugs:
+      1. Synonymous labels (same concept, different strings) should yield high confidence.
+      2. Tiebreak should use source hierarchy, not dict insertion order.
+    """
+
+    def _make_vote_adata(self, cluster_labels: dict) -> sc.AnnData:
+        """
+        Build a minimal AnnData with the given obs columns for a single cluster "0".
+        cluster_labels: {obs_col: label_string}
+        """
+        n = 20
+        adata = sc.AnnData(X=np.zeros((n, 5)))
+        adata.obs["leiden"] = "0"
+        for col, label in cluster_labels.items():
+            adata.obs[col] = label
+        # Dummy logcounts layer
+        adata.layers["logcounts"] = np.zeros((n, 5))
+        # Dummy score_df (not used in vote logic but required as arg)
+        return adata
+
+    def _dummy_score_df(self):
+        return pd.DataFrame({"cluster": ["0"]}).set_index("cluster")
+
+    def test_synonymous_erythroid_labels_give_high_confidence(self):
+        """
+        All 4 methods agree on erythroid — different strings but same root concept.
+        Confidence should be 1.0 after normalisation, not 0.25.
+        """
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "Late erythroid",
+            "cell_type_markers": "Erythroid",
+            "cell_type_sctype":  "Erythroid-like and erythroid precursor cells",
+            "cell_type_singler": "Erythroid cells",
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        conf = float(vote_df.loc["0", "confidence"])
+        assert conf == 1.0, f"Expected confidence=1.0 for unanimous erythroid, got {conf}"
+
+    def test_synonymous_monocyte_labels_give_high_confidence(self):
+        """Classical monocytes / Monocyte / Monocytes → same root → confidence=1.0."""
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "Classical monocytes",
+            "cell_type_markers": "Monocyte",
+            "cell_type_sctype":  "Classical Monocytes",
+            "cell_type_singler": "Monocytes",
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        conf = float(vote_df.loc["0", "confidence"])
+        assert conf == 1.0, f"Expected confidence=1.0 for unanimous monocyte, got {conf}"
+
+    def test_genuine_disagreement_gives_low_confidence(self):
+        """When methods genuinely disagree, confidence should be < 1.0."""
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "T cells",
+            "cell_type_markers": "B_cell",
+            "cell_type_sctype":  "Monocyte",
+            "cell_type_singler": "NK cells",
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        conf = float(vote_df.loc["0", "confidence"])
+        assert conf < 1.0, f"Expected confidence<1.0 for genuine disagreement, got {conf}"
+
+    def test_tiebreak_prefers_celltypist_fine(self):
+        """
+        When two concepts tie, celltypist_fine wins the tiebreak.
+        Here celltypist_fine says "T cells", markers says "B_cell" — each gets
+        weight=1, so they tie; celltypist_fine should win.
+        """
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "T cells",
+            "cell_type_markers": "B_cell",
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        winner = vote_df.loc["0", "final_label"]
+        assert winner == "T cells", (
+            f"Tiebreak should prefer celltypist_fine='T cells', got '{winner}'"
+        )
+
+    def test_winner_label_is_raw_not_canonical(self):
+        """
+        The final reported label is the raw string from the best source,
+        not the lower-cased canonical form.
+        """
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "Late erythroid",
+            "cell_type_markers": "Erythroid",
+            "cell_type_singler": "Erythroid cells",
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        winner = vote_df.loc["0", "final_label"]
+        # Should be a raw label, not lowercase canonical "erythroid"
+        assert winner in {"Late erythroid", "Erythroid", "Erythroid cells"}, (
+            f"Winner should be a raw label, got '{winner}'"
+        )
+        assert winner != "erythroid", "Winner must not be the lowercased canonical form"
+
+    def test_missing_method_columns_handled_gracefully(self):
+        """Vote works fine when some method columns are absent."""
+        adata = self._make_vote_adata({
+            "celltypist_fine":   "T cells",
+            "cell_type_markers": "T_cell",
+            # sctype and singler absent
+        })
+        vote_df = _run_majority_vote(adata, self._dummy_score_df(), "leiden")
+        assert "final_label" in vote_df.columns
+        assert float(vote_df.loc["0", "confidence"]) == 1.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CellTypist fix tests — per-cell prediction + any model name
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestCelltypistAnyModel:
+    """
+    Verify _run_celltypist works correctly with any model name (not just
+    Immune_All_High/Low) and uses per-cell predictions + our own majority vote.
+    """
+
+    def _mock_pred(self, adata, label="T cell"):
+        """Build a mock CellTypist AnnotationResult that returns fixed per-cell labels."""
+        import pandas as pd
+        pred_adata = adata.copy()
+        pred_adata.obs["predicted_labels"] = label
+        mock_result = MagicMock()
+        mock_result.to_adata.return_value = pred_adata
+        return mock_result
+
+    def test_custom_model_creates_correct_obs_column(self, adata_clustered, tmp_path):
+        """
+        A custom model 'Healthy_COVID19_PBMC.pkl' should produce
+        obs['celltypist_Healthy_COVID19_PBMC'], not crash.
+        """
+        model_names = ["Healthy_COVID19_PBMC.pkl"]
+        with patch("celltypist.models.download_models"):
+            with patch("celltypist.models.Model.load", return_value=MagicMock()):
+                with patch(
+                    "celltypist.annotate",
+                    return_value=self._mock_pred(adata_clustered),
+                ):
+                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
+
+        assert "celltypist_Healthy_COVID19_PBMC" in adata_clustered.obs.columns
+
+    def test_custom_model_guarantees_coarse_fine_exist(self, adata_clustered, tmp_path):
+        """
+        Even when only a custom model is run, celltypist_coarse and
+        celltypist_fine must exist (filled with 'not_run').
+        """
+        model_names = ["Healthy_COVID19_PBMC.pkl"]
+        with patch("celltypist.models.download_models"):
+            with patch("celltypist.models.Model.load", return_value=MagicMock()):
+                with patch(
+                    "celltypist.annotate",
+                    return_value=self._mock_pred(adata_clustered),
+                ):
+                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
+
+        assert adata_clustered.obs["celltypist_coarse"].iloc[0] == "not_run"
+        assert adata_clustered.obs["celltypist_fine"].iloc[0] == "not_run"
+
+    def test_celltypist_uses_majority_voting_false(self, adata_clustered, tmp_path):
+        """
+        celltypist.annotate must be called with majority_voting=False.
+        We must never rely on CellTypist's internal over_clustering.
+        """
+        model_names = ["Immune_All_Low.pkl"]
+        with patch("celltypist.models.download_models"):
+            with patch("celltypist.models.Model.load", return_value=MagicMock()):
+                with patch(
+                    "celltypist.annotate",
+                    return_value=self._mock_pred(adata_clustered),
+                ) as mock_ct:
+                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
+
+        call_kwargs = mock_ct.call_args.kwargs
+        assert call_kwargs.get("majority_voting") is False, (
+            "celltypist.annotate must be called with majority_voting=False"
+        )
+        assert "over_clustering" not in call_kwargs, (
+            "over_clustering must not be passed when majority_voting=False"
+        )
+
+    def test_extra_celltypist_column_feeds_into_vote(self, adata_clustered, tmp_path):
+        """
+        Labels from a custom model (celltypist_Healthy_COVID19_PBMC) must
+        contribute to the majority vote result, not be silently ignored.
+        """
+        # Manually set up the custom column as if CellTypist ran
+        adata_clustered.obs["celltypist_Healthy_COVID19_PBMC"] = "Monocyte"
+        adata_clustered.obs["celltypist_fine"]   = "not_run"
+        adata_clustered.obs["cell_type_markers"] = "Monocyte"
+        adata_clustered.obs["cell_type_sctype"]  = "Monocyte"
+        adata_clustered.obs["cell_type_singler"] = "Monocyte"
+
+        from pipeline.modules.annotation.annotate import _run_majority_vote
+        score_df = pd.DataFrame(
+            {"cluster": adata_clustered.obs["leiden"].unique().tolist()}
+        ).set_index("cluster")
+
+        vote_df = _run_majority_vote(adata_clustered, score_df, "leiden")
+        # All non-not_run methods agree on Monocyte → confidence should be 1.0
+        assert (vote_df["confidence"] == 1.0).all(), (
+            "Custom celltypist column should feed into vote and yield confidence=1.0"
+        )

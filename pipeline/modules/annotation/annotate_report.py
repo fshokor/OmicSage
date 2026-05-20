@@ -325,8 +325,6 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
                       key=lambda x: (int(x) if str(x).isdigit() else x))
 
     def _mode(col, cl):
-        if col not in adata_annotated.obs.columns:
-            return "?"
         mask = adata_annotated.obs[leiden_col] == cl
         vc   = adata_annotated.obs.loc[mask, col].value_counts()
         return vc.index[0] if len(vc) > 0 else "?"
@@ -339,28 +337,62 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         cls  = "ok" if med >= 0.75 else "warn"
         return f'<span class="{cls}">{med:.2f}</span>'
 
-    rows = "".join(
-        f"<tr><td>{cl}</td>"
-        f"<td>{int((adata_annotated.obs[leiden_col] == cl).sum()):,}</td>"
-        f"<td>{_mode('celltypist_coarse', cl)}</td>"
-        f"<td>{_mode('celltypist_fine', cl)}</td>"
-        f"<td>{_mode('cell_type_markers', cl)}</td>"
-        f"<td>{_mode('cell_type_sctype', cl)}</td>"
-        f"<td>{_mode('cell_type_singler', cl)}</td>"
-        f"<td>{_mode('cell_type_scanvi', cl)}</td>"
-        f"<td><strong>{_mode('cell_type_vote', cl)}</strong></td>"
-        f"<td>{_conf_badge(cl)}</td></tr>"
-        for cl in clusters
-    )
+    # ── Discover method columns that actually exist in obs ────────────────────
+    # Each entry: (obs_col, header_label)
+    # Order: CellTypist models first (sorted), then other methods, then consensus last.
+
+    obs_cols = set(adata_annotated.obs.columns)
+
+    # All celltypist_* columns that are present and not "not_run"
+    def _col_active(col):
+        return col in obs_cols and adata_annotated.obs[col].iloc[0] != "not_run"
+
+    ct_col_headers = []
+    for col in sorted(c for c in obs_cols if c.startswith("celltypist_")):
+        if not _col_active(col):
+            continue
+        stem  = col.replace("celltypist_", "").replace("_", " ").title()
+        label = f"CellTypist {stem}"
+        ct_col_headers.append((col, label))
+
+    # Other fixed method columns — only include if present and active
+    other_col_headers = []
+    for col, label in [
+        ("cell_type_markers", "Marker score"),
+        ("cell_type_sctype",  "ScType"),
+        ("cell_type_singler", "SingleR"),
+        ("cell_type_scanvi",  "scANVI"),
+    ]:
+        if _col_active(col):
+            other_col_headers.append((col, label))
+
+    # Final column order: n cells | CellTypist* | other methods | Consensus | Confidence
+    method_cols = ct_col_headers + other_col_headers
+
+    # ── Build header row ──────────────────────────────────────────────────────
+    header_cells = "".join(f"<th>{label}</th>" for _, label in method_cols)
+
+    # ── Build data rows ───────────────────────────────────────────────────────
+    rows = ""
+    for cl in clusters:
+        n = int((adata_annotated.obs[leiden_col] == cl).sum())
+        method_cells = "".join(f"<td>{_mode(col, cl)}</td>" for col, _ in method_cols)
+        consensus = _mode("cell_type_vote", cl) if "cell_type_vote" in obs_cols else "?"
+        rows += (
+            f"<tr><td>{cl}</td><td>{n:,}</td>"
+            f"{method_cells}"
+            f"<td><strong>{consensus}</strong></td>"
+            f"<td>{_conf_badge(cl)}</td></tr>"
+        )
+
     return f"""
     <section>
       <h2>Cluster to Cell Type Assignment</h2>
       <p>Per-cluster label from each method. Confidence = weighted fraction of active methods agreeing.</p>
       <table>
         <thead>
-          <tr><th>Cluster</th><th>n cells</th><th>CellTypist coarse</th>
-              <th>CellTypist fine</th><th>Marker score</th>
-              <th>ScType</th><th>SingleR</th><th>scANVI</th>
+          <tr><th>Cluster</th><th>n cells</th>
+              {header_cells}
               <th>Consensus</th><th>Confidence</th></tr>
         </thead>
         <tbody>{rows}</tbody>
@@ -372,14 +404,21 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
 def _section_figures(figs: dict, methods_run: list) -> str:
     panels = []
 
-    # CellTypist coarse / fine / marker / sctype / singler / scanvi — half-width each
+    # All CellTypist panels — keyed by obs column name, already filtered to
+    # columns that are present and active (populated in run_annotate_report)
+    for key, title in figs.get("_ct_panels", []):
+        if figs.get(key):
+            panels.append(
+                f'<div class="fig-wrap"><h3>{title}</h3>'
+                f'<img src="data:image/png;base64,{figs[key]}" alt="{title}"></div>'
+            )
+
+    # Other method panels — only rendered when the column exists
     for key, title in [
-        ("coarse",   "UMAP — CellTypist Coarse Labels (Immune_All_High)"),
-        ("fine",     "UMAP — CellTypist Fine Labels (Immune_All_Low)"),
-        ("markers",  "UMAP — Marker Gene Score Labels"),
-        ("sctype",   "UMAP — ScType Labels"),
-        ("singler",  "UMAP — SingleR Labels (HPCA reference)"),
-        ("scanvi",   "UMAP — scANVI Transfer Labels"),
+        ("markers", "UMAP — Marker Gene Score Labels"),
+        ("sctype",  "UMAP — ScType Labels"),
+        ("singler", "UMAP — SingleR Labels"),
+        ("scanvi",  "UMAP — scANVI Transfer Labels"),
     ]:
         if figs.get(key):
             panels.append(
@@ -390,7 +429,7 @@ def _section_figures(figs: dict, methods_run: list) -> str:
     # Consensus vote — full width
     if figs.get("vote") and "vote" in methods_run:
         panels.append(
-            f'<div class="fig-wrap wide"><h3>UMAP -- Consensus Cell Type (Majority Vote)</h3>'
+            f'<div class="fig-wrap wide"><h3>UMAP — Consensus Cell Type (Majority Vote)</h3>'
             f'<img src="data:image/png;base64,{figs["vote"]}" alt="UMAP consensus"></div>'
         )
 
@@ -404,7 +443,7 @@ def _section_figures(figs: dict, methods_run: list) -> str:
     # Marker heatmap — full width
     if figs.get("heatmap"):
         panels.append(
-            f'<div class="fig-wrap wide"><h3>Marker Gene Score Heatmap (Clusters x Cell Types)</h3>'
+            f'<div class="fig-wrap wide"><h3>Marker Gene Score Heatmap (Clusters × Cell Types)</h3>'
             f'<img src="data:image/png;base64,{figs["heatmap"]}" alt="Marker heatmap"></div>'
         )
 
@@ -485,28 +524,40 @@ def run_annotate_report(
     methods_run = prov.get("methods_run", [])
 
     print(f"Building annotation report for '{dataset_name}' ...", flush=True)
-    print("  Rendering CellTypist UMAP panels ...", flush=True)
 
-    figs = {
-        "coarse":  _plot_umap_labels(adata_annotated, "celltypist_coarse",
-                                     "UMAP — CellTypist Coarse Labels",
-                                     "Majority-voted label per cluster"),
-        "fine":    _plot_umap_labels(adata_annotated, "celltypist_fine",
-                                     "UMAP — CellTypist Fine Labels",
-                                     "Majority-voted label per cluster"),
-        "markers": _plot_umap_labels(adata_annotated, "cell_type_markers",
-                                     "UMAP — Marker Gene Score Labels",
-                                     "Best-scoring cell type per cluster"),
-        "sctype":  _plot_umap_labels(adata_annotated, "cell_type_sctype",
-                                     "UMAP — ScType Labels",
-                                     "Best ScType label per cluster"),
-        "singler": _plot_umap_labels(adata_annotated, "cell_type_singler",
-                                     "UMAP — SingleR Labels",
-                                     "Per-cell label from SingleR (HPCA reference)"),
-        "scanvi":  _plot_umap_labels(adata_annotated, "cell_type_scanvi",
-                                     "UMAP — scANVI Transfer Labels",
-                                     "Per-cell label from scANVI model"),
-    }
+    # ── CellTypist UMAPs — only for columns that exist and are not "not_run" ──
+    print("  Rendering CellTypist UMAP panels ...", flush=True)
+    figs: dict = {}
+    ct_panels = []   # list of (fig_key, title) for _section_figures
+
+    for col in sorted(c for c in adata_annotated.obs.columns
+                      if c.startswith("celltypist_")):
+        # Skip placeholder columns written when a model wasn't run
+        if adata_annotated.obs[col].iloc[0] == "not_run":
+            continue
+        stem  = col.replace("celltypist_", "").replace("_", " ").title()
+        title = f"UMAP — CellTypist {stem}"
+        b64   = _plot_umap_labels(adata_annotated, col, title,
+                                  f"Per-cluster label from {stem} model")
+        if b64:
+            figs[col] = b64
+            ct_panels.append((col, title))
+
+    figs["_ct_panels"] = ct_panels
+
+    # ── Other method UMAPs ────────────────────────────────────────────────────
+    figs["markers"] = _plot_umap_labels(adata_annotated, "cell_type_markers",
+                                        "UMAP — Marker Gene Score Labels",
+                                        "Best-scoring cell type per cluster")
+    figs["sctype"]  = _plot_umap_labels(adata_annotated, "cell_type_sctype",
+                                        "UMAP — ScType Labels",
+                                        "Best ScType label per cluster")
+    figs["singler"] = _plot_umap_labels(adata_annotated, "cell_type_singler",
+                                        "UMAP — SingleR Labels",
+                                        "Per-cell label from SingleR")
+    figs["scanvi"]  = _plot_umap_labels(adata_annotated, "cell_type_scanvi",
+                                        "UMAP — scANVI Transfer Labels",
+                                        "Per-cell label from scANVI model")
 
     if "vote" in methods_run:
         print("  Rendering consensus vote UMAP ...", flush=True)

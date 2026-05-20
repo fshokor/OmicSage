@@ -584,146 +584,229 @@ run_cluster_report(
 ---
 
 ## 11. `annotate.py`
-
+ 
 **What it does**
-
-Assigns cell type labels to Leiden clusters using one or more automated
-methods, then combines them into a consensus label via majority vote.
-All methods operate at the cluster level (not per cell), so the result
-is consistent with the Leiden partition.
-
+ 
+Assigns cell type labels to Leiden clusters using up to five automated
+methods, then combines them into a consensus label via weighted majority
+vote with semantic label normalisation.
+All methods operate at the cluster level (not per cell), so every cell
+in the same Leiden cluster receives the same consensus label.
+ 
 **Why it exists**
-
-No single annotation method is universally reliable. CellTypist is strong on
-immune cell types but can conflate closely related states. Marker gene scoring
-is interpretable but depends on the quality of the gene list. Running both and
-taking the majority vote produces more robust annotations than either method
+ 
+No single annotation method is universally reliable. CellTypist is strong
+on immune cell types but can conflate closely related states. Marker gene
+scoring is interpretable but depends on the quality of the gene list.
+ScType uses a curated tissue-specific database. SingleR correlates against
+a bulk RNA-seq pseudobulk reference. Running multiple methods and taking a
+weighted majority vote produces more robust annotations than any one method
 alone — and makes method disagreements explicit through the confidence score.
-The module is also forward-compatible: ScType and SingleR slots are reserved
-and will plug into the existing vote table in Session B without changing the API.
-
-**Methods**
-
-| Method | Key | How it works | Status |
-|--------|-----|-------------|--------|
-| CellTypist | `"celltypist"` | Downloads `Immune_All_High.pkl` (coarse) and `Immune_All_Low.pkl` (fine); runs per-cell prediction then applies Leiden cluster majority voting | ✓ Implemented |
-| Marker scoring | `"markers"` | Computes mean log-normalised expression of each marker gene set per cluster; assigns the highest-scoring type | ✓ Implemented |
-| Majority vote | `"vote"` | 2-way consensus across CellTypist fine + markers; confidence = fraction of methods agreeing | ✓ Implemented |
-| ScType | `"sctype"` | Tissue-specific DB scoring via rpy2/R | Session B |
-| SingleR | `"singler"` | HumanPrimaryCellAtlasData() reference via rpy2/R | Session B |
-
-**Steps performed (in order)**
-
-1. Validate methods and prerequisites (`"vote"` requires `"celltypist"` and `"markers"`)
+ 
+---
+ 
+### Methods
+ 
+| Method | Key | How it works | Reference column(s) |
+|--------|-----|-------------|---------------------|
+| CellTypist | `"celltypist"` | Per-cell prediction (any model), then cluster-level majority vote done by OmicSage. Each model produces one `celltypist_<stem>` column. `Immune_All_High.pkl` → `celltypist_coarse`; `Immune_All_Low.pkl` → `celltypist_fine`; any other model → `celltypist_<model_stem>`. | `celltypist_*` (one per model) |
+| Marker scoring | `"markers"` | Mean log-normalised expression of each marker gene set per cluster; assigns the highest-scoring type. | `cell_type_markers` |
+| ScType | `"sctype"` | Positive/negative marker scoring against ScTypeDB; fetched fresh from GitHub at runtime unless `sctype_db_path` is set. | `cell_type_sctype` |
+| SingleR | `"singler"` | Spearman correlation against a pseudobulk reference via the `singler` Python package (C++ bindings). Per-cell labels; delta score used for pruning. | `cell_type_singler`, `singler_delta` |
+| scANVI | `"scanvi"` | Transfer learning from a pre-trained scANVI model. Posterior probability used as fractional vote weight. Skipped in CI (`OMICSAGE_CI=true`). | `cell_type_scanvi` |
+| Majority vote | `"vote"` | Weighted consensus across all methods that ran. Requires at least `"celltypist"` or `"markers"` to also be in methods. | `cell_type_vote`, `cell_type_confidence` |
+ 
+---
+ 
+### Steps performed (in order)
+ 
+1. Validate methods and prerequisites (`"vote"` requires `"celltypist"` or `"markers"`)
 2. Preserve ground-truth: copy `obs['cell_type']` → `obs['cell_type_groundtruth']` before any writes
-3. Run CellTypist — builds a CP10K log1p copy, downloads models to `data/references/celltypist/`, runs majority-vote prediction at cluster level; writes `obs['celltypist_coarse']` and `obs['celltypist_fine']`
+3. Run CellTypist — builds a CP10K log1p copy, downloads requested models to `celltypist_models_dir`, runs per-cell prediction then applies OmicSage's own cluster-level majority vote; writes one `celltypist_*` column per model
 4. Run marker scoring — mean expression per cluster per marker set; writes `obs['cell_type_markers']`
-5. Run majority vote — combines all available method labels per cluster; writes `obs['cell_type_vote']` and `obs['cell_type_confidence']`
-6. Write provenance to `uns['omicsage_annotate']`
-
-**obs columns written**
-
+5. Run ScType — fetches ScTypeDB from GitHub (or loads from `sctype_db_path`); writes `obs['cell_type_sctype']`
+6. Run SingleR — loads the requested celldex reference (cached on first use); writes `obs['cell_type_singler']` and `obs['singler_delta']`
+7. Run scANVI — loads a pre-trained model; writes `obs['cell_type_scanvi']`
+8. Run majority vote — collects all active method columns, normalises labels, accumulates weighted votes, elects winner; writes `obs['cell_type_vote']` and `obs['cell_type_confidence']`
+9. Write provenance to `uns['omicsage_annotate']`
+Each step is wrapped in try/except — if a method fails it warns and continues, so a network error or missing package never crashes the pipeline.
+ 
+---
+ 
+### How the majority vote works
+ 
+**Stage 1 — collect labels.** For each cluster and each active method, take the majority label among all cells in that cluster.
+ 
+**Stage 2 — normalise.** Each raw label is passed through `_normalise_label()` to produce a canonical root concept. This ensures synonymous labels from different methods group together as the same vote rather than splitting:
+ 
+```
+"Late erythroid"                         →  "erythroid"
+"Erythroid cells"                        →  "erythroid"
+"Erythroid-like and erythroid precursor" →  "erythroid"
+"Classical monocytes"                    →  "monocyte"
+"Monocytes"                              →  "monocyte"
+"CD4+ T cells"                           →  "t"
+"T_cell"                                 →  "t"
+```
+ 
+Strips applied: underscores → parentheses → stage prefixes (`Late`, `Classical`, `Naive`, `CD4+`, …) → `pre-`/`pro-` → suffixes (`-like and …`, `precursor`, `cells`, `cell`) → singularise trailing `s`.
+ 
+**Stage 3 — accumulate weighted votes.** Each method contributes its weight to the canonical group its label maps to:
+ 
+| Source | Weight |
+|--------|--------|
+| Each `celltypist_*` column | 1 |
+| `cell_type_markers` | 1 |
+| `cell_type_sctype` | 1 (+1 bonus for parenchymal types: Hepatocyte, Fibroblast, Endothelial) |
+| `cell_type_singler` | 1 |
+| `cell_type_scanvi` | `mean_posterior × 2` (fractional, 0–2) |
+ 
+**Stage 4 — elect winner and compute confidence.**
+The canonical group with the highest accumulated weight wins.
+`confidence = winning_weight / total_weight`.
+All four integer-weight methods agreeing on one root concept → `confidence = 1.0`, even if the raw strings differ.
+ 
+**Tiebreak** (when two canonical groups share the highest weight):
+priority order is `celltypist_fine → singler → markers → sctype → celltypist_coarse → other celltypist_*`.
+ 
+**Stage 5 — resolve reported label.**
+The final `cell_type_vote` is the **raw label from the highest-priority source** within the winning canonical group — not the lowercase canonical form — to preserve the most informative string (e.g. `"Late erythroid"` not `"erythroid"`).
+ 
+---
+ 
+### obs columns written
+ 
 | Column | Source | Notes |
 |--------|--------|-------|
-| `celltypist_coarse` | CellTypist `Immune_All_High.pkl` majority vote | Broad immune categories |
-| `celltypist_fine` | CellTypist `Immune_All_Low.pkl` majority vote | Fine-grained immune subtypes |
+| `celltypist_<stem>` | CellTypist, one per model | e.g. `celltypist_coarse`, `celltypist_fine`, `celltypist_Healthy_COVID19_PBMC` |
 | `cell_type_markers` | Marker gene scoring | Best-scoring type per cluster |
-| `cell_type_groundtruth` | Copy of original `obs['cell_type']` | Only written if column exists; prevents ground-truth loss |
-| `cell_type_vote` | 2-way majority vote | Primary consensus label for downstream steps |
-| `cell_type_confidence` | Fraction of methods agreeing | 0.0–1.0; use to flag uncertain clusters |
-
-**Built-in marker sets** (`MARKER_SETS`)
-
+| `cell_type_sctype` | ScType | Best ScType label per cluster |
+| `cell_type_singler` | SingleR | Per-cell label; `"Unassigned"` for low-delta cells |
+| `singler_delta` | SingleR | Per-cell delta score (top − second correlation); NaN for `"Unassigned"` |
+| `cell_type_scanvi` | scANVI | Per-cell transfer label |
+| `cell_type_groundtruth` | Copy of original `obs['cell_type']` | Only written if column exists before annotation |
+| `cell_type_vote` | Majority vote | Primary consensus label — use this in all downstream steps |
+| `cell_type_confidence` | Majority vote | 0.0–1.0; flag clusters below 0.5 for manual review |
+ 
+---
+ 
+### Built-in marker sets (`MARKER_SETS`)
+ 
 Covers immune (BMMC) and parenchymal (HCC) cell types:
-
+ 
 | Category | Cell types |
 |----------|-----------|
 | Myeloid | Macrophage, Monocyte, DC, pDC, Mast_cell |
 | Lymphoid | T_cell, CD8_T_cell, NK_ILC, B_cell, Plasma_cell |
 | Progenitors / erythroid | Progenitor, Erythroid, Platelet |
 | Non-immune / parenchymal | Hepatocyte, Fibroblast, Endothelial |
-
+ 
 Pass a custom dict via `marker_sets={"MyType": ["GENE1", "GENE2"]}` to override or extend.
-
-**Parameters**
-
+ 
+---
+ 
+### Parameters
+ 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `adata` | AnnData | required | Clustered AnnData — must have `obs[leiden_col]` and `layers['logcounts']` |
-| `methods` | list[str] | `["celltypist", "markers", "vote"]` | Methods to run |
+| `methods` | list[str] | `["celltypist", "markers", "sctype", "singler", "vote"]` | Methods to run |
 | `leiden_col` | str | `"leiden"` | obs column with cluster labels |
-| `celltypist_models` | list[str] | `["Immune_All_High.pkl", "Immune_All_Low.pkl"]` | CellTypist model filenames |
+| `celltypist_models` | list[str] | `["Immune_All_High.pkl", "Immune_All_Low.pkl"]` | Any CellTypist model filenames; each produces one `celltypist_*` obs column |
 | `celltypist_models_dir` | Path | `data/references/celltypist/` | Local model cache directory |
 | `marker_sets` | dict | `MARKER_SETS` | `{cell_type: [gene_list]}` |
-| `inplace` | bool | False | Modify input AnnData in place; default makes a copy |
-
-**Input**
-
+| `tissue` | str | `"Immune system"` | ScType tissue filter. Valid: Immune system, Pancreas, Liver, Eye, Kidney, Brain, Lung, Adrenal, Heart, Intestine, Muscle, Placenta, Spleen, Stomach, Thymus |
+| `sctype_db_path` | str / Path | `None` | Local ScTypeDB `.xlsx` file. `None` → fetch from GitHub each run |
+| `scanvi_model` | str | `None` | Path to pre-trained scANVI model directory |
+| `singler_ref` | str / Path | `None` | celldex reference name or file path. `None` → HPCA. Named options: `"hpca"`, `"blueprint_encode"`, `"dice"`, `"monaco_immune"`, `"novershtern_hematopoietic"`, `"mouse_rnaseq"`, `"hca"` |
+| `singler_ref_label_col` | str | `"cell_type"` | obs column for cell type labels in a user-supplied H5AD reference |
+| `inplace` | bool | `False` | Modify input AnnData in place; default makes a copy |
+ 
+---
+ 
+### Input / Output
+ 
 ```
-adata  : AnnData   →  clustered AnnData (output of cluster())
-                       Must have obs['leiden'], layers['logcounts']
-```
-
-**Output**
-
-```
-adata_ann.obs['celltypist_coarse']     →  coarse CellTypist label per cell
-adata_ann.obs['celltypist_fine']       →  fine CellTypist label per cell
+Input
+-----
+adata : AnnData   →  clustered AnnData (output of cluster())
+                     Must have obs['leiden'], layers['logcounts']
+ 
+Output
+------
+adata_ann.obs['celltypist_*']          →  one column per CellTypist model run
 adata_ann.obs['cell_type_markers']     →  marker-score label per cell
+adata_ann.obs['cell_type_sctype']      →  ScType label per cell
+adata_ann.obs['cell_type_singler']     →  SingleR label per cell
+adata_ann.obs['singler_delta']         →  SingleR delta score per cell
+adata_ann.obs['cell_type_scanvi']      →  scANVI transfer label per cell
 adata_ann.obs['cell_type_groundtruth'] →  preserved ground-truth (if existed)
-adata_ann.obs['cell_type_vote']        →  consensus label per cell
+adata_ann.obs['cell_type_vote']        →  consensus label per cell  ← use downstream
 adata_ann.obs['cell_type_confidence']  →  confidence score per cell (0.0–1.0)
 adata_ann.uns['omicsage_annotate']     →  full provenance record
 ann_dict : dict                        →  marker_score_df, vote_df, provenance
 ```
-
-**Usage**
-
+ 
+---
+ 
+### Usage
+ 
 ```python
 from pipeline.modules.annotation.annotate import annotate, MARKER_SETS
-
-# All three methods (recommended)
+ 
+# Default — all five methods, HPCA reference for SingleR
+adata_annotated, ann_dict = annotate(adata_clustered)
+ 
+# BMMC-optimised — bone marrow SingleR reference, third CellTypist model
 adata_annotated, ann_dict = annotate(
     adata_clustered,
-    methods=["celltypist", "markers", "vote"],
-    leiden_col="leiden",
-    inplace=False,
+    methods=["celltypist", "markers", "sctype", "singler", "vote"],
+    celltypist_models=[
+        "Immune_All_High.pkl",
+        "Immune_All_Low.pkl",
+        "Healthy_COVID19_PBMC.pkl",
+    ],
+    singler_ref="novershtern_hematopoietic",
 )
-
-# Inspect per-cluster vote table
-print(ann_dict["vote_df"][["n_cells", "CellTypist", "Markers", "final_label", "confidence"]])
-
-# Marker scoring only (no internet required)
+ 
+# Offline run — pin ScTypeDB locally, skip SingleR network call
 adata_annotated, ann_dict = annotate(
     adata_clustered,
-    methods=["markers"],
+    methods=["celltypist", "markers", "sctype", "vote"],
+    sctype_db_path="data/references/ScTypeDB_full.xlsx",
 )
-
-# Custom marker sets (e.g. for liver dataset)
+ 
+# Custom marker sets (e.g. liver dataset)
 liver_markers = {
-    "Hepatocyte": ["ALB", "APOC3", "TTR"],
-    "T_cell":     ["CD3D", "CD3E"],
+    "Hepatocyte":  ["ALB", "APOC3", "TTR"],
+    "T_cell":      ["CD3D", "CD3E"],
+    "Endothelial": ["PECAM1", "VWF"],
 }
 adata_annotated, ann_dict = annotate(
     adata_clustered,
     methods=["markers"],
     marker_sets=liver_markers,
 )
-
-# Access consensus labels
+ 
+# Inspect consensus
 print(adata_annotated.obs["cell_type_vote"].value_counts())
 print(adata_annotated.obs["cell_type_confidence"].describe())
+print(ann_dict["vote_df"][["n_cells", "final_label", "confidence"]])
 ```
-
-**Important implementation notes**
-
-- CellTypist models are downloaded to `data/references/celltypist/` (project-local), not `~/.celltypist/`. This keeps runs self-contained and reproducible.
-- The `CELLTYPIST_FOLDER` environment variable is set and then restored so the caller's environment is not polluted.
-- If CellTypist is not installed, the method is skipped with a `UserWarning` and the pipeline continues with marker scoring only.
-- `obs['cell_type_vote']` (not `obs['cell_type']`) is the output column — this avoids overwriting any existing ground-truth `cell_type` column from the dataset.
-- Session B will add ScType and SingleR to the vote table; the `vote` function already has reserved slots for both and will automatically upgrade from 2-way to 4-way consensus.
-
-**Connects to**: `annotate_report.py` for the report, then `deg.py` for differential expression
+ 
+---
+ 
+### Important implementation notes
+ 
+- **CellTypist now uses `majority_voting=False`** — OmicSage gets per-cell predictions and does its own cluster-level majority vote. This makes all CellTypist models behave identically; there is no dependency on CellTypist's internal `over_clustering` logic.
+- Each CellTypist model produces its own `celltypist_<stem>` obs column and feeds independently into the vote. Running three models gives three columns and three votes.
+- **`celltypist_coarse` and `celltypist_fine` only exist if those specific models were run.** No placeholder columns are written for models that weren't requested.
+- celldex references for SingleR are downloaded once and cached at `~/.cache/omicsage/singler/<ref>.h5ad`. The first call per reference takes a few seconds; subsequent calls load from disk.
+- ScType fetches `ScTypeDB_full.xlsx` from GitHub on every run when `sctype_db_path=None`. Set `sctype_db_path` after the first run to pin a version and enable offline use.
+- The `CELLTYPIST_FOLDER` environment variable is set temporarily and then restored so the caller's environment is not polluted.
+- Every method is wrapped in try/except — a failure warns and skips, so a network error or missing package never crashes the pipeline.
+- `cell_type_vote` (not `cell_type`) is the output column — this avoids overwriting any existing ground-truth `cell_type` column from the dataset.
+**Connects to**: `annotate_report.py` for the HTML report, then `deg.py` for differential expression
 
 ---
 

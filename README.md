@@ -1,13 +1,13 @@
 # 🧬 OmicSage
 
-> **AI-Assisted Single-Cell Multi-Omics Analysis Platform**
+> **Single-Cell Multi-Omics Analysis Platform**
 >
-> End-to-end pipeline · Automated reports · AI interpretation · No API key required
+> End-to-end pipeline · Automated reports · Guided interpretation · Full Python
 
 [![CI](https://github.com/fshokor/OmicSage/actions/workflows/ci.yml/badge.svg)](https://github.com/fshokor/OmicSage/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python 3.11](https://img.shields.io/badge/python-3.11-blue.svg)](https://www.python.org/)
-[![Nextflow](https://img.shields.io/badge/nextflow-%E2%89%A523.04.0-brightgreen.svg)](https://www.nextflow.io/)
+[![Scanpy](https://img.shields.io/badge/scanpy-1.10-blue.svg)](https://scanpy.readthedocs.io/)
 [![Status: Alpha](https://img.shields.io/badge/status-alpha--dev-orange.svg)]()
 
 ---
@@ -33,30 +33,29 @@ OmicSage is an open-source platform that covers the full single-cell multi-omics
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  LAYER 3: AI Intelligence (OPTIONAL)                │
-│  BioChatter + LLM → threshold suggestions,          │
-│  cluster interpretation, PubMed RAG, narratives     │
+│  LAYER 3: Review & Interpretation (MANUAL)          │
+│  Structured outputs + QC flags guide the analyst    │
+│  through threshold decisions and cluster review     │
 ├─────────────────────────────────────────────────────┤
 │  LAYER 2: Report Engine (ALWAYS ON)                 │
-│  Per-step HTML reports + combined tabbed report      │
-│  → 00_combined_report.html after every pipeline run  │
+│  Per-step HTML reports + combined tabbed report     │
+│  → 00_combined_report.html after every pipeline run │
 ├─────────────────────────────────────────────────────┤
 │  LAYER 1: Core Pipeline (ALWAYS ON)                 │
-│  Nextflow DSL2 → QC → normalize → integrate →       │
-│  cluster → annotate → downstream analysis           │
+│  Python (Scanpy/scverse) → QC → normalize →         │
+│  integrate → cluster → annotate → downstream        │
 └─────────────────────────────────────────────────────┘
 ```
 
-**Key principle**: `ai_features: false` in your config runs the full pipeline without any API key or internet connection.
+**Key principle**: every step produces structured outputs and a human-readable report so the analyst stays in control of all biological decisions.
 
 ---
 
 ## Quick Start
 
 ### Requirements
+- Python 3.11
 - Conda (Miniconda or Anaconda)
-- Docker Desktop + WSL2 (Windows) **or** Docker (Linux/macOS) — for Nextflow runs
-- Nextflow ≥ 23.04 — for Nextflow runs
 
 ### 1. Clone the repo
 ```bash
@@ -70,34 +69,25 @@ conda env create -f environment.yml
 conda activate omicsage
 ```
 
-### 3. (Optional) Build the Docker images
-Required only for Nextflow pipeline execution. Not needed for running Python modules directly.
+### 3. Create your first project
 ```bash
-docker build -f docker/Dockerfile.python -t omicsage/python:latest .
-# Optional: R-based steps (Seurat, SingleR, DESeq2)
-docker build -f docker/Dockerfile.r -t omicsage/r:latest .
-```
-
-### 4. Create your first project
-```bash
-conda activate omicsage
 python cli/omicsage.py create-project my_analysis --modality scrna
 ```
 
-### 5. Edit the config
+### 4. Edit the config
 ```bash
 nano my_analysis/config.yaml   # set input.scrna_path to your data
 ```
 
-### 6. Run the pipeline
+### 5. Run the pipeline
 ```bash
-python cli/omicsage.py run my_analysis/ --profile docker
+python cli/omicsage.py run my_analysis/
 ```
 
 ### Web UI (biologists)
 ```bash
 conda activate omicsage
-docker compose up streamlit
+streamlit run ui/app.py
 # Open http://localhost:8501
 ```
 
@@ -114,32 +104,17 @@ python -m pytest tests/ -v
 
 ---
 
-## AI Layer
+## Interpretation Layer
 
-OmicSage includes a full AI layer built on [BioChatter](https://github.com/biocypher/biochatter), covering QC threshold suggestions, cluster interpretation, DEG validation, narrative generation, and report review. The AI layer is **fully implemented and tested** but is currently **not the active development focus** — the manual pipeline is the primary path.
+OmicSage is designed around **manual review by the analyst**. Rather than delegating biological decisions to an LLM, every pipeline step produces structured outputs and a human-readable HTML report that guides you through the results:
 
-The default configuration runs the full pipeline with no API key required:
+- **QC step** — per-sample MAD-based thresholds surfaced with flags; analyst confirms or adjusts
+- **Clustering step** — UMAP + marker gene tables per cluster for manual label assignment
+- **Annotation step** — cell type predictions from [CelltypistML](https://github.com/Teichlab/celltypist) (Python) alongside marker evidence; analyst reviews and overrides
+- **DEG step** — ranked gene tables with volcano plots; analyst interprets biological significance
+- **Combined report** — `00_combined_report.html` collects all steps in one tabbed view after every run
 
-```yaml
-ai:
-  enabled: false   # default — full pipeline runs without any LLM
-```
-
-To enable AI features:
-```yaml
-ai:
-  enabled: true
-  provider: ollama         # fully local, no API key
-  ollama_model: llama3.2
-```
-
-Or with Claude:
-```bash
-export ANTHROPIC_API_KEY=sk-ant-...
-# config.yaml: provider: claude, model: claude-opus-4-5
-```
-
-**All AI calls are audit-logged** to `logs/llm/` in JSONL format.
+This keeps the analyst in control of all biological decisions while eliminating boilerplate code and repetitive plotting.
 
 ---
 
@@ -147,10 +122,10 @@ export ANTHROPIC_API_KEY=sk-ant-...
 
 | Phase | Scope | Target Week |
 |-------|-------|------------|
-| 0 ✅ | Foundation — repo, Docker, CI/CD | 1-2 |
+| 0 ✅ | Foundation — repo, CI/CD | 1-2 |
 | 1 🔧 | Core scRNA-seq pipeline (annotation in progress) | 2-6 |
 | 2 ✅ | Report engine — combined tabbed HTML report | 6-9 |
-| 3 ✅⏸ | AI layer — built & tested; development paused (manual pipeline is primary) | 9-13 |
+| 3 | Manual review layer — structured QC flags, cluster review, CelltypistML annotation | 9-13 |
 | 4 | scATAC-seq module | 13-16 |
 | 5 | Spatial transcriptomics | 16-19 |
 | 6 | Multiome integration | 19-22 |

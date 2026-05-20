@@ -187,11 +187,6 @@ def _plot_umap_by_key(adata_reduced: AnnData, key: Optional[str]) -> Optional[st
     return _fig_to_b64(fig)
 
 
-# Keep old name as alias for backwards compatibility
-def _plot_umap_batch(adata_reduced: AnnData, batch_key: Optional[str]) -> Optional[str]:
-    return _plot_umap_by_key(adata_reduced, batch_key)
-
-
 def _detect_sample_key(adata_reduced: AnnData) -> Optional[str]:
     """Auto-detect a sample column from common obs column names."""
     candidates = ["sample", "sample_id", "sample_name", "sampleid",

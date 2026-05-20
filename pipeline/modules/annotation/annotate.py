@@ -387,15 +387,28 @@ def _run_celltypist(
     models_dir: Path,
 ) -> None:
     """
-    Run CellTypist majority-vote annotation and write results into adata.obs.
+    Run CellTypist annotation and write per-cluster majority-vote results into
+    adata.obs.
 
-    Models are downloaded on first use into `models_dir` (inside the project
-    repo) so that runs are reproducible without relying on system-wide caches.
+    Strategy
+    --------
+    CellTypist is run with ``majority_voting=False`` to get per-cell predicted
+    labels, then we do our own cluster-level majority vote.  This avoids any
+    dependency on CellTypist's internal ``over_clustering`` logic and works
+    identically for all models — not just Immune_All_High/Low.
 
-    Writes
-    ------
-    obs['celltypist_coarse']  — if Immune_All_High.pkl in model_names
-    obs['celltypist_fine']    — if Immune_All_Low.pkl  in model_names
+    Output columns
+    --------------
+    Each model produces one obs column:
+      ``Immune_All_High.pkl``  → ``celltypist_coarse``
+      ``Immune_All_Low.pkl``   → ``celltypist_fine``
+      any other model          → ``celltypist_<model_stem>``
+                                 e.g. ``Healthy_COVID19_PBMC.pkl``
+                                   → ``celltypist_Healthy_COVID19_PBMC``
+
+    ``celltypist_coarse`` and ``celltypist_fine`` are always guaranteed to
+    exist after this function returns.  If the corresponding model was not in
+    ``model_names`` the column is filled with ``"not_run"``.
     """
     import celltypist
     from celltypist import models as ct_models
@@ -403,68 +416,89 @@ def _run_celltypist(
     # ── Build a CP10K log-normalised dense copy for CellTypist ────────────────
     adata_ct = adata.copy()
 
-    # Prefer raw counts layer for re-normalisation; fall back to .X
     if "counts" in adata_ct.layers:
         adata_ct.X = adata_ct.layers["counts"].copy()
     elif "logcounts" in adata_ct.layers:
-        # Already log-normalised — use as-is (less ideal but workable)
         adata_ct.X = adata_ct.layers["logcounts"].copy()
         logger.warning(
             "No 'counts' layer found — using 'logcounts' directly. "
             "CellTypist prefers CP10K-normalised counts."
         )
-    # else: use .X as-is and let CellTypist warn if needed
 
     sc.pp.normalize_total(adata_ct, target_sum=1e4)
     sc.pp.log1p(adata_ct)
     if hasattr(adata_ct.X, "toarray"):
         adata_ct.X = adata_ct.X.toarray()
 
-    # ── Ensure models directory exists inside the project repo ────────────────
+    # ── Ensure models directory exists ────────────────────────────────────────
     models_dir.mkdir(parents=True, exist_ok=True)
 
-    # Override CellTypist's default cache to use our project-local directory.
-    # This keeps downloaded models inside the repo (data/references/celltypist/)
-    # rather than ~/.celltypist/ — making the project fully self-contained.
     import os
     _original_cache = os.environ.get("CELLTYPIST_FOLDER")
     os.environ["CELLTYPIST_FOLDER"] = str(models_dir.resolve())
 
+    # Fixed aliases for the two standard Immune models
+    _MODEL_TO_OBS = {
+        "Immune_All_High.pkl": "celltypist_coarse",
+        "Immune_All_Low.pkl":  "celltypist_fine",
+    }
+
+    # Precompute cluster assignments once — used for majority vote below
+    clusters = sorted(
+        adata.obs[leiden_col].unique(),
+        key=lambda x: (int(x) if str(x).isdigit() else x),
+    )
+
     try:
-        # Download only the models we need (force_update=False = skip if cached)
         ct_models.download_models(force_update=False, model=model_names)
 
-        _MODEL_TO_OBS = {
-            "Immune_All_High.pkl": "celltypist_coarse",
-            "Immune_All_Low.pkl":  "celltypist_fine",
-        }
-
         for model_name in model_names:
-            obs_col = _MODEL_TO_OBS.get(model_name, f"celltypist_{model_name.replace('.pkl','')}")
-            model   = ct_models.Model.load(model=model_name)
-            pred    = celltypist.annotate(
+            # Derive obs column name — fixed alias or auto-generated stem
+            obs_col = _MODEL_TO_OBS.get(
+                model_name,
+                f"celltypist_{model_name.replace('.pkl', '')}",
+            )
+
+            model = ct_models.Model.load(model=model_name)
+
+            # Per-cell prediction — no dependency on CellTypist's clustering
+            pred      = celltypist.annotate(
                 adata_ct,
                 model=model,
-                majority_voting=True,
-                over_clustering=leiden_col,   # cluster-level majority voting
+                majority_voting=False,   # per-cell labels only
             )
             pred_adata = pred.to_adata()
+
+            # per-cell predicted labels (CellTypist writes to 'predicted_labels')
+            per_cell = pred_adata.obs.loc[adata.obs.index, "predicted_labels"]
+
+            # Cluster-level majority vote — same logic as every other method
+            cluster_label: Dict[str, str] = {}
+            for cl in clusters:
+                mask   = (adata.obs[leiden_col] == str(cl)).values
+                labels = per_cell.iloc[np.where(mask)[0]]
+                vc     = labels.value_counts()
+                cluster_label[str(cl)] = vc.index[0] if len(vc) > 0 else "Unknown"
+
             adata.obs[obs_col] = (
-                pred_adata.obs.loc[adata.obs.index, "majority_voting"]
+                adata.obs[leiden_col]
+                .astype(str)
+                .map(cluster_label)
                 .astype("category")
             )
+
             n_types = adata.obs[obs_col].nunique()
             logger.info(f"  {obs_col}: {n_types} types ({model_name})")
             print(f"  CellTypist {obs_col}: {n_types} cell types")
 
     finally:
-        # Restore original env var so we don't pollute the caller's environment
         if _original_cache is None:
             os.environ.pop("CELLTYPIST_FOLDER", None)
         else:
             os.environ["CELLTYPIST_FOLDER"] = _original_cache
 
-    # Guarantee both standard columns always exist
+    # Guarantee both standard columns always exist (filled with "not_run" when
+    # the corresponding model was not in model_names)
     if "celltypist_coarse" not in adata.obs.columns:
         adata.obs["celltypist_coarse"] = "not_run"
     if "celltypist_fine" not in adata.obs.columns:
@@ -535,6 +569,76 @@ def _run_marker_scoring(
 # Majority vote
 # ─────────────────────────────────────────────────────────────────────────────
 
+def _normalise_label(label: str) -> str:
+    """
+    Strip common decorative prefixes/suffixes to produce a canonical root
+    concept used for grouping synonymous labels before voting.
+
+    Examples
+    --------
+    "Late erythroid"                          -> "erythroid"
+    "Erythroid cells"                         -> "erythroid"
+    "Erythroid-like and erythroid precursor"  -> "erythroid"
+    "Classical monocytes"                     -> "monocyte"
+    "Monocytes"                               -> "monocyte"
+    "CD4+ T cells"                            -> "t"
+    "Tcm/Naive helper T cells"                -> "t"
+    "Small pre-B cells"                       -> "b"
+    "Natural killer cells"                    -> "natural killer"
+    "HSC/MPP"                                 -> "hsc"
+    "T_cell"                                  -> "t"
+    "B_cell"                                  -> "b"
+    """
+    import re
+
+    s = label.lower().strip()
+
+    # Normalise underscored marker-style labels  e.g. "T_cell" -> "t cell"
+    s = s.replace("_", " ")
+
+    # Remove parenthetical suffixes  e.g. "(CD4+)"
+    s = re.sub(r"\(.*?\)", "", s)
+
+    # Strip common stage/modifier prefixes at start of string
+    for prefix in (
+        r"early ", r"late ", r"mid ", r"classical ", r"non-classical ",
+        r"naive ", r"memory ", r"activated ", r"immature ", r"mature ",
+        r"transitional ", r"plasmablast ",
+        r"cd4\+ ", r"cd8\+ ", r"cd16\+ ", r"cd56\+ ",
+    ):
+        s = re.sub(rf"^{prefix}", "", s)
+
+    # Strip "pro-"/"pre-" at any word boundary (covers "pre-B", "Small pre-B")
+    s = re.sub(r"\bpro-", "", s)
+    s = re.sub(r"\bpre-", "", s)
+    # Remove leftover size qualifiers before a single letter e.g. "small b" -> "b"
+    s = re.sub(r"\b(?:small|large|big|tiny)\s+(?=[a-z]\b)", "", s)
+
+    # Strip common suffixes — most specific first
+    for suffix in (
+        r"\s*-like.*$",           # "-like and ..." tails
+        r"\s*precursor.*$",       # "precursor cells"
+        r"\s*progenitor.*$",      # "progenitor cells"
+        r"\s*lineage$",
+        r"\s*cells?$",            # "cells" or "cell" — handles plural
+        r"\s*\(.*\)$",
+    ):
+        s = re.sub(suffix, "", s)
+
+    # Collapse slash-separated names to first token  e.g. "tcm/naive helper t" -> "tcm"
+    # but keep "natural killer" together
+    if "/" in s and "natural killer" not in s:
+        s = s.split("/")[0]
+
+    # Singularise trailing -s  e.g. "monocytes" -> "monocyte", "lymphocytes" -> "lymphocyte"
+    # Uses negative lookbehind to avoid touching words ending in "ss"
+    s = re.sub(r"(?<!s)s$", "", s)
+
+    # Final whitespace cleanup
+    s = re.sub(r"\s+", " ", s).strip()
+    return s or label.lower()
+
+
 def _run_majority_vote(
     adata: sc.AnnData,
     score_df: pd.DataFrame,
@@ -542,47 +646,101 @@ def _run_majority_vote(
     scanvi_posteriors: Optional[Dict[str, float]] = None,
 ) -> pd.DataFrame:
     """
-    Combine available method labels into a consensus via N-way weighted vote.
+    Combine available method labels into a consensus via N-way weighted vote
+    with semantic label normalisation.
 
-    Evidence sources (up to 4-way):
-      1. celltypist_fine    (CellTypist Low model, cluster-level majority)  weight=1
-      2. cell_type_markers  (marker gene scoring)                           weight=1
-      3. cell_type_sctype   (ScType)                                        weight=1
-                            +1 extra for parenchymal types (double weight)
-      4. cell_type_scanvi   (scANVI transfer)
-                            weight = mean posterior probability × _SCANVI_MAX_VOTES
-                            (fractional: high-confidence calls get more influence)
-      5. cell_type_singler  (reserved; skipped when column absent)
+    Two-stage algorithm
+    -------------------
+    Stage 1 — Normalise: each raw label is mapped to a canonical root concept
+    via ``_normalise_label()`` (strips stage prefixes, "cells" suffixes, etc.).
+    Votes are accumulated on canonical forms so that "Erythroid cells",
+    "Late erythroid", and "Erythroid-like precursor cells" all count as the
+    same signal rather than three independent labels.
+
+    Stage 2 — Elect: the canonical form with the highest accumulated weight
+    wins. The final reported label is the *raw* label from the highest-priority
+    source within the winning canonical group, giving the most informative
+    string rather than a flattened canonical.
+
+    Tiebreak — source hierarchy
+    ---------------------------
+    When two canonical groups tie on weight, the group whose best raw label
+    comes from the highest-priority source wins:
+      1. celltypist_fine   (most specific per-cell model)
+      2. cell_type_singler (cell-level, reference-backed)
+      3. cell_type_markers (marker gene scoring)
+      4. cell_type_sctype  (tissue DB)
+      5. celltypist_coarse (coarse fallback)
+
+    Evidence weights
+    ----------------
+      celltypist_fine    weight=1
+      cell_type_markers  weight=1
+      cell_type_sctype   weight=1  (+1 extra for parenchymal types)
+      cell_type_singler  weight=1
+      cell_type_scanvi   weight = mean_posterior × _SCANVI_MAX_VOTES (fractional)
+
+    Confidence
+    ----------
+    Fraction of total active weight accumulated by the winning canonical group.
+    A cluster where all methods agree on the same root concept will have
+    confidence=1.0 even if the raw label strings differ.
 
     Writes
     ------
-    obs['cell_type_vote']       — final consensus label
-    obs['cell_type_confidence'] — fraction of active vote weight agreeing (0.0–1.0)
+    obs['cell_type_vote']       — final consensus label (raw, most informative)
+    obs['cell_type_confidence'] — fraction of active weight agreeing (0.0–1.0)
     """
-    _SCANVI_MAX_VOTES = 2  # max fractional votes scANVI can contribute per cluster
+    _SCANVI_MAX_VOTES = 2
+
+    # Source priority for tiebreaking — lower index = higher priority.
+    # celltypist_fine and celltypist_coarse are listed explicitly; any additional
+    # celltypist_* columns (e.g. celltypist_Healthy_COVID19_PBMC) are appended
+    # dynamically at the end with lower priority.
+    _TIEBREAK_PRIORITY = [
+        "celltypist_fine",
+        "cell_type_singler",
+        "cell_type_markers",
+        "cell_type_sctype",
+        "celltypist_coarse",
+    ]
 
     def _cluster_majority(series: pd.Series) -> str:
         vc = series.dropna().value_counts()
         return vc.index[0] if len(vc) > 0 else "Unknown"
 
-    # ── Build per-cluster evidence table ──────────────────────────────────────
-    vote_rows: List[dict] = []
+    # ── Build integer-weight slots dynamically ────────────────────────────────
+    # Fixed slots: celltypist_fine, markers, sctype, singler (all weight=1)
+    # Dynamic slots: any extra celltypist_* columns not already covered
+    fixed_ct_cols = {"celltypist_fine", "celltypist_coarse"}
+    extra_ct_cols = sorted(
+        c for c in adata.obs.columns
+        if c.startswith("celltypist_") and c not in fixed_ct_cols
+    )
 
-    # Integer-weight slots (name, obs_col, weight)
     int_slots = [
         ("CellTypist",   "celltypist_fine",   1),
         ("Markers",      "cell_type_markers", 1),
-        ("ScType",       "cell_type_sctype",  1),   # +1 extra for parenchymal
-        ("SingleR",      "cell_type_singler", 1),   # future
-    ]
+        ("ScType",       "cell_type_sctype",  1),
+        ("SingleR",      "cell_type_singler", 1),
+    ] + [(f"CellTypist_{c.replace('celltypist_','')}", c, 1) for c in extra_ct_cols]
+
+    # Extend tiebreak priority to include dynamic CellTypist columns
+    _tiebreak = _TIEBREAK_PRIORITY + extra_ct_cols
 
     clusters = sorted(adata.obs[leiden_col].unique(),
                       key=lambda x: (int(x) if str(x).isdigit() else x))
 
+    vote_rows: List[dict] = []
+
     for cl in clusters:
-        mask   = adata.obs[leiden_col] == str(cl)
-        row    = {"cluster": str(cl), "n_cells": int(mask.sum())}
-        vote_weight: Dict[str, float] = {}  # label → accumulated weight
+        mask = adata.obs[leiden_col] == str(cl)
+        row  = {"cluster": str(cl), "n_cells": int(mask.sum())}
+
+        # canonical_form → accumulated weight
+        canonical_weight: Dict[str, float] = {}
+        # obs_col → raw label (to resolve winning raw label by priority)
+        source_labels:    Dict[str, str]   = {}
         total_weight = 0.0
 
         # ── Integer-weight slots ─────────────────────────────────────────────
@@ -593,41 +751,75 @@ def _run_majority_vote(
             label = _cluster_majority(adata.obs.loc[mask, obs_col])
             row[slot_name] = label
 
-            if label and label not in ("not_run", "Unknown", "nan"):
+            skip = {"not_run", "Unknown", "nan", "Unassigned", ""}
+            if label and label not in skip:
                 w = float(weight)
-                # Double weight for parenchymal types when ScType labels them
                 if slot_name == "ScType" and label in _PARENCHYMAL:
                     w += 1.0
-                vote_weight[label] = vote_weight.get(label, 0.0) + w
+                canon = _normalise_label(label)
+                canonical_weight[canon] = canonical_weight.get(canon, 0.0) + w
                 total_weight += w
+                source_labels[obs_col] = label
 
         # ── Fractional scANVI slot ───────────────────────────────────────────
         if "cell_type_scanvi" in adata.obs.columns:
             scanvi_label = _cluster_majority(adata.obs.loc[mask, "cell_type_scanvi"])
             row["scANVI"] = scanvi_label
-
-            if scanvi_label and scanvi_label not in ("not_run", "Unknown", "nan"):
-                # Use per-cluster mean posterior as fractional weight
+            skip = {"not_run", "Unknown", "nan", "Unassigned", ""}
+            if scanvi_label and scanvi_label not in skip:
                 mean_prob = (
                     float(scanvi_posteriors[str(cl)])
                     if scanvi_posteriors and str(cl) in scanvi_posteriors
-                    else 0.5  # fallback if posteriors not available
+                    else 0.5
                 )
                 w = mean_prob * _SCANVI_MAX_VOTES
-                vote_weight[scanvi_label] = vote_weight.get(scanvi_label, 0.0) + w
+                canon = _normalise_label(scanvi_label)
+                canonical_weight[canon] = canonical_weight.get(canon, 0.0) + w
                 total_weight += w
+                source_labels["cell_type_scanvi"] = scanvi_label
         else:
             row["scANVI"] = None
 
-        # ── Compute winner and confidence ────────────────────────────────────
-        if vote_weight:
-            winner = max(vote_weight, key=vote_weight.__getitem__)
-            confidence = round(vote_weight[winner] / total_weight, 4)
-        else:
-            winner, confidence = "Unknown", 0.0
+        # ── Elect winner ─────────────────────────────────────────────────────
+        if not canonical_weight:
+            row["final_label"] = "Unknown"
+            row["confidence"]  = 0.0
+            vote_rows.append(row)
+            continue
 
-        row["final_label"]  = winner
-        row["confidence"]   = confidence
+        max_weight = max(canonical_weight.values())
+
+        # Collect all canonical groups that tied on weight
+        tied_canons = [c for c, w in canonical_weight.items() if w == max_weight]
+
+        if len(tied_canons) == 1:
+            winning_canon = tied_canons[0]
+        else:
+            # Tiebreak: pick the canon whose raw label comes from the
+            # highest-priority source
+            winning_canon = tied_canons[0]  # fallback
+            for priority_col in _tiebreak:
+                for canon in tied_canons:
+                    raw = source_labels.get(priority_col, "")
+                    if raw and _normalise_label(raw) == canon:
+                        winning_canon = canon
+                        break
+                else:
+                    continue
+                break
+
+        # Resolve best raw label for the winning canon — highest-priority source
+        winning_label = winning_canon  # fallback to canonical if nothing better
+        for priority_col in _tiebreak + ["cell_type_scanvi"]:
+            raw = source_labels.get(priority_col, "")
+            if raw and _normalise_label(raw) == winning_canon:
+                winning_label = raw
+                break
+
+        confidence = round(max_weight / total_weight, 4)
+
+        row["final_label"] = winning_label
+        row["confidence"]  = confidence
         vote_rows.append(row)
 
     vote_df = pd.DataFrame(vote_rows).set_index("cluster")
@@ -637,21 +829,14 @@ def _run_majority_vote(
     confidence_map = vote_df["confidence"].to_dict()
 
     adata.obs["cell_type_vote"] = (
-        adata.obs[leiden_col]
-        .astype(str)
-        .map(label_map)
-        .astype("category")
+        adata.obs[leiden_col].astype(str).map(label_map).astype("category")
     )
     adata.obs["cell_type_confidence"] = (
-        adata.obs[leiden_col]
-        .astype(str)
-        .map(confidence_map)
-        .astype(float)
+        adata.obs[leiden_col].astype(str).map(confidence_map).astype(float)
     )
 
     n_types = adata.obs["cell_type_vote"].nunique()
-    active_slots = [s for s, c, _ in int_slots if c in adata.obs.columns
-                    and adata.obs[c].iloc[0] != "not_run"]
+    active_slots = [s for s, c, _ in int_slots if c in adata.obs.columns]
     if "cell_type_scanvi" in adata.obs.columns:
         active_slots.append("scANVI")
     print(f"  Majority vote ({len(active_slots)} methods): {n_types} consensus types")
