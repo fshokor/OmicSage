@@ -136,6 +136,7 @@ def annotate(
     celltypist_models_dir: Optional[Path] = None,
     marker_sets: Optional[Dict[str, List[str]]] = None,
     tissue: str = "Immune system",
+    sctype_db_path: Optional[Union[str, Path]] = None,
     scanvi_model: Optional[str] = None,
     singler_ref: Optional[Union[str, Path]] = None,
     singler_ref_label_col: str = "cell_type",
@@ -165,10 +166,18 @@ def annotate(
         {cell_type: [gene_list]}. Defaults to built-in MARKER_SETS.
     tissue : str
         Tissue filter for ScTypeDB (default: "Immune system").
-        Valid values: "Immune system", "Liver", "Brain", "Lung", "Kidney",
-        "Pancreas", "Heart", "Intestine", "Skin", "Adrenal", "Bladder",
-        "Breast", "Cervix", "Eye", "Muscle", "Ovary", "Prostate",
-        "Stomach", "Thyroid".
+        Valid values (from ScTypeDB_full.xlsx):
+        "Immune system", "Pancreas", "Liver", "Eye", "Kidney", "Brain",
+        "Lung", "Adrenal", "Heart", "Intestine", "Muscle", "Placenta",
+        "Spleen", "Stomach", "Thymus".
+        Only used when "sctype" is in methods.
+    sctype_db_path : str, Path, or None
+        Path to a local ScTypeDB Excel file (.xlsx) to use instead of
+        fetching ScTypeDB_full.xlsx from GitHub at runtime.
+        Use this to pin a specific DB version, work offline, or supply
+        a custom database in the same four-column format as ScTypeDB
+        (tissueType, cellName, geneSymbolmore1, geneSymbolmore2).
+        Default: None → fetch fresh from GitHub.
         Only used when "sctype" is in methods.
     scanvi_model : str or None
         Path to a pre-trained scANVI model directory (output of
@@ -176,16 +185,21 @@ def annotate(
         is in methods; ignored otherwise.
         The model must have been trained with the same gene set as adata.
     singler_ref : str, Path, or None
-        Reference source for SingleR annotation:
-          None (default) → Human Primary Cell Atlas (HPCA) pseudobulk reference
-                           (Mabbott et al. 2013, processed by Aran et al. 2019).
-                           Downloaded via the ``celldex`` Python package on first
-                           call and cached at
-                           ``~/.cache/omicsage/singler/hpca_ref.h5ad``.
-                           Requires: ``pip install celldex``
+        Reference source for SingleR annotation.
+        Named celldex references (version 2024-02-26, requires ``pip install celldex``):
+          None (default)              → "hpca"  (Human Primary Cell Atlas,
+                                        37 main types, best general-purpose default)
+          "hpca"                      → Human Primary Cell Atlas
+          "blueprint_encode"          → Blueprint/ENCODE (24 main / 43 fine immune+stroma types)
+          "dice"                      → DICE (29 fine sorted immune cell types)
+          "monaco_immune"             → Monaco Immune (29 fine immune types, bulk RNA-seq)
+          "novershtern_hematopoietic" → Novershtern Hematopoietic (38 fine types, bone marrow)
+          "mouse_rnaseq"              → Mouse bulk RNA-seq (mouse data only)
+        Special sources:
           "hca"          → HCA Census API (streamed at runtime, requires
-                           cellxgene-census package).
-          str/Path        → Path to a user-supplied H5AD pseudobulk reference
+                           ``pip install cellxgene-census``).
+          str/Path pointing to an existing file
+                         → User-supplied H5AD pseudobulk reference
                            (obs = cell types, var = genes, X = mean log-
                            normalised expression).
         Only used when "singler" is in methods.
@@ -271,7 +285,7 @@ def annotate(
 
     if "sctype" in methods:
         try:
-            _run_sctype(adata_ann, leiden_col, tissue)
+            _run_sctype(adata_ann, leiden_col, tissue, sctype_db_path=sctype_db_path)
             methods_run.append("sctype")
             logger.info("ScType annotation complete.")
         except Exception as e:
@@ -344,6 +358,7 @@ def annotate(
         "celltypist_models_dir":  str(celltypist_models_dir),
         "marker_sets_keys":       list(marker_sets.keys()),
         "sctype_tissue":          tissue,
+        "sctype_db_path":         str(sctype_db_path) if sctype_db_path else None,
         "scanvi_model_path":      str(scanvi_model) if scanvi_model else None,
         "singler_ref":            str(singler_ref) if singler_ref is not None else "hpca",
         "singler_ref_label_col":  singler_ref_label_col,
@@ -651,12 +666,30 @@ def _run_majority_vote(
 # ScType-py
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _fetch_sctype_db() -> pd.DataFrame:
+def _fetch_sctype_db(db_path: Optional[Union[str, Path]] = None) -> pd.DataFrame:
     """
-    Fetch ScTypeDB_full.xlsx fresh from GitHub at runtime.
-    No file is written to disk — data lives in memory only.
-    Always returns the current version maintained by the ScType authors.
+    Load ScTypeDB — from a local file if ``db_path`` is given, otherwise fetch
+    ScTypeDB_full.xlsx fresh from GitHub at runtime.
+
+    Parameters
+    ----------
+    db_path : str, Path, or None
+        Path to a local Excel file (.xlsx) in ScTypeDB format.
+        When None (default), the canonical database is fetched from GitHub.
     """
+    if db_path is not None:
+        path = Path(db_path)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"ScType database file not found: {path}. "
+                f"Check the path passed to sctype_db_path."
+            )
+        logger.info(f"Loading ScTypeDB from local file: {path}")
+        import io as _io
+        db = pd.read_excel(str(path), engine="openpyxl")
+        logger.info(f"  ScTypeDB loaded: {len(db)} rows, tissues: {db['tissueType'].nunique()}")
+        return db
+
     import io
     import requests
 
@@ -724,11 +757,13 @@ def _run_sctype(
     adata: sc.AnnData,
     leiden_col: str,
     tissue: str = "Immune system",
+    sctype_db_path: Optional[Union[str, Path]] = None,
 ) -> None:
     """
     Run ScType-py annotation and write results into adata.obs.
 
-    Fetches ScTypeDB_full.xlsx fresh from GitHub at runtime (no local cache).
+    Fetches ScTypeDB_full.xlsx fresh from GitHub at runtime unless
+    ``sctype_db_path`` is provided, in which case the local file is used.
     Scores each cluster as: mean(positive marker expr) - mean(negative marker expr).
     Assigns the cell type with the highest score to each cluster.
 
@@ -740,13 +775,15 @@ def _run_sctype(
         obs column with cluster labels.
     tissue : str
         Tissue filter for ScTypeDB (default: "Immune system").
+    sctype_db_path : str, Path, or None
+        Path to a local ScTypeDB Excel file. When None, fetch from GitHub.
 
     Writes
     ------
     obs['cell_type_sctype'] — ScType best label per cluster (category dtype)
     """
     # ── Fetch and parse DB ────────────────────────────────────────────────────
-    db = _fetch_sctype_db()
+    db = _fetch_sctype_db(db_path=sctype_db_path)
     marker_dict = _parse_sctype_markers(db, tissue)
 
     # ── Choose expression matrix ──────────────────────────────────────────────
@@ -888,8 +925,42 @@ _SINGLER_CACHE_DIR  = Path.home() / ".cache" / "omicsage" / "singler"
 _HPCA_CACHE         = _SINGLER_CACHE_DIR / "hpca_ref.h5ad"
 
 # celldex dataset name and version for Human Primary Cell Atlas
-_CELLDEX_HPCA_NAME    = "hpca"
-_CELLDEX_HPCA_VERSION = "2024-02-26"
+_CELLDEX_VERSION = "2024-02-26"
+
+# All named celldex references available via fetch_reference().
+# Maps the public singler_ref string → (celldex_name, cache_filename, description)
+_CELLDEX_KNOWN_REFS: Dict[str, tuple] = {
+    "hpca": (
+        "hpca",
+        "hpca_ref.h5ad",
+        "Human Primary Cell Atlas — 37 main / 157 fine types (microarray)",
+    ),
+    "blueprint_encode": (
+        "blueprint_encode",
+        "blueprint_encode_ref.h5ad",
+        "Blueprint/ENCODE — 24 main / 43 fine immune+stroma types (RNA-seq)",
+    ),
+    "dice": (
+        "dice",
+        "dice_ref.h5ad",
+        "DICE — 5 main / 29 fine sorted immune cell types (RNA-seq)",
+    ),
+    "monaco_immune": (
+        "monaco_immune",
+        "monaco_immune_ref.h5ad",
+        "Monaco Immune — 29 fine immune types (bulk RNA-seq)",
+    ),
+    "novershtern_hematopoietic": (
+        "novershtern_hematopoietic",
+        "novershtern_hematopoietic_ref.h5ad",
+        "Novershtern Hematopoietic — 38 fine bone-marrow/hematopoietic types (microarray)",
+    ),
+    "mouse_rnaseq": (
+        "mouse_rnaseq",
+        "mouse_rnaseq_ref.h5ad",
+        "Mouse RNA-seq — bulk RNA-seq mouse reference (mouse data only)",
+    ),
+}
 
 # Keep the old name as an alias so the public symbol _TABULA_SAPIENS_CACHE
 # still resolves (used in the CI-skipped cache test).
@@ -897,20 +968,21 @@ _TABULA_SAPIENS_CACHE = _HPCA_CACHE
 
 
 def _load_hpca_reference() -> sc.AnnData:
+    """Convenience wrapper — loads the HPCA reference via _load_celldex_reference."""
+    return _load_celldex_reference("hpca")
+
+
+def _load_celldex_reference(ref_name: str) -> sc.AnnData:
     """
-    Download the Human Primary Cell Atlas (HPCA) pseudobulk reference via the
-    Python ``celldex`` package on first call, then cache the result at
-    ``~/.cache/omicsage/singler/hpca_ref.h5ad``.
+    Download any named celldex reference on first call and cache it at
+    ``~/.cache/omicsage/singler/<cache_filename>``.
 
-    The HPCA reference (Mabbott et al. 2013, processed by Aran et al. 2019)
-    contains 713 microarray samples covering 37 main cell types and is the
-    standard SingleR reference for human data.  It is fetched from the same
-    gypsum / ArtifactDB backend used by the R ``celldex`` / ``SingleR``
-    packages, guaranteeing version-locked reproducibility.
-
-    Requires
-    --------
-    celldex >= 0.3.0 (``pip install celldex``)
+    Parameters
+    ----------
+    ref_name : str
+        One of the keys in ``_CELLDEX_KNOWN_REFS``:
+        "hpca", "blueprint_encode", "dice", "monaco_immune",
+        "novershtern_hematopoietic", "mouse_rnaseq".
 
     Returns
     -------
@@ -919,68 +991,70 @@ def _load_hpca_reference() -> sc.AnnData:
         var_names = gene symbols,
         X = mean log-normalised expression per cell type (dense float32).
     """
-    if _HPCA_CACHE.exists():
-        logger.info(f"Loading HPCA reference from cache: {_HPCA_CACHE}")
-        return sc.read_h5ad(_HPCA_CACHE)
+    if ref_name not in _CELLDEX_KNOWN_REFS:
+        valid = ", ".join(f'"{k}"' for k in _CELLDEX_KNOWN_REFS)
+        raise ValueError(
+            f"Unknown celldex reference '{ref_name}'. "
+            f"Valid named references: {valid}. "
+            f"For a custom reference pass a file path instead."
+        )
+
+    celldex_name, cache_filename, description = _CELLDEX_KNOWN_REFS[ref_name]
+    cache_path = _SINGLER_CACHE_DIR / cache_filename
+
+    if cache_path.exists():
+        logger.info(f"Loading celldex reference '{ref_name}' from cache: {cache_path}")
+        return sc.read_h5ad(cache_path)
 
     try:
         from celldex import fetch_reference  # type: ignore
     except ImportError:
         raise ImportError(
-            "celldex is required to download the HPCA reference. "
+            f"celldex is required to download the '{ref_name}' reference. "
             "Install with: pip install celldex"
         )
 
     logger.info(
-        f"Downloading HPCA reference via celldex "
-        f"(name='{_CELLDEX_HPCA_NAME}', version='{_CELLDEX_HPCA_VERSION}') ..."
+        f"Downloading celldex reference '{ref_name}' ({description}) "
+        f"(version={_CELLDEX_VERSION}) ..."
     )
     try:
-        se = fetch_reference(_CELLDEX_HPCA_NAME, version=_CELLDEX_HPCA_VERSION)
+        se = fetch_reference(celldex_name, version=_CELLDEX_VERSION)
     except Exception as e:
         raise RuntimeError(
-            f"Failed to download HPCA reference via celldex: {e}. "
+            f"Failed to download celldex reference '{ref_name}': {e}. "
             f"Check your internet connection or run: pip install celldex"
         ) from e
 
-    # se is a SummarizedExperiment — extract logcounts matrix and metadata
-    # Gene names are in row_names; cell-type labels in col_data["label.main"]
+    # Extract logcounts matrix (genes × samples) and aggregate to pseudobulk
     X_log = se.assay("logcounts")
     if hasattr(X_log, "toarray"):
         X_log = X_log.toarray()
-    X_log = np.asarray(X_log, dtype=np.float32)  # shape: genes × samples
+    X_log = np.asarray(X_log, dtype=np.float32)
 
-    col_data  = se.column_data
-    row_names = list(se.row_names)
-
-    # Each column is a sample; aggregate to pseudobulk per label.main
+    col_data   = se.column_data
+    row_names  = list(se.row_names)
     labels_all = list(col_data["label.main"])
-    unique_labels = list(dict.fromkeys(labels_all))  # preserve insertion order
+    unique_labels = list(dict.fromkeys(labels_all))
 
     pb_rows = []
     for lbl in unique_labels:
         col_mask = np.array([l == lbl for l in labels_all])
-        pb_rows.append(X_log[:, col_mask].mean(axis=1))  # mean over samples for this type
+        pb_rows.append(X_log[:, col_mask].mean(axis=1))
 
-    X_pb = np.vstack(pb_rows).astype(np.float32)  # shape: n_types × n_genes
+    X_pb = np.vstack(pb_rows).astype(np.float32)
 
     ref = sc.AnnData(X=X_pb)
     ref.obs_names = unique_labels
     ref.var_names = row_names
 
-    # Cache for future calls
     _SINGLER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
-    ref.write_h5ad(_HPCA_CACHE)
+    ref.write_h5ad(cache_path)
     logger.info(
         f"  Cached {len(unique_labels)} cell types × {len(row_names)} genes "
-        f"at: {_HPCA_CACHE}"
+        f"at: {cache_path}"
     )
-
     return ref
-
-
-# Keep old name as internal alias (used in cache test via _TABULA_SAPIENS_CACHE symbol)
-_load_tabula_sapiens = _load_hpca_reference
 
 
 def _load_hca_census(tissue: str) -> sc.AnnData:
@@ -1058,6 +1132,15 @@ def _load_singler_ref(
     """
     Route to the correct reference loader based on singler_ref value.
 
+    Routing priority
+    ----------------
+    1. None                           → HPCA via celldex (default)
+    2. Named celldex ref string       → _load_celldex_reference()
+       ("hpca", "blueprint_encode", "dice", "monaco_immune",
+        "novershtern_hematopoietic", "mouse_rnaseq")
+    3. "hca"                          → HCA Census API (requires cellxgene-census)
+    4. str/Path pointing to a file    → user-supplied H5AD
+
     Returns
     -------
     AnnData
@@ -1065,7 +1148,10 @@ def _load_singler_ref(
         X = mean log-normalised expression (pseudobulk).
     """
     if singler_ref is None:
-        ref = _load_hpca_reference()
+        ref = _load_celldex_reference("hpca")
+
+    elif isinstance(singler_ref, str) and singler_ref.lower() in _CELLDEX_KNOWN_REFS:
+        ref = _load_celldex_reference(singler_ref.lower())
 
     elif isinstance(singler_ref, str) and singler_ref.lower() == "hca":
         ref = _load_hca_census(tissue)
@@ -1074,23 +1160,21 @@ def _load_singler_ref(
         # User-supplied H5AD file
         path = Path(singler_ref)
         if not path.exists():
+            # Give a helpful error that also lists named options
+            valid = ", ".join(f'"{k}"' for k in _CELLDEX_KNOWN_REFS)
             raise FileNotFoundError(
                 f"SingleR reference file not found: {path}. "
-                f"Check the path passed to singler_ref."
+                f"If you meant a named celldex reference, valid options are: {valid}."
             )
         logger.info(f"Loading user-supplied SingleR reference from {path} ...")
         ref = sc.read_h5ad(path)
 
-        # If obs contains a cell_type column, use it as obs_names
         if singler_ref_label_col in ref.obs.columns:
             ref.obs_names = ref.obs[singler_ref_label_col].astype(str).values
-        # else obs_names are already the cell type labels
 
-    # Validate reference has enough cell types
     if ref.n_obs < 5:
         raise ValueError(
-            f"SingleR reference has only {ref.n_obs} cell types — need at least 5. "
-            f"Check the reference source."
+            f"SingleR reference has only {ref.n_obs} cell types — need at least 5."
         )
 
     return ref

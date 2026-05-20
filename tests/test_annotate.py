@@ -1122,3 +1122,131 @@ class TestSingleR:
                     ref = _load_hpca_reference()
         assert fake_cache.exists(), "Cache file should exist after first download"
         assert ref.n_obs >= 5, "Reference should have at least 5 cell types"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Reference selection tests — sctype_db_path and named celldex singler_ref
+# ─────────────────────────────────────────────────────────────────────────────
+
+class TestSctypeDbPath:
+    """Tests for the sctype_db_path parameter (local ScTypeDB file support)."""
+
+    def test_sctype_uses_local_db_when_path_given(self, adata_clustered, tmp_path):
+        """When sctype_db_path is set, _fetch_sctype_db reads that file (no network)."""
+        # Build a minimal ScTypeDB Excel in the expected format
+        mini_db = pd.DataFrame({
+            "tissueType":    ["Immune system", "Immune system"],
+            "cellName":      ["T cell", "B cell"],
+            "geneSymbolmore1": ["CD3D,CD3E", "MS4A1,CD19"],
+            "geneSymbolmore2": ["", ""],
+        })
+        db_path = tmp_path / "mini_sctype_db.xlsx"
+        mini_db.to_excel(db_path, index=False)
+
+        from pipeline.modules.annotation.annotate import _fetch_sctype_db
+        db = _fetch_sctype_db(db_path=db_path)
+        assert "tissueType" in db.columns
+        assert set(db["cellName"].tolist()) == {"T cell", "B cell"}
+
+    def test_sctype_local_db_missing_file_raises(self, adata_clustered):
+        """sctype_db_path pointing to non-existent file raises FileNotFoundError."""
+        from pipeline.modules.annotation.annotate import _fetch_sctype_db
+        with pytest.raises(FileNotFoundError):
+            _fetch_sctype_db(db_path="/nonexistent/db.xlsx")
+
+    def test_annotate_passes_sctype_db_path_to_run_sctype(self, adata_clustered, tmp_path):
+        """annotate() threads sctype_db_path through to _run_sctype."""
+        db_path = tmp_path / "mini_db.xlsx"
+
+        with patch("pipeline.modules.annotation.annotate._run_sctype") as mock_sctype:
+            annotate(
+                adata_clustered,
+                methods=["markers", "sctype"],
+                sctype_db_path=db_path,
+                inplace=False,
+            )
+        mock_sctype.assert_called_once()
+        _, call_kwargs = mock_sctype.call_args
+        assert call_kwargs.get("sctype_db_path") == db_path
+
+    def test_sctype_db_path_recorded_in_provenance(self, adata_clustered, tmp_path):
+        """sctype_db_path is recorded in provenance."""
+        mini_db = pd.DataFrame({
+            "tissueType":    ["Immune system"] * 2,
+            "cellName":      ["T cell", "B cell"],
+            "geneSymbolmore1": ["CD3D", "MS4A1"],
+            "geneSymbolmore2": ["", ""],
+        })
+        db_path = tmp_path / "mini_db.xlsx"
+        mini_db.to_excel(db_path, index=False)
+
+        adata_ann, ann_dict = annotate(
+            adata_clustered,
+            methods=["markers", "sctype"],
+            sctype_db_path=db_path,
+            inplace=False,
+        )
+        assert ann_dict["provenance"].get("sctype_db_path") == str(db_path)
+
+
+class TestSinglerNamedCelldexRef:
+    """Tests for named celldex references in singler_ref."""
+
+    def test_known_celldex_refs_constant_has_correct_keys(self):
+        """_CELLDEX_KNOWN_REFS contains all expected named references."""
+        from pipeline.modules.annotation.annotate import _CELLDEX_KNOWN_REFS
+        expected = {
+            "hpca", "blueprint_encode", "dice",
+            "monaco_immune", "novershtern_hematopoietic", "mouse_rnaseq",
+        }
+        assert set(_CELLDEX_KNOWN_REFS.keys()) == expected
+
+    def test_named_ref_routes_to_load_celldex_reference(self, adata_clustered):
+        """singler_ref='blueprint_encode' calls _load_celldex_reference, not the file-path branch."""
+        from pipeline.modules.annotation.annotate import _load_singler_ref
+        ref = _make_singler_ref()
+        with patch(
+            "pipeline.modules.annotation.annotate._load_celldex_reference",
+            return_value=ref,
+        ) as mock_load:
+            result = _load_singler_ref("blueprint_encode", "cell_type")
+        mock_load.assert_called_once_with("blueprint_encode")
+        assert result is ref
+
+    def test_named_ref_case_insensitive(self, adata_clustered):
+        """Named refs are case-insensitive (Blueprint_Encode → blueprint_encode)."""
+        from pipeline.modules.annotation.annotate import _load_singler_ref
+        ref = _make_singler_ref()
+        with patch(
+            "pipeline.modules.annotation.annotate._load_celldex_reference",
+            return_value=ref,
+        ) as mock_load:
+            _load_singler_ref("Blueprint_Encode", "cell_type")
+        mock_load.assert_called_once_with("blueprint_encode")
+
+    def test_unknown_ref_name_raises_valueerror(self):
+        """An unknown string that is not a file path raises a helpful ValueError."""
+        from pipeline.modules.annotation.annotate import _load_singler_ref
+        with pytest.raises((ValueError, FileNotFoundError)):
+            _load_singler_ref("nonexistent_reference", "cell_type")
+
+    def test_annotate_singler_named_ref_end_to_end(self, adata_clustered):
+        """annotate() with singler_ref='novershtern_hematopoietic' completes successfully."""
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        mock_result = MagicMock()
+        mock_result.column.side_effect = lambda col: (
+            ["CellType0"] * n if col == "best"
+            else np.full(n, 0.3, dtype=np.float64)
+        )
+        with patch("pipeline.modules.annotation.annotate._load_celldex_reference",
+                   return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "singler"],
+                    singler_ref="novershtern_hematopoietic",
+                    inplace=False,
+                )
+        assert "cell_type_singler" in adata_ann.obs.columns
+        assert ann_dict["provenance"]["singler_ref"] == "novershtern_hematopoietic"

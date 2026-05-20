@@ -72,13 +72,24 @@ steps:
       leiden_col: leiden
       tissue: "Immune system"
       scanvi_model: null   # set to path when model is ready
+
+      # CellTypist — added Healthy_COVID19_PBMC for PBMC/blood cross-check
       celltypist_models:
         - Immune_All_High.pkl
         - Immune_All_Low.pkl
-      singler_ref: null    # null → HPCA via celldex (default, recommended)
-                           # "hca" → HCA Census API (requires cellxgene-census)
-                           # path/to/ref.h5ad → user-supplied pseudobulk reference
-      singler_ref_label_col: cell_type   # obs column for cell types in user H5AD
+        - Healthy_COVID19_PBMC.pkl
+
+      # ScType — pin DB locally after first download to avoid network call each run
+      # To download once: see run_pipeline.py comments or docs
+      sctype_db_path: null   # null → fetch fresh from GitHub each run
+                             # "data/references/ScTypeDB_full.xlsx" → use local file
+
+      # SingleR — novershtern is bone-marrow specific (38 hematopoietic types)
+      # Options: hpca | blueprint_encode | dice | monaco_immune |
+      #          novershtern_hematopoietic | mouse_rnaseq |
+      #          hca | path/to/ref.h5ad
+      singler_ref: novershtern_hematopoietic
+      singler_ref_label_col: cell_type   # only used when singler_ref is a file path
 
   deg:
     enabled: true
