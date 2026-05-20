@@ -26,7 +26,39 @@ mirrors — and in two areas exceeds — what the automated AI pipeline would ha
 ---
 
 ## SECTION 2 — STUDY CONTEXT BLOCK
-> Fill this in before sending. Takes ~2 minutes.
+
+**Instructions for the model:**
+Before running any task in Section 4, read the first tab of the attached HTML report
+(labelled "Data Report" or equivalent — it contains Dataset Source, Key Metrics,
+and Metadata Inventory sections).
+
+Extract the following fields directly from that tab and fill the study context block
+below. Only fill a field from the report if the analyst has left it as a placeholder
+(i.e. still shows the example text in brackets). Never overwrite a field the analyst
+has already filled in.
+
+Extraction rules per field:
+- **Tissue**: read from the description paragraph under "Dataset Source"
+- **Disease**: read from the same description paragraph; if the word "healthy" appears
+  and no disease is mentioned, write "healthy (no disease)"
+- **Species**: read from the "Organism" row of the Dataset Source table;
+  normalise to: human / mouse / [other as written]
+- **Conditions**: infer from the description paragraph (e.g. tumour vs normal,
+  treated vs control, healthy donors); if unclear write "not reported"
+- **N cells (post-QC)**: read the "Cells" stat from the Key Metrics section
+- **N donors**: search the description paragraph for a phrase like "N donors" or
+  "N healthy donors"; if not found, check if a "DonorID" column appears in the
+  Metadata Inventory and note the number of unique values if reported; otherwise
+  write "not reported"
+- **Batch key**: check the "Batch / donor" row of the Metadata Inventory table;
+  prefer the column named: batch, sample_id, sample, or DonorID in that order;
+  if no batch columns are present write "null (single batch)"
+- **Biological question**: leave blank if the analyst has not stated one; do not
+  infer it here — you will infer it during Task 1 if needed
+- **Known biology**: leave blank unless the analyst has filled it in
+
+After filling the block, print it in full so the analyst can verify it before
+you proceed to Section 4.
 
 ```
 Tissue:               [e.g. liver / lung / PBMC]
