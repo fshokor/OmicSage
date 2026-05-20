@@ -19,9 +19,6 @@ vote         — Majority vote across all methods that were run.
                SingleR slot reserved for a future session.
                Requires both "celltypist" and "markers" to also be in methods.
 
-Methods planned for a future session
---------------------------------------
-singler      — SingleR-py with HCA Census API reference (reference source TBD)
 scanvi       — scANVI transfer learning via scvi-hub (optional, GPU-accelerated).
                Requires a pre-trained scANVI model directory (scanvi_model param).
                Posterior probability per cell is used as fractional vote weight.
@@ -72,7 +69,7 @@ import warnings
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Union
 
 import numpy as np
 import pandas as pd
@@ -140,6 +137,8 @@ def annotate(
     marker_sets: Optional[Dict[str, List[str]]] = None,
     tissue: str = "Immune system",
     scanvi_model: Optional[str] = None,
+    singler_ref: Optional[Union[str, Path]] = None,
+    singler_ref_label_col: str = "cell_type",
     inplace: bool = False,
 ) -> Tuple[sc.AnnData, dict]:
     """
@@ -151,9 +150,9 @@ def annotate(
         Clustered AnnData — must have adata.obs[leiden_col] and
         adata.layers["logcounts"] (log-normalised counts).
     methods : list of str, optional
-        Subset of {"celltypist", "markers", "sctype", "vote"}.
+        Subset of {"celltypist", "markers", "sctype", "singler", "vote"}.
         "vote" requires at least "celltypist" and "markers" also in the list.
-        Defaults to ["celltypist", "markers", "sctype", "vote"].
+        Defaults to ["celltypist", "markers", "sctype", "singler", "vote"].
     leiden_col : str
         obs column with cluster labels (default: "leiden").
     celltypist_models : list of str, optional
@@ -176,6 +175,23 @@ def annotate(
         SCVI_Model.save() or SCANVI_Model.save()).  Required when "scanvi"
         is in methods; ignored otherwise.
         The model must have been trained with the same gene set as adata.
+    singler_ref : str, Path, or None
+        Reference source for SingleR annotation:
+          None (default) → Human Primary Cell Atlas (HPCA) pseudobulk reference
+                           (Mabbott et al. 2013, processed by Aran et al. 2019).
+                           Downloaded via the ``celldex`` Python package on first
+                           call and cached at
+                           ``~/.cache/omicsage/singler/hpca_ref.h5ad``.
+                           Requires: ``pip install celldex``
+          "hca"          → HCA Census API (streamed at runtime, requires
+                           cellxgene-census package).
+          str/Path        → Path to a user-supplied H5AD pseudobulk reference
+                           (obs = cell types, var = genes, X = mean log-
+                           normalised expression).
+        Only used when "singler" is in methods.
+    singler_ref_label_col : str
+        obs column in user-supplied H5AD that contains cell type labels.
+        Only used when singler_ref is a file path. Default: "cell_type".
     inplace : bool
         If False (default), work on a copy; caller's object is unchanged.
 
@@ -188,7 +204,7 @@ def annotate(
     """
     # ── Defaults ───────────────────────────────────────────────────────────────
     if methods is None:
-        methods = ["celltypist", "markers", "sctype", "vote"]
+        methods = ["celltypist", "markers", "sctype", "singler", "vote"]
     if celltypist_models is None:
         celltypist_models = ["Immune_All_High.pkl", "Immune_All_Low.pkl"]
     if celltypist_models_dir is None:
@@ -211,15 +227,6 @@ def annotate(
 
     if "vote" in methods:
         _check_vote_prerequisites(methods)
-
-    # Warn about not-yet-implemented methods
-    for m in ("singler",):
-        if m in methods:
-            warnings.warn(
-                f"Method '{m}' is not yet implemented and will be skipped.",
-                UserWarning, stacklevel=2,
-            )
-    methods = [m for m in methods if m not in ("singler",)]
 
     # Validate scanvi_model is provided when scanvi is requested
     if "scanvi" in methods and scanvi_model is None:
@@ -274,6 +281,21 @@ def annotate(
                 UserWarning, stacklevel=2,
             )
 
+    if "singler" in methods:
+        try:
+            _run_singler(
+                adata_ann, leiden_col,
+                singler_ref=singler_ref,
+                singler_ref_label_col=singler_ref_label_col,
+            )
+            methods_run.append("singler")
+            logger.info("SingleR annotation complete.")
+        except Exception as e:
+            warnings.warn(
+                f"SingleR annotation failed ({e}) — skipping.",
+                UserWarning, stacklevel=2,
+            )
+
     if "scanvi" in methods:
         try:
             cluster_posteriors = _run_scanvi(adata_ann, leiden_col, scanvi_model)
@@ -323,6 +345,8 @@ def annotate(
         "marker_sets_keys":       list(marker_sets.keys()),
         "sctype_tissue":          tissue,
         "scanvi_model_path":      str(scanvi_model) if scanvi_model else None,
+        "singler_ref":            str(singler_ref) if singler_ref is not None else "hpca",
+        "singler_ref_label_col":  singler_ref_label_col,
         "n_clusters":             int(adata_ann.obs[leiden_col].nunique()),
         "n_cells":                int(adata_ann.n_obs),
         "celltypist_version":     ct_version,
@@ -854,6 +878,338 @@ def _run_scanvi(
         cluster_posteriors[str(cl)] = float(posteriors[mask].mean())
 
     return cluster_posteriors
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SingleR — Spearman correlation against a pseudobulk reference
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SINGLER_CACHE_DIR  = Path.home() / ".cache" / "omicsage" / "singler"
+_HPCA_CACHE         = _SINGLER_CACHE_DIR / "hpca_ref.h5ad"
+
+# celldex dataset name and version for Human Primary Cell Atlas
+_CELLDEX_HPCA_NAME    = "hpca"
+_CELLDEX_HPCA_VERSION = "2024-02-26"
+
+# Keep the old name as an alias so the public symbol _TABULA_SAPIENS_CACHE
+# still resolves (used in the CI-skipped cache test).
+_TABULA_SAPIENS_CACHE = _HPCA_CACHE
+
+
+def _load_hpca_reference() -> sc.AnnData:
+    """
+    Download the Human Primary Cell Atlas (HPCA) pseudobulk reference via the
+    Python ``celldex`` package on first call, then cache the result at
+    ``~/.cache/omicsage/singler/hpca_ref.h5ad``.
+
+    The HPCA reference (Mabbott et al. 2013, processed by Aran et al. 2019)
+    contains 713 microarray samples covering 37 main cell types and is the
+    standard SingleR reference for human data.  It is fetched from the same
+    gypsum / ArtifactDB backend used by the R ``celldex`` / ``SingleR``
+    packages, guaranteeing version-locked reproducibility.
+
+    Requires
+    --------
+    celldex >= 0.3.0 (``pip install celldex``)
+
+    Returns
+    -------
+    AnnData
+        obs_names = cell type labels (``label.main``),
+        var_names = gene symbols,
+        X = mean log-normalised expression per cell type (dense float32).
+    """
+    if _HPCA_CACHE.exists():
+        logger.info(f"Loading HPCA reference from cache: {_HPCA_CACHE}")
+        return sc.read_h5ad(_HPCA_CACHE)
+
+    try:
+        from celldex import fetch_reference  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "celldex is required to download the HPCA reference. "
+            "Install with: pip install celldex"
+        )
+
+    logger.info(
+        f"Downloading HPCA reference via celldex "
+        f"(name='{_CELLDEX_HPCA_NAME}', version='{_CELLDEX_HPCA_VERSION}') ..."
+    )
+    try:
+        se = fetch_reference(_CELLDEX_HPCA_NAME, version=_CELLDEX_HPCA_VERSION)
+    except Exception as e:
+        raise RuntimeError(
+            f"Failed to download HPCA reference via celldex: {e}. "
+            f"Check your internet connection or run: pip install celldex"
+        ) from e
+
+    # se is a SummarizedExperiment — extract logcounts matrix and metadata
+    # Gene names are in row_names; cell-type labels in col_data["label.main"]
+    X_log = se.assay("logcounts")
+    if hasattr(X_log, "toarray"):
+        X_log = X_log.toarray()
+    X_log = np.asarray(X_log, dtype=np.float32)  # shape: genes × samples
+
+    col_data  = se.column_data
+    row_names = list(se.row_names)
+
+    # Each column is a sample; aggregate to pseudobulk per label.main
+    labels_all = list(col_data["label.main"])
+    unique_labels = list(dict.fromkeys(labels_all))  # preserve insertion order
+
+    pb_rows = []
+    for lbl in unique_labels:
+        col_mask = np.array([l == lbl for l in labels_all])
+        pb_rows.append(X_log[:, col_mask].mean(axis=1))  # mean over samples for this type
+
+    X_pb = np.vstack(pb_rows).astype(np.float32)  # shape: n_types × n_genes
+
+    ref = sc.AnnData(X=X_pb)
+    ref.obs_names = unique_labels
+    ref.var_names = row_names
+
+    # Cache for future calls
+    _SINGLER_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    ref.write_h5ad(_HPCA_CACHE)
+    logger.info(
+        f"  Cached {len(unique_labels)} cell types × {len(row_names)} genes "
+        f"at: {_HPCA_CACHE}"
+    )
+
+    return ref
+
+
+# Keep old name as internal alias (used in cache test via _TABULA_SAPIENS_CACHE symbol)
+_load_tabula_sapiens = _load_hpca_reference
+
+
+def _load_hca_census(tissue: str) -> sc.AnnData:
+    """
+    Stream mean log-normalised expression per cell type from the HCA Census API.
+
+    Requires cellxgene-census (gated behind ImportError). Queries the census
+    for cells matching the given tissue, computes pseudobulk mean per cell_type,
+    and returns an AnnData in the standard pseudobulk format.
+
+    Parameters
+    ----------
+    tissue : str
+        Tissue name as it appears in the HCA Census obs metadata.
+
+    Returns
+    -------
+    AnnData
+        obs_names = cell type labels, var_names = genes,
+        X = mean log-normalised expression per cell type (dense float32).
+    """
+    try:
+        import cellxgene_census  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "cellxgene-census is required for singler_ref='hca'. "
+            "Install with: pip install cellxgene-census"
+        )
+
+    logger.info(f"Streaming HCA Census reference for tissue='{tissue}' ...")
+
+    with cellxgene_census.open_soma() as census:
+        adata_tissue = cellxgene_census.get_anndata(
+            census,
+            organism="Homo sapiens",
+            obs_value_filter=f"tissue_general == '{tissue}'",
+            column_names={"obs": ["cell_type"]},
+        )
+
+    if len(adata_tissue) == 0:
+        raise ValueError(
+            f"No cells found in HCA Census for tissue='{tissue}'. "
+            f"Check the tissue name against available values."
+        )
+
+    # Build pseudobulk: mean expression per cell type
+    sc.pp.normalize_total(adata_tissue, target_sum=1e4)
+    sc.pp.log1p(adata_tissue)
+
+    cell_types = adata_tissue.obs["cell_type"].unique().tolist()
+    X_raw = adata_tissue.X
+    if hasattr(X_raw, "toarray"):
+        X_raw = X_raw.toarray()
+    X_raw = np.asarray(X_raw, dtype=np.float32)
+
+    pb_rows = []
+    for ct in cell_types:
+        mask = (adata_tissue.obs["cell_type"] == ct).values
+        pb_rows.append(X_raw[mask, :].mean(axis=0))
+
+    X_pb = np.vstack(pb_rows).astype(np.float32)
+    ref  = sc.AnnData(X=X_pb)
+    ref.obs_names  = cell_types
+    ref.var_names  = adata_tissue.var_names.tolist()
+
+    logger.info(f"  HCA Census reference: {len(cell_types)} cell types, {ref.n_vars} genes")
+    return ref
+
+
+def _load_singler_ref(
+    singler_ref: Optional[Union[str, Path]],
+    singler_ref_label_col: str,
+    tissue: str = "",
+) -> sc.AnnData:
+    """
+    Route to the correct reference loader based on singler_ref value.
+
+    Returns
+    -------
+    AnnData
+        obs_names = cell type labels, var_names = genes,
+        X = mean log-normalised expression (pseudobulk).
+    """
+    if singler_ref is None:
+        ref = _load_hpca_reference()
+
+    elif isinstance(singler_ref, str) and singler_ref.lower() == "hca":
+        ref = _load_hca_census(tissue)
+
+    else:
+        # User-supplied H5AD file
+        path = Path(singler_ref)
+        if not path.exists():
+            raise FileNotFoundError(
+                f"SingleR reference file not found: {path}. "
+                f"Check the path passed to singler_ref."
+            )
+        logger.info(f"Loading user-supplied SingleR reference from {path} ...")
+        ref = sc.read_h5ad(path)
+
+        # If obs contains a cell_type column, use it as obs_names
+        if singler_ref_label_col in ref.obs.columns:
+            ref.obs_names = ref.obs[singler_ref_label_col].astype(str).values
+        # else obs_names are already the cell type labels
+
+    # Validate reference has enough cell types
+    if ref.n_obs < 5:
+        raise ValueError(
+            f"SingleR reference has only {ref.n_obs} cell types — need at least 5. "
+            f"Check the reference source."
+        )
+
+    return ref
+
+
+def _run_singler(
+    adata: sc.AnnData,
+    leiden_col: str,
+    singler_ref: Optional[Union[str, Path]] = None,
+    singler_ref_label_col: str = "cell_type",
+    num_threads: int = 1,
+) -> None:
+    """
+    Annotate cells using the ``singler`` Python package (C++ SingleR bindings).
+
+    Delegates all score computation, pairwise marker selection, iterative
+    fine-tuning, and delta-based pruning to ``singler.annotate_single``.
+    Cells whose delta score is ≤ 0 are labelled "Unassigned" (SingleR's own
+    pruning convention); their ``singler_delta`` value is stored as NaN.
+
+    Reference loading uses the 3-tier hierarchy defined in ``_load_singler_ref``:
+      - None (default) → HPCA via ``celldex`` (``pip install celldex``)
+      - "hca"          → HCA Census API (``pip install cellxgene-census``)
+      - Path / str     → user-supplied H5AD pseudobulk reference
+
+    Parameters
+    ----------
+    adata : AnnData
+        Must have ``adata.obs[leiden_col]`` and ``adata.layers["logcounts"]``
+        (or ``adata.X``) with log-normalised expression.
+    leiden_col : str
+        obs column with cluster labels.
+    singler_ref : str, Path, or None
+        Reference source — see ``_load_singler_ref()``.
+    singler_ref_label_col : str
+        obs column in user-supplied H5AD that contains cell type labels.
+    num_threads : int
+        Number of threads to pass to ``singler.annotate_single`` (default 1).
+
+    Writes
+    ------
+    obs['cell_type_singler']  — per-cell label (str, category dtype).
+                                "Unassigned" for low-confidence cells.
+    obs['singler_delta']      — per-cell delta score (float).
+                                NaN for "Unassigned" cells.
+    """
+    try:
+        import singler as _singler  # type: ignore
+    except ImportError:
+        raise ImportError(
+            "singler is required for SingleR annotation. "
+            "Install with: pip install singler"
+        )
+
+    # ── Load reference (routes to HPCA / HCA Census / user H5AD) ─────────────
+    ref = _load_singler_ref(singler_ref, singler_ref_label_col)
+
+    # ── Build test matrix: genes × cells (singler convention) ─────────────────
+    if "logcounts" in adata.layers:
+        X_test = adata.layers["logcounts"]
+    else:
+        X_test = adata.X
+
+    if hasattr(X_test, "toarray"):
+        X_test = X_test.toarray()
+    X_test = np.asarray(X_test, dtype=np.float32).T  # genes × cells
+
+    test_features = list(adata.var_names)
+
+    # ── Build ref matrix and labels ───────────────────────────────────────────
+    # ref is an AnnData: obs = cell types (samples), var = genes.
+    # singler expects ref as genes × samples.
+    X_ref = ref.X
+    if hasattr(X_ref, "toarray"):
+        X_ref = X_ref.toarray()
+    X_ref = np.asarray(X_ref, dtype=np.float32).T  # genes × cell-type-samples
+
+    ref_features = list(ref.var_names)
+    ref_labels   = list(ref.obs_names)  # one label per column of X_ref
+
+    # ── Run SingleR ───────────────────────────────────────────────────────────
+    logger.info(
+        f"Running SingleR: {X_test.shape[1]} cells × "
+        f"{len(ref_labels)} reference labels ..."
+    )
+    result = _singler.annotate_single(
+        test_data=X_test,
+        ref_data=X_ref,
+        ref_labels=ref_labels,
+        test_features=test_features,
+        ref_features=ref_features,
+        num_threads=num_threads,
+    )
+
+    # ── Extract per-cell results ───────────────────────────────────────────────
+    best   = list(result.column("best"))    # per-cell label strings
+    deltas = np.asarray(result.column("delta"), dtype=np.float64)
+
+    # Pruning: singler signals low-confidence as delta ≤ 0 (or None)
+    labels_final = []
+    deltas_final = []
+    for lbl, d in zip(best, deltas):
+        if lbl is None or (np.isfinite(d) and d <= 0):
+            labels_final.append("Unassigned")
+            deltas_final.append(float("nan"))
+        else:
+            labels_final.append(str(lbl))
+            deltas_final.append(float(d))
+
+    # ── Write obs columns ─────────────────────────────────────────────────────
+    adata.obs["cell_type_singler"] = pd.Categorical(labels_final)
+    adata.obs["singler_delta"]     = np.array(deltas_final, dtype=np.float64)
+
+    n_types    = adata.obs["cell_type_singler"].nunique()
+    n_assigned = sum(l != "Unassigned" for l in labels_final)
+    print(
+        f"  SingleR (singler {_singler.__version__}): {n_types} types, "
+        f"{n_assigned}/{len(adata)} cells assigned"
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────

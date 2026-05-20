@@ -58,6 +58,10 @@ from pipeline.modules.annotation.annotate import (
     _run_sctype,
     _run_scanvi,
     _run_majority_vote,
+    _run_singler,
+    _load_singler_ref,
+    _HPCA_CACHE,
+    _TABULA_SAPIENS_CACHE,
     MARKER_SETS,
 )
 
@@ -877,3 +881,244 @@ class TestNWayVote:
         vote_df = _run_majority_vote(adata, score_df, "leiden")
         assert (vote_df["final_label"] == "Unknown").all(), \
             "With no active slots, all clusters should be 'Unknown'"
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SingleR tests — all mocked, no real network calls in CI
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _make_singler_ref(n_types: int = 6, n_genes: int = 50) -> sc.AnnData:
+    """
+    Build a small in-memory pseudobulk AnnData suitable as a SingleR reference.
+    obs_names = cell type labels, var_names = gene symbols (some shared with fixture).
+    X = mean log-normalised expression (dense float32).
+    """
+    rng = np.random.default_rng(99)
+
+    # Use gene names that overlap with the fixture fixture gene set
+    shared_genes = [
+        "CD3D", "CD3E", "CD68", "CD14", "MS4A1",
+        "ALB", "APOC3", "COL1A1", "PECAM1", "VWF",
+    ]
+    extra_genes = [f"REF_GENE{i}" for i in range(n_genes - len(shared_genes))]
+    gene_names  = shared_genes + extra_genes
+
+    cell_type_names = [f"CellType{i}" for i in range(n_types)]
+    X = rng.uniform(0.0, 3.0, size=(n_types, len(gene_names))).astype(np.float32)
+
+    # Make types clearly distinguishable by assigning high expression to a unique gene
+    for i in range(min(n_types, len(shared_genes))):
+        X[i, i] = 10.0  # strong signature for each type
+
+    ref = sc.AnnData(X=X)
+    ref.obs_names = cell_type_names
+    ref.var_names = gene_names
+    return ref
+
+
+class TestSingleR:
+    """
+    Unit and integration tests for _run_singler() and its helpers.
+
+    Mock strategy
+    -------------
+    Every test patches BOTH:
+      1. ``pipeline.modules.annotation.annotate._load_singler_ref`` → returns a
+         small in-memory AnnData so no network call is made.
+      2. ``singler.annotate_single`` → returns a controlled BiocFrame-like object
+         so the C++ library is never invoked and results are predictable.
+
+    This keeps all 13 tests fast and deterministic in CI.
+    """
+
+    # ── Shared mock factories ──────────────────────────────────────────────────
+
+    @staticmethod
+    def _make_singler_result(n_cells: int, label: str = "T cell", delta: float = 0.3):
+        """
+        Return a minimal mock that mimics singler.annotate_single's BiocFrame output.
+        Columns: best (list of str), delta (np.ndarray of float64).
+        """
+        mock_result = MagicMock()
+        mock_result.column.side_effect = lambda col: (
+            [label] * n_cells if col == "best"
+            else np.full(n_cells, delta, dtype=np.float64)
+        )
+        return mock_result
+
+    @staticmethod
+    def _make_singler_result_unassigned(n_cells: int):
+        """Return a mock where all deltas are ≤ 0 → all cells → 'Unassigned'."""
+        mock_result = MagicMock()
+        mock_result.column.side_effect = lambda col: (
+            ["T cell"] * n_cells if col == "best"
+            else np.full(n_cells, 0.0, dtype=np.float64)   # delta=0 → Unassigned
+        )
+        return mock_result
+
+    def _run_with_mocks(self, adata, label="T cell", delta=0.3):
+        """Helper: run _run_singler with both _load_singler_ref and singler.annotate_single mocked."""
+        ref = _make_singler_ref()
+        n = len(adata)
+        mock_result = self._make_singler_result(n, label=label, delta=delta)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                _run_singler(adata, "leiden")
+
+    # ── Core output tests ──────────────────────────────────────────────────────
+
+    def test_singler_column_exists(self, adata_clustered):
+        self._run_with_mocks(adata_clustered)
+        assert "cell_type_singler" in adata_clustered.obs.columns
+
+    def test_singler_delta_column_exists(self, adata_clustered):
+        self._run_with_mocks(adata_clustered)
+        assert "singler_delta" in adata_clustered.obs.columns
+
+    def test_singler_labels_are_strings(self, adata_clustered):
+        self._run_with_mocks(adata_clustered)
+        labels = adata_clustered.obs["cell_type_singler"]
+        assert all(isinstance(v, str) for v in labels), \
+            "All cell_type_singler values must be strings"
+
+    def test_singler_every_cell_covered(self, adata_clustered):
+        self._run_with_mocks(adata_clustered)
+        n_null = adata_clustered.obs["cell_type_singler"].isna().sum()
+        assert n_null == 0, f"{n_null} cells have null cell_type_singler"
+
+    def test_singler_delta_is_float(self, adata_clustered):
+        self._run_with_mocks(adata_clustered)
+        deltas = adata_clustered.obs["singler_delta"]
+        assert pd.api.types.is_float_dtype(deltas), \
+            f"singler_delta should be float dtype, got {deltas.dtype}"
+
+    def test_singler_unassigned_for_low_delta(self, adata_clustered):
+        """
+        When singler returns delta=0 for all cells, _run_singler should label
+        them all 'Unassigned' (delta ≤ 0 → pruned).
+        """
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        mock_result = self._make_singler_result_unassigned(n)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                _run_singler(adata_clustered, "leiden")
+        labels = adata_clustered.obs["cell_type_singler"].unique().tolist()
+        assert "Unassigned" in labels, \
+            "Cells with delta≤0 should be labelled Unassigned"
+
+    def test_singler_delta_nan_for_unassigned(self, adata_clustered):
+        """delta must be NaN for cells labelled 'Unassigned'."""
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        mock_result = self._make_singler_result_unassigned(n)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                _run_singler(adata_clustered, "leiden")
+        mask_unassigned = adata_clustered.obs["cell_type_singler"] == "Unassigned"
+        if mask_unassigned.any():
+            deltas_unassigned = adata_clustered.obs.loc[mask_unassigned, "singler_delta"]
+            assert deltas_unassigned.isna().all(), \
+                "Unassigned cells must have NaN delta"
+
+    def test_singler_uses_logcounts_layer(self, adata_clustered):
+        """
+        Zero out logcounts — _run_singler should use it (not .X).
+        We verify by checking singler.annotate_single was still called
+        (it would receive an all-zero matrix — no crash expected).
+        """
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        lc = adata_clustered.layers["logcounts"]
+        adata_clustered.layers["logcounts"] = np.zeros_like(
+            lc if not hasattr(lc, "toarray") else lc.toarray()
+        )
+        mock_result = self._make_singler_result(n)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result) as mock_fn:
+                _run_singler(adata_clustered, "leiden")
+        mock_fn.assert_called_once()
+        # The test_data passed to singler should be all zeros (logcounts used, not .X)
+        call_kwargs = mock_fn.call_args
+        X_passed = call_kwargs.kwargs.get("test_data", call_kwargs.args[0] if call_kwargs.args else None)
+        assert X_passed is not None
+        assert np.allclose(X_passed, 0.0), "singler received non-zero matrix — logcounts not used"
+        assert "cell_type_singler" in adata_clustered.obs.columns
+
+    # ── Provenance tests ───────────────────────────────────────────────────────
+
+    def test_singler_ref_recorded_in_provenance(self, adata_clustered):
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        mock_result = self._make_singler_result(n)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "singler"],
+                    inplace=False,
+                )
+        assert "singler_ref" in ann_dict["provenance"]
+
+    def test_singler_ref_label_col_recorded_in_provenance(self, adata_clustered):
+        ref = _make_singler_ref()
+        n = len(adata_clustered)
+        mock_result = self._make_singler_result(n)
+        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+            with patch("singler.annotate_single", return_value=mock_result):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "singler"],
+                    singler_ref_label_col="my_cell_type",
+                    inplace=False,
+                )
+        assert ann_dict["provenance"].get("singler_ref_label_col") == "my_cell_type"
+
+    # ── Error handling tests ───────────────────────────────────────────────────
+
+    def test_singler_skipped_gracefully_on_error(self, adata_clustered):
+        """If _run_singler raises, annotate() warns and skips — no crash."""
+        with patch(
+            "pipeline.modules.annotation.annotate._run_singler",
+            side_effect=RuntimeError("ref download failed"),
+        ):
+            with pytest.warns(UserWarning, match="SingleR annotation failed"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "singler"],
+                    inplace=False,
+                )
+        assert "singler" not in ann_dict["provenance"]["methods_run"]
+        assert "cell_type_singler" not in adata_ann.obs.columns
+
+    def test_hca_import_error_raised_without_package(self, adata_clustered):
+        """singler_ref='hca' without cellxgene-census installed raises ImportError."""
+        with patch.dict("sys.modules", {"cellxgene_census": None}):
+            with pytest.raises((ImportError, Exception)):
+                _load_singler_ref("hca", "cell_type")
+
+    def test_user_h5ad_missing_file_raises(self, adata_clustered):
+        """singler_ref pointing to a non-existent file raises FileNotFoundError."""
+        with pytest.raises(FileNotFoundError):
+            _load_singler_ref("/nonexistent/path/ref.h5ad", "cell_type")
+
+    # ── Cache test (skipped in CI) ─────────────────────────────────────────────
+
+    @pytest.mark.skipif(
+        os.getenv("OMICSAGE_CI") == "true",
+        reason="Skipped in CI — requires network access to download HPCA reference",
+    )
+    def test_tabula_sapiens_cached_after_first_download(self, tmp_path):
+        """
+        After _load_hpca_reference() runs, the cache file must exist.
+        We patch both _HPCA_CACHE and _TABULA_SAPIENS_CACHE (alias) and
+        _SINGLER_CACHE_DIR to avoid touching the real ~/.cache directory.
+        """
+        from pipeline.modules.annotation.annotate import _load_hpca_reference
+        fake_cache = tmp_path / "hpca_ref.h5ad"
+        with patch("pipeline.modules.annotation.annotate._HPCA_CACHE", fake_cache):
+            with patch("pipeline.modules.annotation.annotate._TABULA_SAPIENS_CACHE", fake_cache):
+                with patch("pipeline.modules.annotation.annotate._SINGLER_CACHE_DIR", tmp_path):
+                    ref = _load_hpca_reference()
+        assert fake_cache.exists(), "Cache file should exist after first download"
+        assert ref.n_obs >= 5, "Reference should have at least 5 cell types"
