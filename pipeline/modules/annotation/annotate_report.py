@@ -265,6 +265,17 @@ def _section_summary(adata_annotated: AnnData, prov: dict,
             f'<div class="stat-label">scANVI types</div></div>'
         )
 
+    # SingleR stat card (shown only when SingleR ran)
+    singler_stat = ""
+    if "cell_type_singler" in adata_annotated.obs.columns:
+        n_singler = adata_annotated.obs["cell_type_singler"].nunique()
+        n_assigned = (adata_annotated.obs["cell_type_singler"] != "Unassigned").sum()
+        pct = 100 * n_assigned / max(adata_annotated.n_obs, 1)
+        singler_stat = (
+            f'<div class="stat-card"><div class="stat-value">{n_singler}</div>'
+            f'<div class="stat-label">SingleR types ({pct:.0f}% assigned)</div></div>'
+        )
+
     stat_cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
@@ -276,10 +287,11 @@ def _section_summary(adata_annotated: AnnData, prov: dict,
                                    if "cell_type_vote" in adata_annotated.obs else "?")),
             ("Med. confidence", conf_median),
         ]
-    ) + scanvi_stat
+    ) + scanvi_stat + singler_stat
 
     sctype_tissue = prov.get("sctype_tissue", "—")
     scanvi_model  = prov.get("scanvi_model_path", "—")
+    singler_ref   = prov.get("singler_ref", "—")
     param_rows = "".join(
         f"<tr><td>{k}</td><td>{v}</td></tr>"
         for k, v in [
@@ -287,6 +299,7 @@ def _section_summary(adata_annotated: AnnData, prov: dict,
             ("CellTypist models",     ", ".join(prov.get("celltypist_models", []))),
             ("Marker sets used",      str(len(prov.get("marker_sets_keys", [])))),
             ("ScType tissue",         sctype_tissue),
+            ("SingleR reference",     singler_ref),
             ("scANVI model",          scanvi_model),
             ("CellTypist models dir", prov.get("celltypist_models_dir", "?")),
         ]
@@ -333,6 +346,7 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         f"<td>{_mode('celltypist_fine', cl)}</td>"
         f"<td>{_mode('cell_type_markers', cl)}</td>"
         f"<td>{_mode('cell_type_sctype', cl)}</td>"
+        f"<td>{_mode('cell_type_singler', cl)}</td>"
         f"<td>{_mode('cell_type_scanvi', cl)}</td>"
         f"<td><strong>{_mode('cell_type_vote', cl)}</strong></td>"
         f"<td>{_conf_badge(cl)}</td></tr>"
@@ -346,7 +360,7 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         <thead>
           <tr><th>Cluster</th><th>n cells</th><th>CellTypist coarse</th>
               <th>CellTypist fine</th><th>Marker score</th>
-              <th>ScType</th><th>scANVI</th>
+              <th>ScType</th><th>SingleR</th><th>scANVI</th>
               <th>Consensus</th><th>Confidence</th></tr>
         </thead>
         <tbody>{rows}</tbody>
@@ -358,13 +372,14 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
 def _section_figures(figs: dict, methods_run: list) -> str:
     panels = []
 
-    # CellTypist coarse / fine / marker / sctype / scanvi — half-width each
+    # CellTypist coarse / fine / marker / sctype / singler / scanvi — half-width each
     for key, title in [
-        ("coarse",  "UMAP — CellTypist Coarse Labels (Immune_All_High)"),
-        ("fine",    "UMAP — CellTypist Fine Labels (Immune_All_Low)"),
-        ("markers", "UMAP — Marker Gene Score Labels"),
-        ("sctype",  "UMAP — ScType Labels"),
-        ("scanvi",  "UMAP — scANVI Transfer Labels"),
+        ("coarse",   "UMAP — CellTypist Coarse Labels (Immune_All_High)"),
+        ("fine",     "UMAP — CellTypist Fine Labels (Immune_All_Low)"),
+        ("markers",  "UMAP — Marker Gene Score Labels"),
+        ("sctype",   "UMAP — ScType Labels"),
+        ("singler",  "UMAP — SingleR Labels (HPCA reference)"),
+        ("scanvi",   "UMAP — scANVI Transfer Labels"),
     ]:
         if figs.get(key):
             panels.append(
@@ -485,6 +500,9 @@ def run_annotate_report(
         "sctype":  _plot_umap_labels(adata_annotated, "cell_type_sctype",
                                      "UMAP — ScType Labels",
                                      "Best ScType label per cluster"),
+        "singler": _plot_umap_labels(adata_annotated, "cell_type_singler",
+                                     "UMAP — SingleR Labels",
+                                     "Per-cell label from SingleR (HPCA reference)"),
         "scanvi":  _plot_umap_labels(adata_annotated, "cell_type_scanvi",
                                      "UMAP — scANVI Transfer Labels",
                                      "Per-cell label from scANVI model"),

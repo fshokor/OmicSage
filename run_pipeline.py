@@ -437,9 +437,13 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
     adata = sc.read_h5ad(input_path)
     adata_annotated, annotation_dict = annotate(
         adata,
-        methods=params.get("methods", ["celltypist", "markers", "vote"]),
+        methods=params.get("methods", ["celltypist", "markers", "sctype", "singler", "vote"]),
         leiden_col=params.get("leiden_col", "leiden"),
         celltypist_models=params.get("celltypist_models", ["Immune_All_High.pkl"]),
+        tissue=params.get("tissue", "Immune system"),
+        scanvi_model=params.get("scanvi_model"),
+        singler_ref=params.get("singler_ref"),
+        singler_ref_label_col=params.get("singler_ref_label_col", "cell_type"),
         inplace=False,
     )
 

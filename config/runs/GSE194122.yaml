@@ -68,13 +68,17 @@ steps:
   annotate:
     enabled: true
     params:
-      methods: ["celltypist", "markers", "sctype", "vote"]
+      methods: ["celltypist", "markers", "sctype", "singler", "vote"]
       leiden_col: leiden
       tissue: "Immune system"
       scanvi_model: null   # set to path when model is ready
       celltypist_models:
         - Immune_All_High.pkl
         - Immune_All_Low.pkl
+      singler_ref: null    # null → HPCA via celldex (default, recommended)
+                           # "hca" → HCA Census API (requires cellxgene-census)
+                           # path/to/ref.h5ad → user-supplied pseudobulk reference
+      singler_ref_label_col: cell_type   # obs column for cell types in user H5AD
 
   deg:
     enabled: true
