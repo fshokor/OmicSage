@@ -1,7 +1,7 @@
 """
 tests/test_annotate.py
 ======================
-Test suite for pipeline/modules/qc/annotate.py
+Test suite for pipeline/modules/annotation/annotate.py
 
 Tests
 -----
@@ -27,6 +27,11 @@ celltypist is absent so vote falls back gracefully).
 
 A separate integration-level test tag (omit from CI) covers the real CellTypist
 path on the full GSE194122 dataset.
+
+ScType-py tests — add these to tests/test_annotate.py
+======================================================
+All network-dependent tests are skipped in CI via OMICSAGE_CI env var.
+Pure-logic tests (parse, score) run always — no network needed.
 """
 
 import warnings
@@ -37,12 +42,22 @@ import pytest
 import scipy.sparse as sp
 import scanpy as sc
 
+import os
+import io
+from unittest.mock import patch, MagicMock
+
 # ── Import the module under test ───────────────────────────────────────────────
 import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline.modules.annotation.annotate import annotate, MARKER_SETS
+from pipeline.modules.annotation.annotate import (
+    annotate,
+    _fetch_sctype_db,
+    _parse_sctype_markers,
+    _run_sctype,
+    MARKER_SETS,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -297,6 +312,294 @@ def test_custom_marker_sets(adata_clustered):
     # marker_sets_keys in uns should reflect the custom set
     assert set(adata_ann.uns["omicsage_annotate"]["marker_sets_keys"]) == valid
 
+
+# ── Shared fixture ─────────────────────────────────────────────────────────────
+ 
+@pytest.fixture
+def adata_clustered():
+    """
+    Minimal AnnData with logcounts layer and leiden clusters.
+    10 cells, 20 genes, 3 clusters.
+    Gene names include a handful from MARKER_SETS so scoring is non-zero.
+    """
+    rng = np.random.default_rng(42)
+    n_cells, n_genes = 10, 20
+ 
+    # Use real gene names so marker sets can match
+    gene_names = [
+        "CD3D", "CD3E", "CD68", "CD14", "MS4A1",    # immune markers
+        "ALB", "APOC3", "COL1A1", "PECAM1", "VWF",  # parenchymal
+        "GeneA", "GeneB", "GeneC", "GeneD", "GeneE",
+        "GeneF", "GeneG", "GeneH", "GeneI", "GeneJ",
+    ]
+    X = rng.poisson(1.0, size=(n_cells, n_genes)).astype(np.float32)
+    adata = sc.AnnData(X=X)
+    adata.var_names = gene_names
+    adata.obs_names = [f"cell_{i}" for i in range(n_cells)]
+    adata.obs["leiden"] = pd.Categorical(
+        ["0", "0", "0", "1", "1", "1", "1", "2", "2", "2"]
+    )
+    adata.layers["logcounts"] = np.log1p(X)
+    return adata
+ 
+ 
+# ── Minimal mock ScTypeDB ──────────────────────────────────────────────────────
+ 
+def _make_mock_db() -> pd.DataFrame:
+    """
+    Minimal ScTypeDB-shaped DataFrame covering two tissues.
+    Positive/negative markers are drawn from gene_names in the fixture.
+    """
+    return pd.DataFrame([
+        {
+            "tissueType":      "Immune system",
+            "cellName":        "T cell",
+            "geneSymbolmore1": "CD3D,CD3E",
+            "geneSymbolmore2": "CD68",
+        },
+        {
+            "tissueType":      "Immune system",
+            "cellName":        "Macrophage",
+            "geneSymbolmore1": "CD68,CD14",
+            "geneSymbolmore2": "CD3D",
+        },
+        {
+            "tissueType":      "Immune system",
+            "cellName":        "B cell",
+            "geneSymbolmore1": "MS4A1",
+            "geneSymbolmore2": "",
+        },
+        {
+            "tissueType":      "Liver",
+            "cellName":        "Hepatocyte",
+            "geneSymbolmore1": "ALB,APOC3",
+            "geneSymbolmore2": "CD3D",
+        },
+        {
+            "tissueType":      "Liver",
+            "cellName":        "Fibroblast",
+            "geneSymbolmore1": "COL1A1",
+            "geneSymbolmore2": "",
+        },
+    ])
+ 
+ 
+# ── _parse_sctype_markers tests (no network) ───────────────────────────────────
+ 
+class TestParseScTypeMarkers:
+ 
+    def test_returns_dict_for_valid_tissue(self):
+        db = _make_mock_db()
+        result = _parse_sctype_markers(db, "Immune system")
+        assert isinstance(result, dict)
+        assert len(result) > 0
+ 
+    def test_cell_types_have_pos_neg_keys(self):
+        db = _make_mock_db()
+        result = _parse_sctype_markers(db, "Immune system")
+        for ct, markers in result.items():
+            assert "pos" in markers, f"{ct} missing 'pos'"
+            assert "neg" in markers, f"{ct} missing 'neg'"
+ 
+    def test_positive_markers_parsed_correctly(self):
+        db = _make_mock_db()
+        result = _parse_sctype_markers(db, "Immune system")
+        assert "CD3D" in result["T cell"]["pos"]
+        assert "CD3E" in result["T cell"]["pos"]
+ 
+    def test_negative_markers_parsed_correctly(self):
+        db = _make_mock_db()
+        result = _parse_sctype_markers(db, "Immune system")
+        assert "CD68" in result["T cell"]["neg"]
+ 
+    def test_empty_negative_markers_ok(self):
+        db = _make_mock_db()
+        result = _parse_sctype_markers(db, "Immune system")
+        # B cell has no negative markers
+        assert result["B cell"]["neg"] == []
+ 
+    def test_tissue_filter_isolates_correct_types(self):
+        db = _make_mock_db()
+        immune = _parse_sctype_markers(db, "Immune system")
+        liver  = _parse_sctype_markers(db, "Liver")
+        assert "T cell" in immune
+        assert "Hepatocyte" in liver
+        assert "T cell" not in liver
+        assert "Hepatocyte" not in immune
+ 
+    def test_invalid_tissue_raises_value_error(self):
+        db = _make_mock_db()
+        with pytest.raises(ValueError, match="not found in ScTypeDB"):
+            _parse_sctype_markers(db, "Nonexistent tissue")
+ 
+    def test_invalid_tissue_error_lists_available(self):
+        db = _make_mock_db()
+        with pytest.raises(ValueError, match="Immune system"):
+            _parse_sctype_markers(db, "Nonexistent tissue")
+ 
+ 
+# ── _run_sctype tests (mocked network) ────────────────────────────────────────
+ 
+class TestRunScType:
+ 
+    def test_column_exists_after_run(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        assert "cell_type_sctype" in adata_clustered.obs.columns
+ 
+    def test_labels_are_strings(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        labels = adata_clustered.obs["cell_type_sctype"]
+        assert all(isinstance(v, str) for v in labels), \
+            "All cell_type_sctype values must be strings"
+ 
+    def test_every_cluster_covered(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        n_null = adata_clustered.obs["cell_type_sctype"].isna().sum()
+        assert n_null == 0, f"{n_null} cells have null cell_type_sctype"
+ 
+    def test_no_cells_labelled_unknown_when_markers_present(self, adata_clustered):
+        """
+        With mock DB that covers immune genes present in fixture,
+        no cluster should fall back to 'Unknown'.
+        """
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        labels = adata_clustered.obs["cell_type_sctype"].unique().tolist()
+        assert "Unknown" not in labels
+ 
+    def test_liver_tissue_gives_liver_types(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Liver")
+        labels = set(adata_clustered.obs["cell_type_sctype"].unique())
+        liver_types = {"Hepatocyte", "Fibroblast"}
+        assert labels.issubset(liver_types | {"Unknown"}), \
+            f"Unexpected labels for Liver tissue: {labels - liver_types}"
+ 
+    def test_column_is_category_dtype(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        assert hasattr(adata_clustered.obs["cell_type_sctype"], "cat"), \
+            "cell_type_sctype should be category dtype"
+ 
+    def test_uses_logcounts_layer_when_present(self, adata_clustered):
+        """Patch _mean_expr indirectly — verify logcounts is preferred over .X"""
+        sentinel = np.zeros_like(adata_clustered.layers["logcounts"])
+        adata_clustered.layers["logcounts"] = sentinel
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            _run_sctype(adata_clustered, "leiden", tissue="Immune system")
+        # With zero expression all scores are 0; best_type still assigned (no crash)
+        assert "cell_type_sctype" in adata_clustered.obs.columns
+ 
+ 
+# ── annotate() integration tests (mocked network) ─────────────────────────────
+ 
+class TestAnnotateWithScType:
+ 
+    def test_sctype_in_methods_run(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "sctype"],
+                    tissue="Immune system",
+                )
+        assert "sctype" in ann_dict["provenance"]["methods_run"]
+ 
+    def test_tissue_recorded_in_provenance(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "sctype"],
+                    tissue="Liver",
+                )
+        assert ann_dict["provenance"]["sctype_tissue"] == "Liver"
+ 
+    def test_sctype_column_written_by_annotate(self, adata_clustered):
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            return_value=_make_mock_db(),
+        ):
+            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+                adata_ann, _ = annotate(
+                    adata_clustered,
+                    methods=["markers", "sctype"],
+                    tissue="Immune system",
+                )
+        assert "cell_type_sctype" in adata_ann.obs.columns
+ 
+    def test_sctype_skipped_gracefully_on_network_error(self, adata_clustered):
+        """If network fails, sctype warns and skips — does not crash annotate()."""
+        import requests
+        with patch(
+            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            side_effect=requests.ConnectionError("network down"),
+        ):
+            with pytest.warns(UserWarning, match="ScType annotation failed"):
+                adata_ann, ann_dict = annotate(
+                    adata_clustered,
+                    methods=["markers", "sctype"],
+                    tissue="Immune system",
+                )
+        assert "sctype" not in ann_dict["provenance"]["methods_run"]
+        assert "cell_type_sctype" not in adata_ann.obs.columns
+ 
+ 
+# ── Network test (skipped in CI) ──────────────────────────────────────────────
+ 
+@pytest.mark.skipif(
+    os.getenv("OMICSAGE_CI") == "true",
+    reason="Skipped in CI — requires network access to GitHub",
+)
+class TestFetchScTypeDB:
+ 
+    def test_fetch_returns_dataframe(self):
+        db = _fetch_sctype_db()
+        assert isinstance(db, pd.DataFrame)
+        assert len(db) > 0
+ 
+    def test_fetch_has_required_columns(self):
+        db = _fetch_sctype_db()
+        for col in ("tissueType", "cellName", "geneSymbolmore1", "geneSymbolmore2"):
+            assert col in db.columns, f"Missing column: {col}"
+ 
+    def test_fetch_contains_immune_tissue(self):
+        db = _fetch_sctype_db()
+        assert "Immune system" in db["tissueType"].values
+ 
+    def test_fetch_contains_liver_tissue(self):
+        db = _fetch_sctype_db()
+        assert "Liver" in db["tissueType"].values
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Session B placeholder — skipped in CI

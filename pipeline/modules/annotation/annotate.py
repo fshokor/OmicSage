@@ -15,18 +15,18 @@ markers      — Mean log-normalised expression of canonical marker gene sets
                obs['cell_type_markers']
 
 vote         — Majority vote across all methods that were run.
-               Today: 2-way (CellTypist fine + markers).
-               ScType and SingleR slots are reserved but empty until Session B.
+               Up to 3-way today (CellTypist + markers + ScType).
+               SingleR slot reserved for a future session.
                Requires both "celltypist" and "markers" to also be in methods.
 
-Methods planned for Session B (rpy2/R)
----------------------------------------
-sctype       — ScType with tissue-specific DB (default tissue: "Immune")
-singler      — SingleR with HumanPrimaryCellAtlasData() reference
+Methods planned for a future session
+--------------------------------------
+singler      — SingleR-py with HCA Census API reference (reference source TBD)
+scanvi       — scANVI transfer learning via scvi-hub (optional, GPU-accelerated)
 
 Public API
 ----------
-    from pipeline.modules.qc.annotate import annotate, MARKER_SETS
+    from pipeline.modules.annotation.annotate import annotate, MARKER_SETS
 
     adata_ann, ann_dict = annotate(
         adata_clustered,
@@ -43,6 +43,7 @@ obs columns written
   celltypist_coarse      — High model majority-vote label per cluster
   celltypist_fine        — Low  model majority-vote label per cluster
   cell_type_markers      — best marker-score label per cluster
+  cell_type_sctype       — ScType best label per cluster (when "sctype" in methods)
   cell_type_groundtruth  — copy of obs['cell_type'] if it existed before annotation
                            (preserves publication ground-truth from being overwritten)
   cell_type_vote         — final consensus label  (written when "vote" in methods)
@@ -53,7 +54,8 @@ uns provenance
   adata.uns['omicsage_annotate']
     methods_requested, methods_run, leiden_col,
     celltypist_models, celltypist_models_dir,
-    marker_sets_keys, n_clusters, n_cells,
+    marker_sets_keys, sctype_tissue,
+    n_clusters, n_cells,
     celltypist_version, scanpy_version,
     omicsage_module, omicsage_version, timestamp
 """
@@ -106,13 +108,18 @@ MARKER_SETS: Dict[str, List[str]] = {
     "Endothelial":  ["PECAM1", "VWF", "CDH5", "CLDN5", "LYVE1", "ENG"],
 }
 
-# Cell types that are tissue-specific (get double weight in vote if ScType agrees)
-# Reserved for Session B — not used in the 2-way vote today.
+# Cell types that are tissue-specific — get double weight in vote when ScType agrees
 _PARENCHYMAL: frozenset = frozenset({"Hepatocyte", "Fibroblast", "Endothelial"})
 
 # ── Default paths ──────────────────────────────────────────────────────────────
 _DEFAULT_MODELS_DIR = Path("data/references/celltypist")
-_VALID_METHODS = {"celltypist", "markers", "vote", "sctype", "singler"}
+_VALID_METHODS = {"celltypist", "markers", "vote", "sctype", "singler", "scanvi"}
+
+# ScType DB — fetched fresh at runtime, never cached to disk
+_SCTYPE_DB_URL = (
+    "https://raw.githubusercontent.com/IanevskiAleksandr/sc-type/"
+    "master/ScTypeDB_full.xlsx"
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -126,6 +133,7 @@ def annotate(
     celltypist_models: List[str] = None,
     celltypist_models_dir: Optional[Path] = None,
     marker_sets: Optional[Dict[str, List[str]]] = None,
+    tissue: str = "Immune system",
     inplace: bool = False,
 ) -> Tuple[sc.AnnData, dict]:
     """
@@ -137,9 +145,9 @@ def annotate(
         Clustered AnnData — must have adata.obs[leiden_col] and
         adata.layers["logcounts"] (log-normalised counts).
     methods : list of str, optional
-        Subset of {"celltypist", "markers", "vote"}.
-        "vote" requires both "celltypist" and "markers" also in the list.
-        Defaults to ["celltypist", "markers", "vote"].
+        Subset of {"celltypist", "markers", "sctype", "vote"}.
+        "vote" requires at least "celltypist" and "markers" also in the list.
+        Defaults to ["celltypist", "markers", "sctype", "vote"].
     leiden_col : str
         obs column with cluster labels (default: "leiden").
     celltypist_models : list of str, optional
@@ -150,6 +158,13 @@ def annotate(
         Default: data/references/celltypist/ (relative to cwd).
     marker_sets : dict or None
         {cell_type: [gene_list]}. Defaults to built-in MARKER_SETS.
+    tissue : str
+        Tissue filter for ScTypeDB (default: "Immune system").
+        Valid values: "Immune system", "Liver", "Brain", "Lung", "Kidney",
+        "Pancreas", "Heart", "Intestine", "Skin", "Adrenal", "Bladder",
+        "Breast", "Cervix", "Eye", "Muscle", "Ovary", "Prostate",
+        "Stomach", "Thyroid".
+        Only used when "sctype" is in methods.
     inplace : bool
         If False (default), work on a copy; caller's object is unchanged.
 
@@ -162,7 +177,7 @@ def annotate(
     """
     # ── Defaults ───────────────────────────────────────────────────────────────
     if methods is None:
-        methods = ["celltypist", "markers", "vote"]
+        methods = ["celltypist", "markers", "sctype", "vote"]
     if celltypist_models is None:
         celltypist_models = ["Immune_All_High.pkl", "Immune_All_Low.pkl"]
     if celltypist_models_dir is None:
@@ -186,15 +201,14 @@ def annotate(
     if "vote" in methods:
         _check_vote_prerequisites(methods)
 
-    # Warn about Session B methods requested but not yet implemented
-    for m in ("sctype", "singler"):
+    # Warn about not-yet-implemented methods
+    for m in ("singler", "scanvi"):
         if m in methods:
             warnings.warn(
-                f"Method '{m}' is planned for Session B (requires rpy2/R) "
-                f"and is not yet implemented. It will be skipped.",
+                f"Method '{m}' is not yet implemented and will be skipped.",
                 UserWarning, stacklevel=2,
             )
-    methods = [m for m in methods if m not in ("sctype", "singler")]
+    methods = [m for m in methods if m not in ("singler", "scanvi")]
 
     # ── Copy guard ─────────────────────────────────────────────────────────────
     adata_ann = adata if inplace else adata.copy()
@@ -230,6 +244,18 @@ def annotate(
         methods_run.append("markers")
         logger.info("Marker scoring complete.")
 
+    if "sctype" in methods:
+        try:
+            _run_sctype(adata_ann, leiden_col, tissue)
+            methods_run.append("sctype")
+            logger.info("ScType annotation complete.")
+        except Exception as e:
+            warnings.warn(
+                f"ScType annotation failed ({e}) — skipping. "
+                f"Check your internet connection or tissue parameter.",
+                UserWarning, stacklevel=2,
+            )
+
     if "vote" in methods and "celltypist" in methods_run and "markers" in methods_run:
         vote_df = _run_majority_vote(adata_ann, ann_dict["marker_score_df"], leiden_col)
         ann_dict["vote_df"] = vote_df
@@ -251,6 +277,7 @@ def annotate(
         "celltypist_models":      celltypist_models,
         "celltypist_models_dir":  str(celltypist_models_dir),
         "marker_sets_keys":       list(marker_sets.keys()),
+        "sctype_tissue":          tissue,
         "n_clusters":             int(adata_ann.obs[leiden_col].nunique()),
         "n_cells":                int(adata_ann.n_obs),
         "celltypist_version":     ct_version,
@@ -432,15 +459,15 @@ def _run_majority_vote(
     """
     Combine available method labels into a consensus via majority vote.
 
-    Evidence sources (today — 2-way):
-      1. celltypist_fine  (CellTypist Low model, cluster-level majority)
-      2. cell_type_markers (marker gene scoring)
+    Evidence sources (up to 3-way):
+      1. celltypist_fine    (CellTypist Low model, cluster-level majority)
+      2. cell_type_markers  (marker gene scoring)
+      3. cell_type_sctype   (ScType — active when "sctype" in methods)
 
-    Reserved for Session B (slots present but skipped when column absent):
-      3. sctype_cell_type  (ScType)
-      4. SingleR_HPCA      (SingleR)
+    Reserved for a future session (slot present, skipped when column absent):
+      4. cell_type_singler  (SingleR-py)
 
-    ScType gets double weight for parenchymal types when present (Session B).
+    ScType gets double weight for parenchymal types when present.
 
     Writes
     ------
@@ -457,11 +484,10 @@ def _run_majority_vote(
     # All potential evidence columns, in priority order
     # slot_name → (obs_col, weight, available)
     evidence_slots = [
-        ("CellTypist",   "celltypist_fine",    1),
-        ("Markers",      "cell_type_markers",  1),
-        # Session B slots — will be non-None when those columns exist
-        ("ScType",       "sctype_cell_type",   1),   # +1 extra for parenchymal
-        ("SingleR_HPCA", "SingleR_HPCA",       1),
+        ("CellTypist",   "celltypist_fine",   1),
+        ("Markers",      "cell_type_markers", 1),
+        ("ScType",       "cell_type_sctype",  1),   # +1 extra for parenchymal types
+        ("SingleR",      "cell_type_singler", 1),   # future
     ]
 
     clusters = sorted(adata.obs[leiden_col].unique(),
@@ -483,7 +509,7 @@ def _run_majority_vote(
             if label and label not in ("not_run", "Unknown", "nan"):
                 votes.extend([label] * weight)
 
-                # Double weight for ScType parenchymal (Session B)
+                # Double weight for parenchymal types when ScType labels them
                 if slot_name == "ScType" and label in _PARENCHYMAL:
                     votes.append(label)
 
@@ -525,6 +551,163 @@ def _run_majority_vote(
     print(vote_df[["n_cells", "final_label", "confidence"]].to_string())
 
     return vote_df
+
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ScType-py
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _fetch_sctype_db() -> pd.DataFrame:
+    """
+    Fetch ScTypeDB_full.xlsx fresh from GitHub at runtime.
+    No file is written to disk — data lives in memory only.
+    Always returns the current version maintained by the ScType authors.
+    """
+    import io
+    import requests
+
+    logger.info(f"Fetching ScTypeDB from {_SCTYPE_DB_URL} ...")
+    response = requests.get(_SCTYPE_DB_URL, timeout=30)
+    response.raise_for_status()
+    db = pd.read_excel(io.BytesIO(response.content), engine="openpyxl")
+    logger.info(f"  ScTypeDB loaded: {len(db)} rows, tissues: {db['tissueType'].nunique()}")
+    return db
+
+
+def _parse_sctype_markers(
+    db: pd.DataFrame,
+    tissue: str,
+) -> Dict[str, Dict[str, List[str]]]:
+    """
+    Parse ScTypeDB into {cell_type: {"pos": [...], "neg": [...]}} for a given tissue.
+
+    Parameters
+    ----------
+    db : DataFrame
+        Raw ScTypeDB loaded from Excel.
+    tissue : str
+        Tissue filter — must match a value in db['tissueType'] exactly.
+
+    Returns
+    -------
+    marker_dict : dict
+        {cell_type: {"pos": [gene, ...], "neg": [gene, ...]}}
+
+    Raises
+    ------
+    ValueError
+        If the requested tissue is not found in the database.
+    """
+    available = sorted(db["tissueType"].dropna().unique().tolist())
+    if tissue not in available:
+        raise ValueError(
+            f"Tissue '{tissue}' not found in ScTypeDB. "
+            f"Available tissues: {available}"
+        )
+
+    subset = db[db["tissueType"] == tissue].copy()
+    marker_dict: Dict[str, Dict[str, List[str]]] = {}
+
+    for _, row in subset.iterrows():
+        cell_type = str(row["cellName"]).strip()
+
+        # Positive markers — column: geneSymbolmore1
+        pos_raw = str(row.get("geneSymbolmore1", ""))
+        pos = [g.strip() for g in pos_raw.split(",") if g.strip() and g.strip() != "nan"]
+
+        # Negative markers — column: geneSymbolmore2
+        neg_raw = str(row.get("geneSymbolmore2", ""))
+        neg = [g.strip() for g in neg_raw.split(",") if g.strip() and g.strip() != "nan"]
+
+        if pos or neg:
+            marker_dict[cell_type] = {"pos": pos, "neg": neg}
+
+    logger.info(f"  ScType parsed {len(marker_dict)} cell types for tissue='{tissue}'")
+    return marker_dict
+
+
+def _run_sctype(
+    adata: sc.AnnData,
+    leiden_col: str,
+    tissue: str = "Immune system",
+) -> None:
+    """
+    Run ScType-py annotation and write results into adata.obs.
+
+    Fetches ScTypeDB_full.xlsx fresh from GitHub at runtime (no local cache).
+    Scores each cluster as: mean(positive marker expr) - mean(negative marker expr).
+    Assigns the cell type with the highest score to each cluster.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Must have adata.layers['logcounts'] or adata.X with log-normalised counts.
+    leiden_col : str
+        obs column with cluster labels.
+    tissue : str
+        Tissue filter for ScTypeDB (default: "Immune system").
+
+    Writes
+    ------
+    obs['cell_type_sctype'] — ScType best label per cluster (category dtype)
+    """
+    # ── Fetch and parse DB ────────────────────────────────────────────────────
+    db = _fetch_sctype_db()
+    marker_dict = _parse_sctype_markers(db, tissue)
+
+    # ── Choose expression matrix ──────────────────────────────────────────────
+    if "logcounts" in adata.layers:
+        X = adata.layers["logcounts"]
+    else:
+        X = adata.X
+
+    # ── Score each cluster ────────────────────────────────────────────────────
+    clusters = sorted(
+        adata.obs[leiden_col].unique(),
+        key=lambda x: (int(x) if str(x).isdigit() else x),
+    )
+
+    def _mean_expr(mask: np.ndarray, genes: List[str]) -> float:
+        """Mean expression of a gene list across cells in mask."""
+        present = [g for g in genes if g in adata.var_names]
+        if not present:
+            return 0.0
+        gene_idx = [adata.var_names.get_loc(g) for g in present]
+        expr = X[np.where(mask)[0], :][:, gene_idx]
+        if hasattr(expr, "toarray"):
+            expr = expr.toarray()
+        return float(np.asarray(expr).mean())
+
+    cluster_labels: Dict[str, str] = {}
+
+    for cl in clusters:
+        mask = (adata.obs[leiden_col] == cl).values
+        best_type  = "Unknown"
+        best_score = -np.inf
+
+        for cell_type, markers in marker_dict.items():
+            pos_score = _mean_expr(mask, markers["pos"])
+            neg_score = _mean_expr(mask, markers["neg"])
+            score     = pos_score - neg_score
+
+            if score > best_score:
+                best_score = score
+                best_type  = cell_type
+
+        cluster_labels[str(cl)] = best_type
+        logger.debug(f"  Cluster {cl} → {best_type} (score={best_score:.4f})")
+
+    # ── Map labels onto cells ─────────────────────────────────────────────────
+    adata.obs["cell_type_sctype"] = (
+        adata.obs[leiden_col]
+        .astype(str)
+        .map(cluster_labels)
+        .astype("category")
+    )
+
+    n_types = adata.obs["cell_type_sctype"].nunique()
+    print(f"  ScType ({tissue}): {n_types} cell types across {len(clusters)} clusters")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
