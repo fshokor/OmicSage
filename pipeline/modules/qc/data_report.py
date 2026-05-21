@@ -201,6 +201,55 @@ def analyse(adata: sc.AnnData) -> dict:
         if any(h in c.lower() for h in batch_hints)
     ]
 
+    # ── Sample count ──────────────────────────────────────────────────────────
+    # Detect a dedicated sample column (biological sample identity).
+    # Priority: sample > sample_id > Samplename > samplename (case-insensitive)
+    # A column is only used if it has more than 1 unique value — a single-value
+    # column adds no information and is not worth reporting.
+    _sample_priority = ["sample", "sample_id", "Samplename", "samplename", "Sample"]
+    results["primary_sample_col"] = None
+    results["n_samples"] = None
+    for _sc in _sample_priority:
+        if _sc in adata.obs.columns:
+            _n = int(adata.obs[_sc].nunique())
+            if _n > 1:
+                results["primary_sample_col"] = _sc
+                results["n_samples"] = _n
+                break
+    # Fallback: any batch-hint column whose name contains "sample"
+    if results["primary_sample_col"] is None:
+        for _sc in results["batch_cols"]:
+            if "sample" in _sc.lower():
+                _n = int(adata.obs[_sc].nunique())
+                if _n > 1:
+                    results["primary_sample_col"] = _sc
+                    results["n_samples"] = _n
+                    break
+
+    # ── Batch count ───────────────────────────────────────────────────────────
+    # Detect the primary batch/processing-batch column separately from sample.
+    # Priority: batch > batch_id > donor > DonorID > site > first detected.
+    # Exclude any column already claimed as the sample column.
+    _batch_priority = ["batch", "batch_id", "donor", "DonorID", "site"]
+    results["primary_batch_col"] = None
+    results["n_batches"] = None
+    for _bc in _batch_priority:
+        if _bc in adata.obs.columns and _bc != results["primary_sample_col"]:
+            _n = int(adata.obs[_bc].nunique())
+            if _n > 1:
+                results["primary_batch_col"] = _bc
+                results["n_batches"] = _n
+                break
+    # Fallback: first remaining batch-hint column not already used as sample
+    if results["primary_batch_col"] is None:
+        for _bc in results["batch_cols"]:
+            if _bc != results["primary_sample_col"]:
+                _n = int(adata.obs[_bc].nunique())
+                if _n > 1:
+                    results["primary_batch_col"] = _bc
+                    results["n_batches"] = _n
+                    break
+
     # Unique values for label cols (top 5)
     results["label_previews"] = {}
     for col in results["label_cols"][:3]:
@@ -528,6 +577,7 @@ HTML_TEMPLATE = """<!DOCTYPE html>
         <div class="value">{mt_stat}</div>
         <div class="label">Median MT%</div>
       </div>
+      {sample_batch_cards}
     </div>
   </div>
 
@@ -699,6 +749,34 @@ def build_html(input_path: Path, metrics: dict,
     # MT stat
     mt_stat = f"{metrics['median_mt_pct']}%" if metrics.get("has_mt") else "N/A"
 
+    # Sample and batch metric cards — only rendered when detected
+    _cards = []
+    if metrics.get("n_samples") is not None:
+        _col = metrics["primary_sample_col"]
+        _cards.append(
+            f'<div class="metric">'
+            f'<div class="value">{metrics["n_samples"]}</div>'
+            f'<div class="label">Samples (<code>{_col}</code>)</div>'
+            f'</div>'
+        )
+    if metrics.get("n_batches") is not None:
+        _col = metrics["primary_batch_col"]
+        _cards.append(
+            f'<div class="metric">'
+            f'<div class="value">{metrics["n_batches"]}</div>'
+            f'<div class="label">Batches (<code>{_col}</code>)</div>'
+            f'</div>'
+        )
+    if not _cards:
+        # No batch or sample structure detected — show a single informational card
+        _cards.append(
+            '<div class="metric">'
+            '<div class="value" style="font-size:1rem;color:#888;">—</div>'
+            '<div class="label">Single batch<br>(no batch/sample columns detected)</div>'
+            '</div>'
+        )
+    sample_batch_cards = "\n      ".join(_cards)
+
     return HTML_TEMPLATE.format(
         title_short       = title_short,
         timestamp         = datetime.now().strftime("%Y-%m-%d %H:%M"),
@@ -711,6 +789,7 @@ def build_html(input_path: Path, metrics: dict,
         median_counts     = f"{metrics['median_counts']:,.0f}",
         sparsity          = metrics["sparsity_pct"],
         mt_stat           = mt_stat,
+        sample_batch_cards= sample_batch_cards,
         plot_distributions= plots["distributions"],
         plot_scatter      = plots["scatter"],
         n_label_cols      = len(metrics["label_cols"]),

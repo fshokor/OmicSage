@@ -301,6 +301,8 @@ def _section_summary(metrics: dict, sample_name: str, timestamp: str) -> str:
             ("Cells removed",    f"{metrics['n_cells_removed']:,}"),
             ("Pass rate",        f"{pct_kept:.1f}%"),
             ("MT genes found",   f"{metrics['n_mt_genes']:,}"),
+            ("Ribo genes found", f"{metrics['n_ribo_genes']:,}"),
+            ("HB genes found",   f"{metrics['n_hb_genes']:,}"),
             ("Doublets removed", f"{metrics['n_removed_doublets']:,}"),
         ]
     )
@@ -319,6 +321,8 @@ def _section_summary(metrics: dict, sample_name: str, timestamp: str) -> str:
         f"<tr><td>Median genes / cell (pre-QC)</td><td>{metrics['median_genes_per_cell']:.0f}</td></tr>"
         f"<tr><td>Median UMI / cell (pre-QC)</td><td>{metrics['median_umi_per_cell']:.0f}</td></tr>"
         f"<tr><td>Median MT% (pre-QC)</td><td>{metrics['median_mt_pct']:.2f}%</td></tr>"
+        f"<tr><td>Median ribosomal % (pre-QC)</td><td>{metrics['median_ribo_pct']:.2f}%</td></tr>"
+        f"<tr><td>Median hemoglobin % (pre-QC)</td><td>{metrics['median_hb_pct']:.2f}%</td></tr>"
     )
 
     return f"""

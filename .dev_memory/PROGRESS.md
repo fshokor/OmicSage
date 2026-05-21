@@ -73,27 +73,36 @@
 - [x] Annotation section in 00_combined_report.html
 - [x] MILESTONE: Full Phase 1 pipeline with annotation on GSE166635
 
-## Phase 4 — scATAC Module ← NEXT
-- [ ] Fragment file ingestion and QC
-- [ ] Peak calling (MACS3)
-- [ ] LSI + ArchR/Signac clustering
-- [ ] Motif enrichment + chromVAR
-- [ ] Gene activity scores
-- [ ] scATAC report template
+## Phase 4 — CITE-seq Module 🔄
+- [ ] ADT normalisation (CLR + optional DSB) — `pipeline/modules/cite/adt_normalize.py`
+- [ ] ADT dimensionality reduction (PCA on CLR-normalised ADT)
+- [ ] WNN joint embedding (RNA + ADT)
+- [ ] WNN UMAP + cluster report
+- [ ] Protein-level annotation validation (CD303, CD138, CD34, CD14/CD16)
+- [ ] CITE-seq report tab
+- [ ] **MILESTONE**: WNN UMAP showing RNA + protein integrated embedding
 
-## Phase 5 — Spatial Module
-- [ ] Visium data ingestion
-- [ ] Spatially variable genes
+## Phase 5 — Multiome Integration (RNA + ATAC)
+- [ ] scVI / MultiVI batch correction
+- [ ] RNA + ATAC joint ingestion and QC
+- [ ] LSI dimensionality reduction for ATAC
+- [ ] WNN joint embedding (RNA + ATAC)
+- [ ] MOFA+ integration
+- [ ] Peak calling (MACS3)
+- [ ] Motif enrichment (chromVAR)
+- [ ] Gene activity scores
+- [ ] SCENIC+ GRN inference
+- [ ] Joint report template
+- NOTE: scATAC-seq standalone is NOT a separate phase —
+        ATAC is always analysed jointly with RNA in Multiome
+
+## Phase 6 — Spatial Module
+- [ ] Visium data ingestion (10x Space Ranger output)
+- [ ] Spatially variable genes (squidpy)
 - [ ] BayesSpace clustering
 - [ ] RCTD deconvolution
 - [ ] Spatial report template
-
-## Phase 6 — Multiome Integration
-- [ ] scVI / MultiVI batch correction
-- [ ] WNN joint embedding
-- [ ] MOFA+ integration
-- [ ] SCENIC+ GRN inference
-- [ ] Joint report template
+- [ ] Support for MERFISH and Xenium (future)
 
 ## Phase 7 — User Interfaces
 - [ ] Streamlit web UI

@@ -234,11 +234,11 @@ Build `pipeline/modules/annotation/` — SingleR + marker review + annotation re
 466+ passing, 1 skipped (as of 2026-05-17)
 
 ## What Is NOT Built Yet
-- scVI batch correction → deferred to Phase 6
+- scVI batch correction → deferred to Phase 5
 - ADT QC + CLR normalization
-- scATAC module (Phase 4)
-- Spatial module (Phase 5)
-- Multiome module (Phase 6)
+- Cite module (Phase 4)
+- Multiome module (Phase 5)
+- Spatial module (Phase 6)
 - Streamlit UI (Phase 7)
 - CLI (Phase 7)
 

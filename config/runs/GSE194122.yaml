@@ -103,6 +103,16 @@ steps:
       top_n_volcano: 10
       top_n_dotplot: 5
       max_volcano_groups: 9
+      # Genes excluded from the REPORTED top-N DEG lists (still used in
+      # the rank_genes_groups computation so fold-changes remain unbiased).
+      # Ribosomal genes (RPL/RPS) dominate lymphoid/progenitor comparisons
+      # against an erythroid-heavy background and obscure true markers.
+      # Mitochondrial genes (MT-) are typically QC artefacts.
+      # Set to [] to disable filtering and see the raw ranked list.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
 
   gsea:
     enabled: true
@@ -118,6 +128,16 @@ steps:
       direction: both
       top_n_table: 5
       top_n_bar: 10
+      # Genes excluded from the ORA query list before enrichment.
+      # Removing ribosomal genes here prevents Translation/Ribosome pathways
+      # from dominating the GSEA results for lymphoid and progenitor clusters.
+      # The gene universe (background) is NOT filtered — statistically correct.
+      # Must match the prefixes used in deg above for consistent results.
+      # Set to [] to disable.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
 
   harmony:
     enabled: true           # set false if no batch effects
@@ -146,3 +166,20 @@ steps:
       top_n_volcano: 10
       top_n_dotplot: 5
       max_volcano_groups: 11
+      # Genes excluded from the REPORTED pseudobulk DEG lists.
+      # Without this, erythroid markers (HBB, HBA1, HBD, AHSP) appear as
+      # strongly downregulated in every non-erythroid cell type, dominating
+      # the pseudobulk results and obscuring biologically relevant DEGs.
+      # Ribosomal genes (RPL/RPS) have the same compositional artefact.
+      # These genes are excluded from displayed results only — DESeq2
+      # still uses them in normalisation and dispersion estimation.
+      # Set to [] to see the unfiltered ranking.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
+        - "HBB"
+        - "HBA1"
+        - "HBA2"
+        - "HBD"
+        - "AHSP"

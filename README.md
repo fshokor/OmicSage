@@ -19,9 +19,9 @@ OmicSage is an open-source platform that covers the full single-cell multi-omics
 | Modality | Status |
 |----------|--------|
 | scRNA-seq | 🔧 Phase 1 — In progress |
-| scATAC-seq | 📅 Phase 4 — Planned |
-| Spatial transcriptomics | 📅 Phase 5 — Planned |
-| Multiome (RNA + ATAC) | 📅 Phase 6 — Planned |
+| Cite-seq | 📅 Phase 4 — Planned |
+| Multiome (RNA + ATAC) | 📅 Phase 5 — Planned |
+| Spatial transcriptomics | 📅 Phase 6 — Planned |
 
 **Two users. One tool.**
 - 🔬 **Biologists**: no-code Streamlit interface, guided workflow, biological interpretation in plain language
@@ -125,10 +125,10 @@ This keeps the analyst in control of all biological decisions while eliminating 
 | 0 ✅ | Foundation — repo, CI/CD | 1-2 |
 | 1 🔧 | Core scRNA-seq pipeline (annotation in progress) | 2-6 |
 | 2 ✅ | Report engine — combined tabbed HTML report | 6-9 |
-| 3 | Manual review layer — structured QC flags, cluster review, CelltypistML annotation | 9-13 |
-| 4 | scATAC-seq module | 13-16 |
-| 5 | Spatial transcriptomics | 16-19 |
-| 6 | Multiome integration | 19-22 |
+| 3 ✅ | Manual review layer — structured QC flags, cluster review, CelltypistML annotation | 9-13 |
+| 4 | Cite-seq module | 13-16 |
+| 5 | Multiome integration | 16-19 |
+| 6 | Spatial transcriptomics | 19-22 |
 | 7 | Streamlit web UI | 22-25 |
 | 8 | Benchmark + paper | 25-30 |
 

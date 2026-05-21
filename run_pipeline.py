@@ -473,6 +473,7 @@ def run_deg(input_path: Path, out: Path, reports_dir: Path,
         min_logfc=params.get("min_logfc", 0.25),
         max_pval_adj=params.get("max_pval_adj", 0.05),
         n_genes=params.get("n_genes", 500),
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes", []),
         inplace=False,
     )
 
@@ -504,6 +505,7 @@ def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
         min_logfc=params.get("min_logfc", 0.25),
         max_pval_adj=params.get("max_pval_adj", 0.05),
         n_genes=params.get("n_genes", 500),
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes", []),
         inplace=False,
     )
     return deg_path, deg_dict
@@ -529,6 +531,7 @@ def run_gsea(input_path: Path, out: Path, reports_dir: Path,
         top_n_genes=params.get("top_n_genes"),
         min_genes=params.get("min_genes", 5),
         organism=params.get("organism", cfg["dataset"].get("organism", "human")),
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes", []),
         inplace=False,
     )
 
@@ -629,6 +632,7 @@ def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
         min_samples=params.get("min_samples", 3),
         min_logfc=params.get("min_logfc", 0.25),
         max_pval_adj=params.get("max_pval_adj", 0.05),
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes", []),
         inplace=False,
     )
 

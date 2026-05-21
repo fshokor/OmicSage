@@ -1,4 +1,4 @@
-# OmicSage — D1 Manual Review Mode
+# OmicSage — Manual Review Mode
 # MASTER_PROMPT.md
 > Version: 1.0 | May 2026
 > Usage: Fill Section 2, attach this file + `reports/<dataset>/00_combined_report.html`, send once.
@@ -124,6 +124,9 @@ Read the clustering tab. Evaluate the following:
    - Low cell count (< 5,000): resolution 0.3–0.6 typical
    - Medium (5,000–30,000): resolution 0.5–0.8 typical
    - High (> 30,000): resolution 0.6–1.2 typical
+   **State explicitly whether the chosen resolution falls within the recommended range
+   for this cell count and tissue, and flag it as appropriate / too coarse / too fine
+   if it does not. Do not leave this implicit.**
 2. Is the number of clusters reasonable for this tissue and disease?
    Report what comparable published studies used (cite study + resolution if you know it).
 3. Is the silhouette score acceptable? (> 0.2 adequate, > 0.4 good, < 0.1 poor)
@@ -139,7 +142,13 @@ annotation tab.
 
 For each cluster, provide:
 - **Predicted cell type** — your interpretation based on the marker genes
-- **Confidence** — high / medium / low
+- **Consensus score** — the fraction of automated methods that agreed
+  (read from the "Consensus score" column in the annotation tab, e.g. 0.75).
+  Report this number exactly as shown in the report — do not paraphrase it.
+- **Reviewer confidence** — your own independent assessment of annotation
+  certainty based on the marker genes: high / medium / low.
+  This is separate from the consensus score: a consensus score of 1.0 can
+  still warrant medium reviewer confidence if the top markers are non-specific.
 - **Supporting markers** — specific genes from the table that support your call
 - **Alternatives** — other plausible cell types if confidence is medium or low,
   and what additional markers would distinguish them
@@ -178,10 +187,16 @@ Read the DEG tab. For each comparison listed:
 1. Classify each reported DEG as:
    - **Expected** — consistent with known biology of this cell type and disease
    - **Unexpected** — novel, surprising, or potentially artefactual; explain why
+   - **Artefact** — technical noise with no biological interpretation; explain why
 2. Identify **discovery highlights**: genes not previously reported in this exact
    context (tissue + disease + cell type) that warrant follow-up.
-3. Flag any DEGs that could be technical artefacts (MT genes, ribosomal genes,
-   cell-cycle genes appearing as top hits without biological context).
+3. **Required check — compositional artefacts:** For every comparison, count how many
+   of the top 5 DEGs are ribosomal protein genes (RPL* / RPS*), mitochondrial genes
+   (MT-*), or erythroid markers (HBB, HBA1, HBA2, HBD, AHSP). If 2 or more of the
+   top 5 match, flag the comparison as warning: "ribosomal / erythroid artefact —
+   results reflect compositional contrast against background, not cell-type-specific
+   biology." Note whether the pipeline's exclude_gene_prefixes filter was applied
+   (check the DEG Run Summary section); if it was, note which prefixes were excluded.
 
 ---
 
@@ -348,9 +363,9 @@ Do not truncate any section. Return as a single markdown document.
 
 ### 4a. Cluster-level predictions
 
-| Cluster | N cells | Predicted type | Confidence | Supporting markers | Alternatives | SingleR agreement |
-|---------|---------|---------------|------------|-------------------|--------------|-------------------|
-| 0 | | | | | | |
+| Cluster | N cells | Predicted type | Consensus score | Reviewer confidence | Supporting markers | Alternatives | SingleR agreement |
+|---------|---------|---------------|-----------------|---------------------|-------------------|--------------|-------------------|
+| 0 | | | | | | | |
 
 ### 4b. Tissue-specific marker sets
 
@@ -430,6 +445,21 @@ Do not truncate any section. Return as a single markdown document.
 
 **Suggested validation experiments:**
 - [wet-lab or computational experiment to validate a key finding]
+
+---
+
+## Appendix: Report Figures Checklist
+
+Check each item against the HTML report and mark ✓ present or ✗ missing.
+
+| # | Figure / element | Status | Note |
+|---|-----------------|--------|------|
+| 1 | Dot plot (clusters × marker genes, dot size = % expressing) | | |
+| 2 | Annotation table has two separate confidence columns (Consensus score + Reviewer confidence) | | |
+| 3 | Batch count shown in Key Metrics on Data Report tab | | |
+| 4 | DEG Run Summary notes which gene prefixes were excluded (or confirms none were) | | |
+| 5 | Pseudobulk DEG top hits do not include erythroid markers (HBB/HBA1/HBD/AHSP) as artefactual downregulated genes in non-erythroid groups | | |
+| 6 | Per-cluster accuracy table comparing consensus label to ground truth (if ground truth available) | | |
 ```
 
 ---

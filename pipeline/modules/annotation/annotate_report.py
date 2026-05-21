@@ -136,6 +136,161 @@ def _plot_marker_heatmap(score_df: pd.DataFrame) -> Optional[str]:
     return _fig_to_b64(fig)
 
 
+def _plot_dotplot(adata: AnnData, leiden_col: str) -> Optional[str]:
+    """
+    Dot plot: clusters (Y) × top marker genes (X).
+    Dot size  = fraction of cells in cluster expressing the gene (> 0).
+    Dot colour = mean log-normalised expression across expressing cells.
+
+    Collects the top-3 Wilcoxon marker genes per cluster from
+    adata.uns['rank_genes_groups'] when available, then falls back to
+    the top-3 highest-mean genes per cluster from logcounts.
+    Requires at least one cluster and one gene to render.
+    """
+    if leiden_col not in adata.obs.columns:
+        return None
+
+    # ── Choose expression matrix ──────────────────────────────────────────────
+    if "logcounts" in adata.layers:
+        import scipy.sparse as sp
+        X = adata.layers["logcounts"]
+    else:
+        import scipy.sparse as sp
+        X = adata.X
+
+    clusters = sorted(
+        adata.obs[leiden_col].unique(),
+        key=lambda x: (int(x) if str(x).isdigit() else x),
+    )
+    if not clusters:
+        return None
+
+    # ── Collect marker genes ──────────────────────────────────────────────────
+    TOP_N = 3   # genes per cluster shown in the dot plot
+
+    selected_genes: list[str] = []
+
+    if "rank_genes_groups" in adata.uns:
+        rgg = adata.uns["rank_genes_groups"]
+        gene_names = rgg.get("names")
+        if gene_names is not None:
+            for cl in clusters:
+                cl_str = str(cl)
+                if cl_str in gene_names.dtype.names:
+                    top = [str(g) for g in gene_names[cl_str][:TOP_N]
+                           if str(g) in adata.var_names]
+                    selected_genes.extend(top)
+    
+    # Fallback: pick top-3 highest mean-expressing genes per cluster
+    if not selected_genes:
+        for cl in clusters:
+            mask = (adata.obs[leiden_col] == cl).values
+            sub = X[np.where(mask)[0], :]
+            if sp.issparse(sub):
+                sub = sub.toarray()
+            means = np.asarray(sub).mean(axis=0)
+            top_idx = np.argsort(means)[::-1][:TOP_N]
+            selected_genes.extend([adata.var_names[i] for i in top_idx])
+
+    # Deduplicate while preserving order
+    seen: set[str] = set()
+    genes: list[str] = []
+    for g in selected_genes:
+        if g not in seen and g in adata.var_names:
+            seen.add(g)
+            genes.append(g)
+
+    if not genes:
+        return None
+
+    # ── Compute per-cluster dot statistics ────────────────────────────────────
+    gene_idx = [adata.var_names.get_loc(g) for g in genes]
+    n_cl = len(clusters)
+    n_g  = len(genes)
+
+    mean_expr   = np.zeros((n_cl, n_g), dtype=float)
+    pct_express = np.zeros((n_cl, n_g), dtype=float)
+
+    for ci, cl in enumerate(clusters):
+        mask = (adata.obs[leiden_col] == cl).values
+        sub  = X[np.where(mask)[0], :][:, gene_idx]
+        if sp.issparse(sub):
+            sub = sub.toarray()
+        sub = np.asarray(sub, dtype=float)
+        expressed = sub > 0
+        pct_express[ci, :] = expressed.mean(axis=0)
+        # Mean expression only over expressing cells (avoid dilution by zeros)
+        with np.errstate(invalid="ignore"):
+            mean_expr[ci, :] = np.where(
+                expressed.sum(axis=0) > 0,
+                np.where(expressed, sub, np.nan).mean(axis=0),
+                0.0,
+            )
+
+    # ── Draw figure ───────────────────────────────────────────────────────────
+    fig_w = max(8, n_g * 0.55 + 2)
+    fig_h = max(4, n_cl * 0.45 + 1.5)
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    max_expr = mean_expr.max() if mean_expr.max() > 0 else 1.0
+    MAX_RADIUS = 0.42   # fraction of grid cell
+
+    for ci in range(n_cl):
+        for gi in range(n_g):
+            pct  = pct_express[ci, gi]
+            expr = mean_expr[ci, gi]
+            radius = MAX_RADIUS * np.sqrt(pct)            # area ∝ pct
+            color  = plt.cm.YlOrRd(expr / max_expr)       # colour ∝ mean expr
+            circle = plt.Circle(
+                (gi, n_cl - 1 - ci), radius,
+                color=color, linewidth=0.4,
+                edgecolor="#aaa" if pct > 0 else "none",
+            )
+            ax.add_patch(circle)
+
+    ax.set_xlim(-0.7, n_g - 0.3)
+    ax.set_ylim(-0.7, n_cl - 0.3)
+    ax.set_xticks(range(n_g))
+    ax.set_xticklabels(genes, rotation=45, ha="right", fontsize=8)
+    ax.set_yticks(range(n_cl))
+    ax.set_yticklabels([str(c) for c in reversed(clusters)], fontsize=8)
+    ax.set_xlabel("Marker genes", fontsize=10)
+    ax.set_ylabel("Cluster", fontsize=10)
+    ax.set_title(
+        f"Dot Plot — Top {TOP_N} Marker Genes per Cluster\n"
+        "Dot size = % cells expressing  ·  Colour = mean expression (expressing cells)",
+        fontsize=11, fontweight="bold",
+    )
+    ax.set_aspect("equal")
+    ax.spines[["top", "right"]].set_visible(False)
+    ax.grid(False)
+
+    # Colour bar
+    sm = plt.cm.ScalarMappable(
+        cmap="YlOrRd",
+        norm=plt.Normalize(vmin=0, vmax=max_expr),
+    )
+    sm.set_array([])
+    cbar = fig.colorbar(sm, ax=ax, shrink=0.5, pad=0.02)
+    cbar.set_label("Mean expr.\n(expressing cells)", fontsize=8)
+
+    # Size legend
+    for pct_val, label in [(0.25, "25%"), (0.5, "50%"), (1.0, "100%")]:
+        ax.scatter(
+            [], [], s=(MAX_RADIUS * np.sqrt(pct_val) * 72) ** 2,
+            c="gray", alpha=0.6, label=label,
+        )
+    ax.legend(
+        title="% expressing", title_fontsize=7,
+        loc="lower right", fontsize=7,
+        frameon=True, framealpha=0.8,
+        bbox_to_anchor=(1.18, 0),
+    )
+
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
 def _plot_confidence_distribution(adata: AnnData) -> Optional[str]:
     if "cell_type_confidence" not in adata.obs.columns:
         return None
@@ -330,12 +485,19 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         return vc.index[0] if len(vc) > 0 else "?"
 
     def _conf_badge(cl):
+        """Return (score_html, label_str) for the two split confidence columns."""
         if "cell_type_confidence" not in adata_annotated.obs.columns:
-            return "?"
+            return "?", "?"
         mask = adata_annotated.obs[leiden_col] == cl
         med  = adata_annotated.obs.loc[mask, "cell_type_confidence"].astype(float).median()
-        cls  = "ok" if med >= 0.75 else "warn"
-        return f'<span class="{cls}">{med:.2f}</span>'
+        css  = "ok" if med >= 0.75 else "warn"
+        if med >= 0.75:
+            label = "High"
+        elif med >= 0.50:
+            label = "Medium"
+        else:
+            label = "Low"
+        return f'<span class="{css}">{med:.2f}</span>', label
 
     # ── Discover method columns that actually exist in obs ────────────────────
     # Each entry: (obs_col, header_label)
@@ -378,22 +540,27 @@ def _section_assignment_table(adata_annotated: AnnData, prov: dict) -> str:
         n = int((adata_annotated.obs[leiden_col] == cl).sum())
         method_cells = "".join(f"<td>{_mode(col, cl)}</td>" for col, _ in method_cols)
         consensus = _mode("cell_type_vote", cl) if "cell_type_vote" in obs_cols else "?"
+        score_html, label_str = _conf_badge(cl)
         rows += (
             f"<tr><td>{cl}</td><td>{n:,}</td>"
             f"{method_cells}"
             f"<td><strong>{consensus}</strong></td>"
-            f"<td>{_conf_badge(cl)}</td></tr>"
+            f"<td>{score_html}</td>"
+            f"<td>{label_str}</td></tr>"
         )
 
     return f"""
     <section>
       <h2>Cluster to Cell Type Assignment</h2>
-      <p>Per-cluster label from each method. Confidence = weighted fraction of active methods agreeing.</p>
+      <p>Per-cluster label from each method.
+         <strong>Consensus score</strong> = weighted fraction of active methods agreeing (0.0–1.0).
+         <strong>Confidence</strong> = qualitative label (High ≥ 0.75, Medium ≥ 0.50, Low &lt; 0.50).
+         <em>These reflect method agreement only — not AI self-reported confidence.</em></p>
       <table>
         <thead>
           <tr><th>Cluster</th><th>n cells</th>
               {header_cells}
-              <th>Consensus</th><th>Confidence</th></tr>
+              <th>Consensus</th><th>Consensus score</th><th>Confidence</th></tr>
         </thead>
         <tbody>{rows}</tbody>
       </table>
@@ -440,6 +607,15 @@ def _section_figures(figs: dict, methods_run: list) -> str:
             f'<img src="data:image/png;base64,{figs["groundtruth"]}" alt="UMAP vs gt"></div>'
         )
 
+    # Marker dot plot — full width
+    if figs.get("dotplot"):
+        panels.append(
+            f'<div class="fig-wrap wide"><h3>Dot Plot — Top Marker Genes per Cluster'
+            f'<span style="font-weight:400;font-size:0.82rem;color:#666;margin-left:8px">'
+            f'dot size = % expressing &nbsp;·&nbsp; colour = mean expression</span></h3>'
+            f'<img src="data:image/png;base64,{figs["dotplot"]}" alt="Marker dot plot"></div>'
+        )
+
     # Marker heatmap — full width
     if figs.get("heatmap"):
         panels.append(
@@ -458,6 +634,71 @@ def _section_figures(figs: dict, methods_run: list) -> str:
     <section>
       <h2>Figures</h2>
       <div class="fig-grid">{"".join(panels)}</div>
+    </section>
+    """
+
+
+def _section_groundtruth_accuracy(adata_annotated: AnnData, prov: dict) -> str:
+    """
+    Per-cluster comparison table of consensus vote label vs ground truth.
+    Only rendered when obs['cell_type_groundtruth'] exists.
+
+    For each cluster reports:
+      - Consensus label
+      - Most common ground-truth label in that cluster
+      - Total cells in cluster
+    """
+    leiden_col = prov.get("leiden_col", "leiden")
+
+    if (
+        "cell_type_groundtruth" not in adata_annotated.obs.columns
+        or "cell_type_vote" not in adata_annotated.obs.columns
+        or leiden_col not in adata_annotated.obs.columns
+    ):
+        return ""
+
+    clusters = sorted(
+        adata_annotated.obs[leiden_col].unique(),
+        key=lambda x: (int(x) if str(x).isdigit() else x),
+    )
+
+    obs = adata_annotated.obs[[leiden_col, "cell_type_vote", "cell_type_groundtruth"]]
+
+    rows_html = ""
+    for cl in clusters:
+        mask      = obs[leiden_col] == cl
+        sub       = obs[mask]
+        n         = len(sub)
+        consensus = sub["cell_type_vote"].mode().iloc[0] if n > 0 else "?"
+        gt_mode   = sub["cell_type_groundtruth"].astype(str).mode().iloc[0] if n > 0 else "?"
+
+        rows_html += (
+            f"<tr><td>{cl}</td><td>{n:,}</td>"
+            f"<td><strong>{consensus}</strong></td>"
+            f"<td>{gt_mode}</td></tr>"
+        )
+
+    return f"""
+    <section>
+      <h2>Consensus vs Ground Truth — Per Cluster</h2>
+      <p>
+        Compares the consensus vote label against
+        <code>cell_type_groundtruth</code> (publication ground truth preserved from
+        <code>obs['cell_type']</code> before annotation ran).
+        Ground-truth and consensus labels may use different naming conventions —
+        use this table alongside the Consensus vs Ground-Truth UMAP for visual validation.
+      </p>
+      <table>
+        <thead>
+          <tr>
+            <th>Cluster</th>
+            <th>n cells</th>
+            <th>Consensus label</th>
+            <th>Most common ground-truth label</th>
+          </tr>
+        </thead>
+        <tbody>{rows_html}</tbody>
+      </table>
     </section>
     """
 
@@ -580,6 +821,10 @@ def run_annotate_report(
         print("  Rendering marker score heatmap ...", flush=True)
         figs["heatmap"] = _plot_marker_heatmap(score_df)
 
+    leiden_col_for_dot = prov.get("leiden_col", "leiden")
+    print("  Rendering marker dot plot ...", flush=True)
+    figs["dotplot"] = _plot_dotplot(adata_annotated, leiden_col_for_dot)
+
     if "vote" in methods_run:
         print("  Rendering confidence distribution ...", flush=True)
         figs["confidence"] = _plot_confidence_distribution(adata_annotated)
@@ -587,6 +832,7 @@ def run_annotate_report(
     sections = [
         _section_summary(adata_annotated, prov, dataset_name, timestamp),
         _section_assignment_table(adata_annotated, prov),
+        _section_groundtruth_accuracy(adata_annotated, prov),
         _section_figures(figs, methods_run),
         _section_provenance(adata_annotated),
     ]

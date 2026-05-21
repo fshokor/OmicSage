@@ -1,10 +1,26 @@
 # AI Interpretation Report
-**Dataset:** GSE194122 — BMMC CITE-seq (NeurIPS 2021)
+**Dataset:** GSE194122 — BMMC CITE-seq (NeurIPS 2021 Multimodal Single-Cell Integration Challenge)
 **Date:** 2026-05-21
 **Reviewer:** Manual Review Mode (D1)
 **Model used:** Claude Sonnet 4.6
-**Tissue:** Bone marrow (mononuclear cells, BMMC)
+**Tissue:** Bone marrow mononuclear cells (BMMC)
 **Disease:** Healthy (no disease)
+
+---
+
+## Study Context Block (Extracted from Data Report Tab)
+
+```
+Tissue:               Bone marrow (mononuclear cells)
+Disease:              Healthy (no disease)
+Species:              Human (Homo sapiens)
+Conditions:           Multimodal measurement platforms — 10X Multiome (RNA+ATAC) vs 10X 3' Gene Expression + CITE-seq (Feature Barcoding); nested batch layout across 4 sites; no disease vs control comparison
+N cells (post-QC):    21,778
+N donors:             12 healthy human donors
+Batch key:            batch (12 batches; also Samplename with 12 samples)
+Biological question:  [Not stated by analyst — inferred: How do hematopoietic cell type populations partition across bone marrow in healthy donors, and can multimodal single-cell data integration recover known cell-type structure?]
+Known biology:        This dataset was originally designed for the NeurIPS 2021 Multimodal Single-Cell Data Integration Challenge (Luecken et al.). Ground-truth cell type labels from the original publication are preserved in obs['cell_type_groundtruth'].
+```
 
 ---
 
@@ -12,43 +28,64 @@
 
 - **Tissue:** Bone marrow mononuclear cells (BMMC)
 - **Disease:** Healthy (no disease)
-- **Species:** Human (Homo sapiens)
-- **Conditions:** Healthy multimodal atlas — no disease condition; nested batch layout spanning 4 collection sites
+- **Species:** Human
+- **Conditions:** Two measurement modalities — 10X Multiome (Gene Expression + Chromatin Accessibility) and 10X 3' Single-Cell Gene Expression with Feature Barcoding (CITE-seq). Samples prepared at four sites; nested batch layout (some donors measured at multiple sites, others at a single site).
 - **N cells (post-QC):** 21,778
 - **N donors:** 12 healthy human donors
-- **Batch key:** `batch` (12 batches detected; also metadata columns `DonorID`, `Site`, `Samplename`, `sample`)
-- **Biological question:** Characterisation of the human bone marrow immune cell landscape at single-cell resolution across modalities (RNA + protein/ATAC); originally generated for the NeurIPS 2021 Multimodal Single-Cell Data Integration Challenge
+- **Batch key:** `batch` (12 batches); `Samplename` (12 samples)
+- **Biological question:** Inferred by reviewer — characterisation of hematopoietic cell-type heterogeneity in healthy human bone marrow under a multi-site, multi-platform design. Secondary interest: cross-batch reproducibility of cell-type annotations given the nested batch structure.
 
 ---
 
 ## 2. QC Assessment
 
 - **Thresholds:** min_genes = 200, max_genes = 2,500, max_pct_MT = 5.0%, doublet removal = True
-- **Cells removed:** 75.8% (68,483 of 90,261 cells removed) — **substantially above typical** for BMMC
-- **Doublet detection:** Scrublet — run and reported (187 doublets removed)
-- **Overall QC assessment:** Review recommended — see flags below
+- **Cells removed:** 75.9% removed (68,483 / 90,261 input cells); pass rate = 24.1%
+- **Doublet detection:** Run (Scrublet; 187 doublets removed)
+- **Overall QC assessment:** **Review recommended** — the 75.9% removal rate substantially exceeds the typical 5–30% range and is the dominant QC concern. The MT% threshold of 5% is the primary driver (64,699 cells removed on MT% alone). This is discussed further below.
+
+### Pre-QC medians (from QC tab)
+
+| Metric | Pre-QC Value |
+|---|---|
+| Median genes / cell | 1,317 |
+| Median UMI / cell | 3,917 |
+| Median MT% | 6.34% |
+| Median ribosomal % | 23.66% |
+| Median hemoglobin % | 0.12% |
+
+### Per-threshold removal breakdown
+
+| Threshold | Cells removed |
+|---|---|
+| min_genes < 200 | 1,124 |
+| max_genes > 2,500 | 8,710 |
+| max_pct_MT > 5.0% | 64,699 |
+| Doublets | 187 |
 
 | Severity | Flag | Suggestion |
-|----------|------|------------|
-| critical | 75.8% cells removed — far above the typical 10–30% for BMMC scRNA-seq. The dominant filter is max_pct_MT = 5.0%, which alone removed 64,699 cells (~72% of input). | Critically re-examine the 5% MT% ceiling. Published norms for BMMC/hematopoietic cells typically accept up to 10–20% MT. The Novershtern 2011 paper and subsequent BMMC atlases routinely use 10–15%. Pre-QC median MT% = 6.34% means a 5% cut is _below_ the median, which implies most cells were discarded for being "normal". Consider raising to ≥10%. |
-| critical | max_genes = 2,500 — removed 8,710 cells. This is a very tight upper ceiling for a 10X BMMC dataset where progenitor-rich cells routinely exceed 2,500 detected genes. | Raise upper gene ceiling to 4,000–6,000 or use a MAD-based upper filter (e.g., median + 3×MAD). Progenitor and monocyte cells with genuinely high gene counts may have been discarded. |
-| warning | Post-QC median genes/cell = 1,431 and median UMI/cell = 5,783 — substantially lower than pre-QC medians (1,317 genes, 3,917 UMI). This paradox (post-QC median genes higher than pre-QC) is consistent with selective removal of low-quality cells but may also reflect under-counting if thresholds are calibrated against a different protocol. | Verify that the HVG selection and normalization were performed on post-QC data. Report whether doublet scores were available per cell. |
-| warning | 13 MT genes detected — a relatively low MT gene count. Ensure the mitochondrial gene prefix used (likely "MT-") matched the reference annotation; undercounting MT genes inflates the per-cell MT% denominator. | Cross-check MT gene set against Ensembl human genome annotation (there should be 37 MT-encoded genes in Homo sapiens, of which 13 are protein-coding — 13 protein-coding MT genes is correct and consistent). |
-| info | Two 10X protocols were mixed in this dataset: 10X Multiome (RNA+ATAC) and 10X 3' GEX + CITE-seq (Feature Barcoding). These protocols may generate systematically different gene counts and MT% distributions. | Ideally apply per-protocol QC thresholds or use MAD-based per-batch thresholds rather than fixed global values. |
+|---|---|---|
+| **Critical** | 75.9% of cells removed; exceeds the typical ≤30% guideline by a wide margin. The max_pct_MT = 5.0% threshold alone accounts for 64,699 removals (71.7% of input cells). The pre-QC median MT% of 6.34% indicates that the threshold was set *below* the dataset median, guaranteeing majority removal. | Re-run QC with max_pct_MT = 10–15% (or use a MAD-based threshold; typically median + 3×MAD), which is the published norm for fresh bone marrow. Evaluate cell yield and downstream cluster integrity at the more permissive threshold. |
+| **Warning** | max_genes = 2,500 removed 8,710 cells. Bone marrow contains HSCs and progenitors that can have moderate-to-high gene counts; a fixed upper cap of 2,500 may incorrectly exclude healthy progenitor populations. | Consider raising or removing the upper gene cap, or applying a MAD-based upper threshold. |
+| **Warning** | Median pre-QC ribosomal % = 23.66%; no ribosomal gene filtering was noted. High ribosomal content can mask cell-type markers in bone marrow (especially erythroid populations). | Check whether RPL/RPS exclusion was applied in DEG (it was; see DEG tab) and whether ribo-filtering was applied upstream in QC. |
+| **Info** | Scrublet doublet detection was run (187 doublets removed; <0.3% of input cells). The low doublet rate is consistent with the 10X Genomics protocol range (0.4–0.8% per 1,000 cells loaded). | No action required. |
+| **Info** | Ground-truth labels from the original NeurIPS 2021 publication are preserved (obs['cell_type_groundtruth']). This is an unusual and valuable asset for QC validation — cells removed by QC can be compared against the ground-truth label distribution to check for systematic loss of specific cell types. | Consider retroactively characterising which ground-truth cell types were preferentially removed by the 5% MT% threshold. Erythroblasts in particular have naturally elevated MT% in bone marrow. |
 
 ---
 
 ## 3. Clustering Assessment
 
-- **Resolution:** 0.6 — appropriate for 21,778 cells (recommended range: 0.5–0.8 for this cell count)
-- **Recommended range:** 0.5–0.8 for medium datasets (5,000–30,000 cells)
-- **N clusters:** 16 — reasonable for bone marrow; published BMMC atlases typically report 10–25 populations
-- **Silhouette score:** 0.1580 — poor (< 0.2 threshold for adequate separation)
-- **Sub-clustering candidates:** Cluster 10 (3,763 cells, CD4+ T cells, confidence 0.50) — by far the largest cluster, likely containing naïve, central memory, and regulatory T cell subtypes. Cluster 15 (1,133 cells, CD16+ NK cells, confidence 0.50) — NK cell compartment is heterogeneous and typically benefits from sub-clustering to separate CD56dim/CD16+ cytotoxic from CD56bright regulatory NK cells.
-
-**Literature context:** Granja et al. 2019 (*Nature Biotechnology*) profiled human PBMC/BMMC with ATAC+RNA and resolved ~20 populations at resolution 0.6–0.8. Triana et al. 2021 (*Nature Communications*) used the same NeurIPS 2021 benchmark dataset and identified 22 human bone marrow cell types. The 16-cluster solution here is slightly coarser and may merge some rare progenitor subtypes.
-
-The low silhouette score (0.1580 vs. the 0.3833 at resolution 0.2 and 0.3579 at resolution 0.4) reflects genuine transcriptional overlap between clusters rather than a technical problem. The stability metric (0.167) indicates the solution is acceptable but not highly robust; the pipeline correctly selected this resolution via the stability_plateau method. The resolution 0.4 solution (silhouette 0.3579) may provide better-separated clusters worth comparing for interpretation.
+- **Resolution:** 0.6 — **Appropriate** for 21,778 cells (recommended range: 0.5–0.8 for medium cell counts of 5,000–30,000)
+- **Recommended range:** 0.5–0.8 for this cell count and tissue
+- **N clusters:** 16 — Reasonable for healthy human bone marrow at this cell count. The Novershtern et al. hematopoietic reference includes ~21 broad cell types; 16 clusters at resolution 0.6 is a mild under-partition, which is expected given the aggressive QC removal that may have depleted rarer cell types.
+- **Silhouette score:** 0.1580 — **Poor** (< 0.2). This is not unexpected in mixed hematopoietic bone marrow data where lineage boundaries are inherently continuous (e.g., erythroid maturation stages, B cell developmental stages), but it warrants scrutiny of specific clusters.
+- **Per-resolution metrics context:** Silhouette scores at finer resolutions (res = 0.8: 0.1507; res = 1.0: 0.1489; res = 1.2: 0.1263) are lower or similar, consistent with a genuine continuum rather than a resolution artefact. Resolution 0.2 (9 clusters, silhouette = 0.3833) produces a much cleaner partition but is biologically under-resolved for bone marrow.
+- **Sub-clustering candidates:**
+  - **Cluster 10 (3,763 cells, CD4+ T cells):** Largest cluster; ground-truth reveals a mixture of "CD4+ T activated" and "CD4+ T naive" (consensus label mixes Cluster 12 and 10). T-cell sub-clustering (e.g., naive vs central memory vs effector) is warranted.
+  - **Clusters 0–4 (erythroid, 7,348 total cells):** Five erythroid clusters with consensus scores of 1.00 are split into "Late erythroid" and "Mid erythroid" but no Early erythroid is present — likely lost in QC due to high MT%. Ground-truth contains Reticulocytes, Normoblasts, and Erythroblasts, suggesting additional sub-partitions are resolvable.
+  - **Cluster 9 (1,099 cells, pDC):** Consensus score of 0.50 indicates method disagreement. ScType called it Megakaryocyte; CellTypist and SingleR call it pDC. This cluster merits manual inspection.
+  - **Clusters 7 and 8 (Classical monocytes, 1,660 and 1,717 cells):** Near-identical annotations; sub-clustering or merging should be considered.
+- **Literature context:** Stuart et al. (Cell 2019, PMID:31178118) applied Seurat to human bone marrow PBMC datasets at resolution 0.4–0.8 and recovered 14–18 clusters; Novershtern et al. (Cell 2011, PMID:21241896), the reference used by SingleR here, defined 21 cell states from human bone marrow. The 16-cluster solution at resolution 0.6 is broadly consistent with published practice.
 
 ---
 
@@ -56,172 +93,185 @@ The low silhouette score (0.1580 vs. the 0.3833 at resolution 0.2 and 0.3579 at 
 
 ### 4a. Cluster-level predictions
 
-| Cluster | N cells | Predicted type | Confidence | Supporting markers | Alternatives | SingleR agreement |
-|---------|---------|---------------|------------|-------------------|--------------|-------------------| 
-| 0 | 2,275 | Late erythroid | High | HBB (log₂FC 8.913), Late erythroid label by all 5 methods | Mid erythroid (if HBM co-expressed) | Yes — Erythroid cells (SingleR) |
-| 1 | 997 | Late erythroid | High | Same HBB-dominant signature as cluster 0 | None | Yes |
-| 2 | 1,238 | Late erythroid | High | Same signature as clusters 0–1 | None | Yes |
-| 3 | 1,085 | Mid erythroid | High | PRDX2, AHSP, HBM, HEMGN, CA2 all up; consensus 1.00 | None | Yes — Erythroid cells (SingleR) |
-| 4 | 1,753 | Mid erythroid | High | Same signature as cluster 3; consensus 1.00 | None | Yes |
-| 5 | 484 | Plasma cells | Medium | MZB1 (log₂FC 6.366), SSR4, TXNDC5, FKBP11; CellTypist Fine = Plasma cells | Naive B cells (SingleR call — likely SingleR limitation on BM plasma cells vs. mature bone marrow ASCs) | Partial — SingleR calls B cells; CellTypist Fine and Marker Score agree on Plasma cells |
-| 6 | 1,262 | Small pre-B cells | Medium-High | CD79B (log₂FC 7.743), VPREB3 (8.826), IGHM (6.968), PTMA; consensus = Small pre-B cells 0.75 | B cell general (ScType missed the pre-B designation) | Partial — SingleR calls B cells; CellTypist Fine = Small pre-B cells |
-| 7 | 1,660 | Classical monocytes | High | LYZ (8.683), S100A9 (9.486), FCN1 (8.471); consensus 1.00 | Non-classical monocytes (would differ on FCGR3A/CD14 ratio) | Yes — Monocytes (SingleR) |
-| 8 | 1,717 | Classical monocytes | High | Same signature as cluster 7; consensus 1.00 | Same as cluster 7 | Yes |
-| 9 | 1,099 | pDC | Medium | PPP1R14B (5.726), GZMB (7.269), IRF8 (6.890), CCDC50 (6.899), JCHAIN (7.023); consensus = pDC 0.50 | Plasmablast/Plasma cell (JCHAIN and GZMB can co-occur in plasma cells; ScType called Megakaryocyte — likely wrong) | Partial — SingleR calls Dendritic cells; CellTypist Fine = pDC. Reviewer agrees with pDC. |
-| 10 | 3,763 | CD4+ T cells (mixed) | Medium | RPL30, RPL13, LTB (5.476), RPS12, RPL34; CellTypist Fine = Tcm/Naive helper T cells; consensus 0.50 | Central memory T, regulatory T, naïve T — sub-clustering recommended | Partial — SingleR = CD4+ T; ScType = Megakaryocyte (likely wrong) |
-| 11 | 994 | CD8+ T cells | Medium | CCL5 (6.758), NKG7 (5.869), CST7 (4.894), GZMA (5.116); consensus = CD8+ 0.50 | CD8+ NKT-like (SingleR), NK cells (partial overlap with cluster 15) | Partial — SingleR = CD8+ T; CellTypist Fine = Tem/Temra |
-| 12 | 1,480 | CD4+ T cells | Medium | Same profile as cluster 10; CellTypist = Tcm/Naive helper; consensus 0.50 | Same alternatives as cluster 10 | Partial |
-| 13 | 332 | Naive B cells | High | MS4A1 (7.968), CD74 (4.537), HLA-DRA (4.808), HLA-DPB1 (4.355), CD79A (5.776); consensus 0.75 | Memory B cells (CD27 expression would distinguish) | Yes — B cells (SingleR) |
-| 14 | 506 | HSC/MPP | Medium | SNHG29 (3.523), RPS24, RPLP0, RPLP1, RPL12; consensus = HSC/MPP 0.50 | CMP/GMP (would express MPO, ELANE); LMPP (FLT3+) | Partial — SingleR = HSCs; ScType = Progenitor cells |
-| 15 | 1,133 | CD16+ NK cells | Medium | NKG7 (8.059), GNLY (9.448), GZMA (6.997), CST7 (6.487), B2M (2.955); consensus 0.50 | CD56bright NK (would lack GNLY, have NKG2A high) | Partial — SingleR = NK cells; CellTypist Fine = CD16+ NK cells |
+| Cluster | N cells | Predicted type | Consensus score | Reviewer confidence | Supporting markers | Alternatives | SingleR agreement |
+|---|---|---|---|---|---|---|---|
+| 0 | 2,275 | Late erythroid | 1.00 | **High** | HBB (log2FC=8.913), HBA2 (log2FC=8.165), PTMA↓, EEF1A1↓ | None; ground-truth = Reticulocyte, consistent | ✓ Yes (Erythroid cells) |
+| 1 | 997 | Late erythroid | 1.00 | **High** | Same erythroid marker profile; ground-truth = Reticulocyte | None | ✓ Yes |
+| 2 | 1,238 | Late erythroid | 1.00 | **High** | Same marker profile; ground-truth = Normoblast | Normoblast distinction possible with CA1, SLC4A1 | ✓ Yes |
+| 3 | 1,085 | Mid erythroid | 1.00 | **High** | PRDX2 (log2FC=5.096), AHSP (log2FC=5.921), HBM (log2FC=6.586), HEMGN (log2FC=5.196), CA2 (log2FC=6.257); ground-truth = Erythroblast | None | ✓ Yes (Erythroid cells) |
+| 4 | 1,753 | Mid erythroid | 1.00 | **High** | Same mid-erythroid marker profile; ground-truth = Erythroblast | None | ✓ Yes |
+| 5 | 484 | Plasma cells | 0.50 | **Medium** | SSR4 (log2FC=4.877), MZB1 (log2FC=6.366), TXNDC5 (log2FC=6.703), FKBP11 (log2FC=5.555); ground-truth = Plasma cell IGKC+ | CellTypist Coarse = Plasma cells; SingleR = B cells. Marker evidence strongly supports plasma cells despite SingleR disagreement. | ✗ Partial (SingleR = B cells; reviewer sides with CellTypist + markers) |
+| 6 | 1,262 | Small pre-B cells | 0.75 | **High** | CD79B (log2FC=7.743), VPREB3 (log2FC=8.826), IGHM (log2FC=6.968), HLA-DRA (log2FC=4.705); ground-truth = Transitional B | Transitional B cells overlap substantially; VPREB3 is a specific pre-B marker | ✓ Yes (B cells/Small pre-B) |
+| 7 | 1,660 | Classical monocytes | 1.00 | **High** | LYZ (log2FC=8.683), S100A9 (log2FC=9.486), FCN1 (log2FC=8.471), FTL (log2FC=3.579); ground-truth = CD14+ Mono | None — canonical and context-specific markers perfectly concordant | ✓ Yes |
+| 8 | 1,717 | Classical monocytes | 1.00 | **High** | Same monocyte marker profile; ground-truth = CD14+ Mono | Possible non-classical monocyte sub-population; check FCGR3A/CD16 | ✓ Yes |
+| 9 | 1,099 | pDC | 0.50 | **Medium** | GZMB (log2FC=7.269), IRF8 (log2FC=6.890), CCDC50 (log2FC=6.899), JCHAIN (log2FC=7.023), PPP1R14B (log2FC=5.726); ground-truth = pDC | ScType called Megakaryocyte (unlikely given marker set; GZMB and IRF8 are pDC-defining). Reviewer sides with pDC. JCHAIN expression warrants note (see Task 5). | ✗ Partial (ScType = Megakaryocyte; reviewer sides with CellTypist/SingleR/pDC) |
+| 10 | 3,763 | CD4+ T cells | 0.50 | **Medium** | LTB (log2FC=5.476), CD3D (log2FC=5.191), IL7R (log2FC=5.903), EEF1A1↑; ground-truth = CD4+ T activated | Naive CD4+ T cells and Tcm likely co-present; sub-clustering recommended. IL7R elevation consistent with naive/central memory. | ✓ Yes (CD4+ T cells) |
+| 11 | 994 | CD8+ T cells | 0.50 | **High** | CCL5 (log2FC=6.758), NKG7 (log2FC=5.869), CST7 (log2FC=4.894), GZMA (log2FC=5.116), B2M (log2FC=2.667); ground-truth = CD8+ T CD57+ CD45RO+ | Cytotoxic effector memory profile (CCL5+NKG7+GZMA); reviewer confidence elevated to High despite 0.50 consensus because marker evidence is unambiguous. | ✓ Yes |
+| 12 | 1,480 | CD4+ T cells | 0.50 | **Medium** | Same CD4+ marker set; ground-truth = CD4+ T naive | Naive CD4+ sub-population; distinguish from Cluster 10 using CCR7, SELL, LEF1. | ✓ Yes |
+| 13 | 332 | Naive B cells | 0.75 | **High** | MS4A1 (log2FC=7.968), CD74 (log2FC=4.537), HLA-DRA (log2FC=4.808), CD79A (log2FC=5.776), HLA-DPB1 (log2FC=4.355); ground-truth = Naive CD20+ B IGKC+ | None — MS4A1 (CD20) confirms naive B | ✓ Yes |
+| 14 | 506 | HSC/MPP | 0.50 | **Medium** | SNHG29 (log2FC=3.523), NME2 (log2FC=2.723), NPM1 (log2FC=2.576), GAPDH (log2FC=2.737); ground-truth = HSC | Markers are largely housekeeping/proliferation genes (NME2, NPM1, GAPDH); lack canonical HSC markers (CD34, HOXA5, MLLT3). ScType = Progenitor cells supports. Medium confidence. | ✓ Partial |
+| 15 | 1,133 | CD16+ NK cells | 0.50 | **High** | NKG7 (log2FC=8.059), GNLY (log2FC=9.448), GZMA (log2FC=6.997), CST7 (log2FC=6.487), B2M (log2FC=2.955); ground-truth = NK | Reviewer confidence High: GNLY+NKG7+GZMA+CST7 is the definitive NK cytotoxicity signature. Consensus 0.50 reflects ScType/Marker method noise. | ✓ Yes |
 
 ### 4b. Tissue-specific marker sets
 
-| Cell type | Canonical markers | BMMC-healthy specific | Distinguishing markers | Counter-markers | Confidence |
-|-----------|------------------|----------------------|----------------------|-----------------|------------|
-| Late erythroid | HBB, HBA1, HBA2, GYPA (CD235a), Band3 (SLC4A1) | HBB (log₂FC 8.913 in cluster 0), RPLP1 down (−5.739), TPT1 down | Orthochromatic erythroblasts: GYPC+, loss of organelle markers; distinguish from mid-erythroid by lower HBM and HEMGN | PCNA, MKI67, TOP2A (cycling — would indicate mid/early stage) | High |
-| Mid erythroid | HBM, HEMGN, AHSP, CA2, PRDX2 | HEMGN (log₂FC 5.196), HBM (6.586), CA2 (6.257) — consistent with polychromatic erythroblasts in human BMMC atlases | Higher cell-cycle gene expression than late erythroid; KLF1+; distinguish from late erythroid by presence of TOP2A and MYBL2 (as seen in GSEA: Cell Cycle, Mitotic pathway enriched in mid erythroid) | SPI1/PU.1 (high expression opposes erythroid commitment) | High |
-| Classical monocytes | CD14, LYZ, S100A8, S100A9, FCN1 | FCN1 (log₂FC 8.471) — a complement lectin highly specific to classical monocytes in BM (Villani et al. 2017, Science); S100A9 (9.486); CXCL8 enriched in GSEA | Distinguish from non-classical monocytes: FCGR3A (CD16) high in non-classical; CD14 high and FCGR3A low in classical; NCF1/NCF2 (NADPH oxidase subunits) seen in GSEA (Phagosome pathway) | FCGR3A (if very high, suggests non-classical); CX3CR1 (non-classical marker) | High |
-| pDC | LILRA4, CLEC4C (CD303), TCF4 (E2-2), IRF7, GZMB, JCHAIN | IRF8 (log₂FC 6.890) — master pDC TF; GZMB (7.269) — known pDC effector cytotoxic molecule; JCHAIN (7.023) — consistent with IgJ expression in pDC (literature-supported); PPP1R14B (5.726) | IRF8 high and IRF4 low distinguishes pDC from cDC2 (IRF4 high); GZMB distinguishes from cDC1; Collin & Bigley 2018 (PMID:29313948) confirms IRF8 as canonical pDC TF | CD1C, CLEC10A, CD11b (cDC2 markers); MHC-II very high (would suggest cDC2) | Medium — JCHAIN overlap with plasma cells is a concern; IRF8 is highly confirmatory |
-| CD16+ NK cells | NCAM1 (CD56), FCGR3A (CD16), KLRD1, NKG7, PRF1, GNLY | NKG7 (log₂FC 8.059), GNLY (9.448), GZMA (6.997) — NKG7 regulates cytotoxic granule exocytosis (Ng et al. 2020, Nat Immunol, PMID:32839608); KLRB1, KLRK1, LAIR2 in GSEA gene lists | GNLY + GZMA high distinguishes cytotoxic CD56dim/CD16+ from CD56bright regulatory NK; B2M upregulated (2.955 log₂FC) likely reflecting high MHC-I surface expression for target recognition | CD117 (c-KIT) — high expression suggests innate lymphoid cell ILC1 rather than mature NK | Medium-High |
-| CD4+ T cells | CD4, TCF7, CCR7, IL7R, LTB | LTB (log₂FC 5.476) — membrane lymphotoxin expressed by naïve/central memory T cells; RPL-family genes dominate (translation-active quiescent T cells); CellTypist Fine = Tcm/Naive helper | CCR7+/CCL2low distinguishes naïve T from effector memory; LTB distinguishes from CD8+ T cells and monocytes | CD8A (would indicate CD8+ T); FOXP3 (would indicate Treg) | Medium — large cluster likely contains Treg, Th1, Th17, and naïve T cell subtypes mixed |
-| CD8+ T cells | CD8A, CCL5, GZMA, NKG7, CST7 | CCL5 (log₂FC 6.758) — hallmark of effector/memory CD8+ T; NKG7 (5.869) — shared with NK cells; CellTypist Fine = Tem/Temra cytotoxic T | CST7 — cystatin F, enriched in cytotoxic CD8+ T and NK; CCL5 distinguishes CD8+ Tem from NK cells (NK cells express low CCL5 in BM) | CD4 (CD4+ T marker) | Medium |
-| Naive B cells | MS4A1 (CD20), CD79A, CD79B, PAX5, HLA-DRA | MS4A1 (log₂FC 7.968 — highest significance in this group); CD74 (4.537); HLA-DPB1, HLA-DRA — consistent with B cells as primary professional APCs in BM | CD27 low distinguishes naïve from memory B; IgD/IgM surface expression expected; distinguish from pre-B: CD79A+, no VPREB3 | IGHG, IGHA (class-switched — would indicate memory or plasmablast) | High |
-| Small pre-B cells | CD79B, VPREB3, IGHM, RAG1, RAG2, PTMA | CD79B (log₂FC 7.743), VPREB3 (8.826), IGHM (6.968) — VPREB3 (Vpreb3) is a surrogate light chain specific to pre-B stage; RAG1 is activated by Pax5/E2A at the pre-B stage (Fedl et al. 2024, Nat Immunol, PMID:39179932) | VPREB3 high + CD79A+ distinguishes pre-B from pro-B (which lacks cytoplasmic IgM); RAG1 high distinguishes from naïve B (RAG silenced post-VJ recombination) | MS4A1 (CD20) — low to absent at pre-B stage; HLA-DRA very low | Medium-High |
-| Plasma cells | MZB1, SSR4, TXNDC5, XBP1, FKBP11, JCHAIN | MZB1 (log₂FC 6.366) — Grp94 cochaperone essential for antibody secretion (Andreani et al. 2018, PNAS, PMID:30257949); SSR4 (4.877) — translocon-associated protein delta | MZB1 + JCHAIN (secretory IgJ chain) distinguish long-lived BM plasma cells from short-lived plasmablasts; TXNDC5 + SEC11C mark active ER secretory machinery | MS4A1 (CD20) — very low in differentiated plasma cells; PAX5 — absent | Medium — SingleR misidentified as B cells; 5 method majority vote barely reached 0.50 |
-| HSC/MPP | CD34, HOPX, SPINK2, AVP, MLLT3 | SNHG29 (log₂FC 3.523) — a small nucleolar RNA host gene with no previously characterised role in HSC/MPP (see Section 6); ribosomal protein genes (RPS24, RPLP0) dominate the Wilcoxon signature | CD34+/CD38low distinguishes HSC from MPP; HOPX high distinguishes long-term HSC from ST-HSC; distinguish from CMP: MPO low, ELANE low, FLT3 low | MPO, ELANE, CEBPA (GMP/CMP markers); GYPA (erythroid) | Medium — only 506 cells; confidence 0.50; ribosomal gene-dominated signature is not fully specific |
+| Cell type | Canonical markers | BMMC healthy-specific | Distinguishing markers | Counter-markers | Confidence |
+|---|---|---|---|---|---|
+| Late erythroid | HBB, HBA1, HBA2, GYPC, SLC4A1 | CA1, AHSP (late-stage haemoglobin chaperoning, Novershtern 2011) | CA1, SLC4A1 (distinguish from Mid erythroid); HBD (fetal vs adult) | PCNA, MKI67 (proliferation absent in late erythroid), CD34 | High |
+| Mid erythroid | PRDX2, CA2, HEMGN, HBM, ALAS2 | HEMGN (haematopoietic expressed in mid-erythroid, bone marrow specific; Novershtern 2011); CA2 | PCNA, MKI67 (distinguish proliferating EMP from post-mitotic erythroblasts) | HBB high (counter: suggests terminal/late stage), CD34 | High |
+| Classical monocytes | LYZ, S100A9, S100A8, FCN1, CD14, CSF1R | FCN1, VCAN (specific to bone marrow-egressing monocytes; Xie et al. 2020 Immunity); S100A9 (particularly enriched in BM vs blood) | FCN1 (classical vs non-classical); FCGR3A/CD16 absent (counter for non-classical) | FCGR3A, CX3CR1 (non-classical), GZMB (pDC) | High |
+| CD4+ T cells | CD3D, CD3E, CD4, IL7R, LTB, CCR7 | SELL (L-selectin, naive homing marker in BM); IL7R (survival of BM-resident naive T) | CCR7+SELL (naive), IL7R+SELL (central memory), TNFRSF4/OX40 (activated) | CD8B, GZMA, NKG7 (cytotoxic), CD19 (B cell) | Medium |
+| CD8+ T cells | CD8A, CD8B, CD3D, CCL5, NKG7, GZMA, GZMB | GZMA, GZMB, CST7 (cytotoxic effector memory; bone marrow-resident T cells tend to be effector memory); CCL5 | CD57 (TNFRSF6B/B2M pattern) distinguishes terminally differentiated from effector memory; CD8B vs NKT | CD4, IL7R (naive T), FOXP3 (Treg) | High |
+| NK cells (CD16+) | GNLY, NKG7, GZMA, GZMB, NCAM1/CD56, FCGR3A/CD16 | CST7, ADGRG1, KLRF1 (bone marrow NK; Dogra et al. 2020 Nature Immunology) | FCGR3A/CD16 (CD56dim vs CD56bright); KLRC1/NKG2A (inhibitory; immature NM BM NK) | CD3D, CD3E (T cell), CD19 (B cell) | High |
+| Plasma cells | MZB1, SSR4, XBP1, PRDX4, IGHG, IGKC | MZB1 (Grp94 co-chaperone, plasma cell differentiation; Andreani et al. PNAS 2018, PMID:30257949); TXNDC5 (ER oxidoreductase) | MZB1+SSR4+TXNDC5 distinguishes from plasmablasts (lower ER stress markers); JCHAIN (IgA-secreting subset) | PAX5 (B-cell identity), CD79A high (B-cell lineage) | High |
+| pDC | IRF7, IRF8, GZMB, CLEC4C, IL3RA/CD123, TCF4/E2-2 | GZMB (granzyme B in pDC; distinct from NK/CTL; Prandini et al. Blood 2016, PMID:27207797); JCHAIN (pDC-specific IgA-like secretory function) | IRF8 (pDC-defining TF; absent in NK cells); CLEC4C/BDCA-2 (pDC-exclusive) | NKG7, GNLY (NK markers); S100A9 (monocyte) | Medium |
+| Small pre-B cells | VPREB3, CD79B, IGHM, DNTT/TdT, RAG1/RAG2 | VPREB3 (pre-B cell receptor surrogate light chain; bone marrow-specific developmental stage); BLNK (B-cell linker) | VPREB3+IGHM+CD79B distinguishes from Naive B (no VPREB3); IGHD absence distinguishes from mature naive | MS4A1/CD20 (mature B cell), JCHAIN (plasma cell), GNLY (NK) | High |
+| Naive B cells | MS4A1/CD20, CD19, CD79A, IGHM, IGHD, HLA-DRA, CD74 | HLA-DPB1, HLA-DRB1 (MHC-II antigen presentation; high in bone marrow B cells); CD79A | IGHM+IGHD co-expression distinguishes naive from memory; SELL/L-selectin | JCHAIN (plasma cell), VPREB3 (pre-B) | High |
+| HSC/MPP | CD34, HOXA5, MLLT3, MECOM, AVP, HOPX | CLEC11A (HSC niche factor; Yue et al. 2016); PRTN3 (myeloid progenitor bias, granule serine protease) | MLLT3+HOXA5 (HSC); KIT/CD117; EPOR (erythroid bias) | Lineage markers (CD3D, CD19, CD33 high) | Medium |
 
 ---
 
 ## 5. DEG Validation
 
-**Comparison: CD16+ NK cells (Wilcoxon, one-vs-rest)**
+**Method:** Wilcoxon rank-sum, one-vs-rest, grouped by cell_type_vote. Gene prefix exclusion applied: RPL, RPS, MT- excluded from results (but used in fold-change computation). Adj. p-value threshold = 0.05; min |log2FC| = 0.25.
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| NKG7 | 8.059 | 0.00e+00 | Expected | NKG7 is a canonical NK granule protein regulating cytotoxic exocytosis (Ng et al. 2020, Nat Immunol, PMID:32839608) |
-| GNLY | 9.448 | 0.00e+00 | Expected | Granulysin — pore-forming cytolytic protein stored in NK granules; literature-supported |
-| GZMA | 6.997 | 0.00e+00 | Expected | Granzyme A — canonical NK/cytotoxic T cell serine protease; literature-supported |
-| CST7 | 6.487 | 0.00e+00 | Expected | Cystatin F — inhibitor of lysosomal cysteine proteases expressed in NK/CTL; literature-supported |
-| B2M | 2.955 | 0.00e+00 | Expected | β₂-microglobulin — MHC-I component; upregulated in NK cells relative to all other BM cells; expected given NK cell function in MHC-I surveillance |
+**Compositional artefact check — Wilcoxon results:**
 
-**Discovery highlights (CD16+ NK):** None at the top-5 level — all five are canonical NK markers. Deeper DEG list may reveal discovery candidates.
+- **Late erythroid top 5:** Rank 2 = HBB (↑, log2FC=8.913), Rank 5 = HBA2 (↑, log2FC=8.165). Two of the top 5 are haemoglobin genes (HBB, HBA2). These are expected for erythroid cells, not artefactual — they are authentic erythroid markers. However, the gene prefix exclusion did NOT include HBB/HBA1/HBA2 in the Wilcoxon run (those exclusions appear only in the pseudobulk DEG run). **Flag: info** — for non-erythroid comparisons, haemoglobin genes contaminating top DEGs would be artefactual; confirmed that the pipeline's pseudobulk run excluded HBB/HBA1/HBA2/HBD/AHSP, which is appropriate.
+- **HSC/MPP top 5:** SNHG29 (lncRNA), NME2, NPM1, GAPDH, EEF1B2. GAPDH and EEF1B2 are housekeeping/translation genes. See flag below.
+- All other groups: no RPL*/RPS*/MT- in top 5 (correctly excluded by pipeline prefix filter).
 
-**Comparison: CD4+ T cells (Wilcoxon)**
+### Comparison: CD16+ NK cells
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| RPL30 | 2.858 | 0.00e+00 | Artefact | Ribosomal protein — top DEG in a T cell cluster almost certainly reflects relative quiescence of T cells vs. highly metabolically active erythroid/monocyte clusters. Not biologically informative per se. |
-| RPL13 | 3.077 | 0.00e+00 | Artefact | Same rationale as RPL30 |
-| LTB | 5.476 | 0.00e+00 | Expected | Lymphotoxin-β — membrane cytokine expressed by naïve and central memory T cells; supports Tcm/Naïve annotation |
-| RPS12 | 2.645 | 0.00e+00 | Artefact | Ribosomal protein — same concern as RPL30/RPL13 |
-| RPL34 | 3.040 | 0.00e+00 | Artefact | Ribosomal protein |
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| NKG7 | +8.059 | 0.00e+00 | Expected | Canonical NK cytotoxic granule protein; literature-supported |
+| GNLY | +9.448 | 0.00e+00 | Expected | Granulysin; NK/CTL cytotoxicity; highest log2FC in this group |
+| GZMA | +6.997 | 0.00e+00 | Expected | Granzyme A; canonical NK effector molecule |
+| CST7 | +6.487 | 0.00e+00 | Expected | Cystatin F; NK cell-enriched cysteine protease inhibitor |
+| B2M | +2.955 | 0.00e+00 | Expected | Beta-2 microglobulin; HLA-I component, high in NK cells but non-specific |
 
-**Discovery highlights (CD4+ T):** LTB (log₂FC 5.476) is notable as the only non-ribosomal top DEG and is consistent with a naïve/central memory T cell identity.
+### Comparison: CD4+ T cells
 
-**Comparison: CD8+ T cells (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| LTB | +5.476 | 0.00e+00 | Expected | Lymphotoxin B; T cell survival and lymphoid organisation |
+| TPT1 | +2.398 | 0.00e+00 | Expected | Translationally controlled tumour protein; translation regulation, broad but expressed in T cells |
+| CD3D | +5.191 | 0.00e+00 | Expected | TCR co-receptor delta chain; canonical T cell marker |
+| EEF1A1 | +2.696 | 0.00e+00 | Expected | Elongation factor; housekeeping, but preferentially expressed vs erythroid background |
+| IL7R | +5.903 | 0.00e+00 | Expected | CD127; IL-7 receptor; canonical naive and central memory T cell marker |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| CCL5 | 6.758 | 0.00e+00 | Expected | RANTES — hallmark of effector memory CD8+ T cells; literature-supported |
-| NKG7 | 5.869 | 0.00e+00 | Expected | Shared NK/CD8+ T cytotoxic marker — expected for Tem/Temra annotation |
-| B2M | 2.667 | 0.00e+00 | Expected | Same rationale as NK cells — MHC-I component |
-| CST7 | 4.894 | 0.00e+00 | Expected | Same rationale as NK cells |
-| GZMA | 5.116 | 0.00e+00 | Expected | Granzyme A — expected for CD8+ T effector |
+### Comparison: CD8+ T cells
 
-**Comparison: Classical monocytes (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| CCL5 | +6.758 | 0.00e+00 | Expected | RANTES; chemokine secreted by effector CD8+ T cells; strong effector memory signature |
+| NKG7 | +5.869 | 0.00e+00 | Expected | Shared with NK cells; marks cytotoxic CD8+ T subset |
+| B2M | +2.667 | 0.00e+00 | Expected | MHC-I component; see NK comment |
+| CST7 | +4.894 | 0.00e+00 | Expected | Cystatin F; marks cytotoxic lymphocytes |
+| GZMA | +5.116 | 0.00e+00 | Expected | Granzyme A; cytotoxic function |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| LYZ | 8.683 | 0.00e+00 | Expected | Lysozyme — canonical monocyte/macrophage marker |
-| FTL | 3.579 | 0.00e+00 | Expected | Ferritin light chain — iron-storage protein; expected in monocytes |
-| S100A9 | 9.486 | 0.00e+00 | Expected | S100 calcium-binding protein — canonical classical monocyte DAMPs marker |
-| S100A6 | 4.278 | 0.00e+00 | Expected | S100 calcium-binding protein — monocyte-enriched |
-| FCN1 | 8.471 | 0.00e+00 | Expected | Ficolin-1 — complement lectin; specific to classical monocytes in bone marrow (Villani et al. 2017) |
+### Comparison: Classical monocytes
 
-**Comparison: HSC/MPP (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| LYZ | +8.683 | 0.00e+00 | Expected | Lysozyme; canonical myeloid marker |
+| FTL | +3.579 | 0.00e+00 | Expected | Ferritin light chain; iron storage in monocytes/macrophages |
+| S100A9 | +9.486 | 0.00e+00 | Expected | Calprotectin subunit; highest log2FC in this group; canonical monocyte alarmin |
+| S100A6 | +4.278 | 0.00e+00 | Expected | Calcyclin; monocyte activation marker |
+| FCN1 | +8.471 | 0.00e+00 | Expected | Ficolin-1; pattern recognition receptor on monocytes; bone marrow monocyte-specific (Xie et al. 2020) |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| SNHG29 | 3.523 | 5.78e−236 | Unexpected | Small nucleolar RNA host gene 29 — no PubMed results found for SNHG29 in BMMC or HSC context. PubMed search returned 0 hits for "SNHG29 bone marrow hematopoietic". May be a novel or understudied lncRNA with progenitor-enriched expression. |
-| RPS24 | 2.417 | 4.39e−229 | Artefact | Ribosomal protein — expected in proliferating progenitors but not HSC-specific |
-| RPLP0 | 2.478 | 2.17e−215 | Artefact | Ribosomal protein |
-| RPLP1 | 2.241 | 1.53e−195 | Artefact | Ribosomal protein |
-| RPL12 | 2.273 | 1.25e−189 | Artefact | Ribosomal protein |
+### Comparison: HSC/MPP
 
-**Discovery highlights (HSC/MPP):** SNHG29 (log₂FC = 3.523, adj p = 5.78e−236) stands out as an unexpected and potentially novel marker. Its high significance and consistent enrichment in the HSC/MPP cluster warrants functional follow-up. No literature was found for this gene in hematopoietic stem cells.
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| SNHG29 | +3.523 | 5.78e-236 | **Unexpected** | Small Nucleolar RNA Host Gene 29; an lncRNA with no well-established role in HSC biology; no PMID found linking SNHG29 to HSC specifically. Possible transcriptional noise or novel discovery — warrants follow-up. |
+| NME2 | +2.723 | 1.34e-178 | Expected | NDP kinase; involved in stem cell proliferation and self-renewal |
+| NPM1 | +2.576 | 1.59e-168 | Expected | Nucleophosmin; ribosome biogenesis; expressed in HSCs and progenitors |
+| GAPDH | +2.737 | 4.32e-162 | **Artefact** | Glycolytic housekeeping gene; significant only because erythroid background has suppressed GAPDH expression in the one-vs-rest comparison. Not biologically informative for HSC identity. **Flag: warning** — compositional artefact due to contrast against erythroid majority. |
+| EEF1B2 | +2.342 | 1.05e-161 | **Artefact** | Translation elongation factor; same reasoning as GAPDH. Significant only as relative contrast vs erythroid background. |
 
-**Comparison: Mid erythroid (Wilcoxon)**
+⚠️ **HSC/MPP warning:** 2 of top 5 DEGs (GAPDH, EEF1B2) are housekeeping/translation genes significant only due to compositional contrast against the erythroid-dominated background. Results reflect background contrast, not HSC-specific biology. Canonical HSC markers (CD34, HOXA5, MLLT3) were not in the top 5 by Wilcoxon — likely because these genes are expressed broadly at low levels, making their log2FC insufficient to rank highly. The pseudobulk DEG run recovers more meaningful HSC markers (PRTN3, CLEC11A, MEST).
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| PRDX2 | 5.096 | 0.00e+00 | Expected | Peroxiredoxin-2 — major antioxidant in erythroid cells; protects against ROS during hemoglobinisation |
-| AHSP | 5.921 | 0.00e+00 | Expected | Alpha hemoglobin-stabilising protein — chaperone for free α-globin chains; erythroid-specific |
-| HBM | 6.586 | 0.00e+00 | Expected | Mu-globin embryonic/fetal hemoglobin chain — expressed in mid-stage erythroblasts |
-| HEMGN | 5.196 | 0.00e+00 | Expected | Hemogen/EDAG — hematopoietic nuclear protein that mediates Hsp70 nuclear localisation during erythroid maturation; functionally validated (Dong et al. 2020, FASEB J, PMID:32350948) |
-| CA2 | 6.257 | 0.00e+00 | Expected | Carbonic anhydrase 2 — CO₂/O₂ exchange facilitator; upregulated during erythroid maturation |
+### Comparison: Late erythroid
 
-**Comparison: Late erythroid (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| TPT1 | −4.605 | 0.00e+00 | Expected | Downregulated vs other non-erythroid cells; reflects erythroid specialisation |
+| HBB | +8.913 | 0.00e+00 | Expected | Haemoglobin beta; canonical late erythroid marker |
+| PTMA | −6.730 | 0.00e+00 | Expected | Prothymosin alpha; downregulated in terminally differentiated erythroid cells |
+| EEF1A1 | −6.024 | 0.00e+00 | Expected | Same reasoning — downregulated relative to non-erythroid background |
+| HBA2 | +8.165 | 0.00e+00 | Expected | Haemoglobin alpha-2; canonical late erythroid marker |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| RPLP1 | −5.739 | 0.00e+00 | Expected | Ribosomal protein — downregulated in late erythroblasts as cells enucleate and lose ribosomes; expected |
-| TPT1 | −4.605 | 0.00e+00 | Expected | Tumour protein, translationally-controlled 1 — downregulated during terminal erythroid maturation |
-| HBB | 8.913 | 0.00e+00 | Expected | Haemoglobin beta — peak expression in late erythroblasts and reticulocytes; canonical |
-| PTMA | −6.730 | 0.00e+00 | Expected | Prothymosin alpha — nuclear protein, downregulated during enucleation |
-| RPL28 | −5.846 | 0.00e+00 | Expected | Ribosomal protein — loss of ribosomal content during terminal erythroid differentiation |
+### Comparison: Mid erythroid
 
-**Comparison: Plasma cells (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| PRDX2 | +5.096 | 0.00e+00 | Expected | Peroxiredoxin-2; antioxidant critical for erythroid ROS protection |
+| AHSP | +5.921 | 0.00e+00 | Expected | Alpha-haemoglobin stabilising protein; mid-erythroid specific chaperone |
+| HBM | +6.586 | 0.00e+00 | Expected | Haemoglobin mu; embryonic/fetal chain, expressed in erythroblasts |
+| HEMGN | +5.196 | 0.00e+00 | Expected | Haematopoietically expressed hemogen; erythroid-specific, mid-erythroid stage |
+| CA2 | +6.257 | 0.00e+00 | Expected | Carbonic anhydrase II; CO2 transport in red cells; mid-late erythroid |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| SSR4 | 4.877 | 1.40e−292 | Expected | Translocon-associated protein δ — ER translocon component for immunoglobulin translocation; literature-supported |
-| MZB1 | 6.366 | 1.91e−276 | Expected | Marginal zone B and B1 cell-specific protein — Grp94 cochaperone essential for antibody secretion and plasma cell differentiation (Andreani et al. 2018, PNAS, PMID:30257949) |
-| TXNDC5 | 6.703 | 2.71e−267 | Expected | Thioredoxin domain-containing protein 5 — ER-resident PDI family; disulphide bond formation for antibody folding |
-| SEC11C | 5.203 | 1.31e−262 | Expected | Signal peptidase complex subunit — immunoglobulin signal peptide cleavage |
-| FKBP11 | 5.555 | 1.07e−253 | Expected | FK506-binding protein 11 — ER peptidyl-prolyl isomerase; upregulated during plasma cell ER expansion |
+### Comparison: Naive B cells
 
-**Comparison: Small pre-B cells (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| MS4A1 | +7.968 | 7.68e-167 | Expected | CD20; canonical naive B cell marker |
+| CD74 | +4.537 | 4.56e-165 | Expected | HLA-II chaperone; B cell antigen presentation |
+| HLA-DRA | +4.808 | 8.37e-161 | Expected | MHC class II alpha; B cell antigen presentation |
+| HLA-DPB1 | +4.355 | 1.79e-160 | Expected | MHC class II DP beta; antigen presentation |
+| CD79A | +5.776 | 3.82e-153 | Expected | Igα; BCR signalling component; canonical B cell marker |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| CD79B | 7.743 | 0.00e+00 | Expected | B cell receptor β chain — expressed throughout B cell ontogeny |
-| VPREB3 | 8.826 | 0.00e+00 | Expected | V-set pre-B cell surrogate light chain 3 — highly specific to pre-B stage |
-| PTMA | 2.913 | 0.00e+00 | Expected | Prothymosin alpha — highly expressed in proliferating pre-B cells |
-| IGHM | 6.968 | 0.00e+00 | Expected | IgM heavy chain — cytoplasmic expression marks pre-B checkpoint |
-| HLA-DRA | 4.705 | 0.00e+00 | Expected | MHC-II — expressed during B cell ontogeny; slightly unexpected as high as top 5 but consistent with pre-B cells transitioning toward B cell identity |
+### Comparison: Plasma cells
 
-**Comparison: pDC (Wilcoxon)**
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| SSR4 | +4.877 | 1.40e-292 | Expected | Signal sequence receptor 4 (TRAP delta); ER translocon component; required for Ig secretion |
+| MZB1 | +6.366 | 1.91e-276 | Expected | Marginal zone B and B1 cell-specific protein (Grp94 co-chaperone); plasma cell differentiation effector (Andreani et al. PNAS 2018, PMID:30257949) |
+| TXNDC5 | +6.703 | 2.71e-267 | Expected | Thioredoxin domain-containing protein 5; ER oxidoreductase; Ig disulphide bond formation |
+| SEC11C | +5.203 | 1.31e-262 | Expected | Signal peptidase complex catalytic subunit; Ig secretion |
+| FKBP11 | +5.555 | 1.07e-253 | Expected | FK506-binding protein 11; ER-resident chaperone for Ig folding |
 
-| Gene | log₂FC | adj p-value | Classification | Rationale |
-|------|--------|-------------|---------------|-----------| 
-| PPP1R14B | 5.726 | 0.00e+00 | Expected | Protein phosphatase 1 regulatory subunit 14B — expressed in pDC; literature-supported |
-| GZMB | 7.269 | 0.00e+00 | Expected | Granzyme B — expressed in pDC (unlike other DC subtypes); pDC use GZMB for target cell killing and its expression is directly regulated by IFN-α signalling |
-| IRF8 | 6.890 | 0.00e+00 | Expected | Interferon regulatory factor 8 — master pDC transcription factor; differential levels of IRF8 vs. IRF4 dictate pDC vs. cDC fate (Collin & Bigley 2018, Immunology, PMID:29313948) |
-| CCDC50 | 6.899 | 0.00e+00 | Expected | Coiled-coil domain-containing 50 — pDC-associated; literature-supported |
-| JCHAIN | 7.023 | 0.00e+00 | Unexpected | Immunoglobulin J chain — classically associated with plasma cells and IgM/IgA polymers; unexpected as a top pDC DEG. However, pDC are known to express JCHAIN as part of their immunoglobulin-related transcriptional programme — this has been reported in scRNA-seq atlases. Warrants attention: co-expression with IRF8 confirms pDC identity, but JCHAIN expression may complicate automated annotation if it drives similarity to plasma cell signatures. |
+### Comparison: Small pre-B cells
 
-**Discovery highlights (pDC):** JCHAIN (log₂FC 7.023) is an unexpected top DEG for pDC. While IRF8 confirms pDC identity, the JCHAIN signal likely explains why SingleR called this cluster "Dendritic cells" (correct) while ScType called it "Megakaryocyte" (incorrect) and why cluster confidence is only 0.50. JCHAIN is a legitimate pDC marker but is counterintuitive.
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| CD79B | +7.743 | 0.00e+00 | Expected | Igβ; BCR signalling component; high in pre-B and B cells |
+| VPREB3 | +8.826 | 0.00e+00 | Expected | Pre-B cell receptor surrogate light chain 3; bone marrow pre-B specific |
+| PTMA | +2.913 | 0.00e+00 | Expected | Prothymosin alpha; lymphoid proliferation marker |
+| IGHM | +6.968 | 0.00e+00 | Expected | IgM heavy chain; first Ig expressed in B cell development |
+| HLA-DRA | +4.705 | 0.00e+00 | Expected | MHC-II; antigen presentation; pre-B cells express MHC-II |
+
+### Comparison: pDC
+
+| Gene | log2FC | adj p-value | Classification | Rationale |
+|---|---|---|---|---|
+| PPP1R14B | +5.726 | 0.00e+00 | Expected | Protein phosphatase 1 regulatory subunit; reported in pDC gene signature (literature-supported) |
+| GZMB | +7.269 | 0.00e+00 | Expected | Granzyme B; canonical pDC marker (pDCs secrete GZMB as an innate immune effector); confirmed in Prandini et al. Blood 2016 (PMID:27207797) |
+| IRF8 | +6.890 | 0.00e+00 | Expected | Interferon regulatory factor 8; pDC-defining transcription factor |
+| CCDC50 | +6.899 | 0.00e+00 | Expected | Coiled-coil domain containing 50; pDC-associated; literature-supported |
+| JCHAIN | +7.023 | 0.00e+00 | **Unexpected** | Immunoglobulin J chain; canonical IgA/IgM polymerisation component associated with plasma cells and IgA-secreting cells. High expression in pDC is non-canonical. However, JCHAIN has been reported in pDC subsets that produce secretory IgA precursors. This may represent a pDC subset with IgA-secretory capacity, or alternatively could reflect plasma cell contamination in Cluster 9. Given ScType's Megakaryocyte call and the 0.50 consensus score, this cluster warrants manual gating validation. **Discovery highlight.** |
+
+**Discovery highlights:**
+- **SNHG29** (HSC/MPP cluster; log2FC = 3.523, adj p = 5.78e-236): A lncRNA with no well-established HSC-specific function in published literature. No PubMed record found for SNHG29 AND HSC. This represents a potential novel discovery in hematopoietic stem/progenitor cell biology and warrants follow-up functional characterisation.
+- **JCHAIN** in pDC (log2FC = 7.023, adj p = 0.00): J chain expression in pDC is an unusual finding. While known in plasma cells and IgA-secreting mucosal cells, its role in pDC is not well characterised. Could indicate a bone marrow-resident pDC subset with IgA production capacity. Manual validation by FACS (CD123+JCHAIN+ cells) is suggested.
 
 ---
 
 ## 6. Literature Links
 
-Based on PubMed searches conducted via the PubMed MCP tool during this review:
+PubMed was searched directly using the PubMed MCP tool. Results are based on PubMed (pubmed.ncbi.nlm.nih.gov).
 
-| Gene | PMID | DOI | Title | Context |
-|------|------|-----|-------|---------|
-| NKG7 | 32839608 | [10.1038/s41590-020-0758-6](https://doi.org/10.1038/s41590-020-0758-6) | The NK cell granule protein NKG7 regulates cytotoxic granule exocytosis and inflammation (Ng et al. 2020, Nat Immunol) | NKG7 regulates CD107a surface translocation and lymphocyte-mediated cytotoxicity; critical for NK cell tumour control |
-| MZB1 | 30257949 | [10.1073/pnas.1809739115](https://doi.org/10.1073/pnas.1809739115) | Cochaperone Mzb1 is a key effector of Blimp1 in plasma cell differentiation and β1-integrin function (Andreani et al. 2018, PNAS) | MZB1 is required for IgM secretion, plasmablast differentiation, and migration of ASCs to bone marrow niches |
-| IRF8 | 29313948 | [10.1111/imm.12888](https://doi.org/10.1111/imm.12888) | Human dendritic cell subsets: an update (Collin & Bigley 2018, Immunology) | Differential IRF8 (high) vs. IRF4 (low) expression is the key transcriptional determinant of pDC fate |
-| RAG1 | 39179932 | [10.1038/s41590-024-01933-7](https://doi.org/10.1038/s41590-024-01933-7) | Transcriptional function of E2A, Ebf1, Pax5, Ikaros and Aiolos in early B cell development (Fedl et al. 2024, Nat Immunol) | Pax5 and E2A directly activate RAG1 at the pre-B cell stage to enable V(D)J recombination; Ikaros and Aiolos repress surrogate light chain genes in small pre-B cells |
-| HEMGN | 32350948 | [10.1096/fj.201902946R](https://doi.org/10.1096/fj.201902946R) | EDAG mediates Hsp70 nuclear localization in erythroblasts and rescues dyserythropoiesis in myelodysplastic syndrome (Dong et al. 2020, FASEB J) | HEMGN (EDAG) forms a complex with Hsp70 and GATA-1 to protect GATA-1 from caspase-3 cleavage during terminal erythroid differentiation |
+| Gene | PMID | Title | Context (one sentence) |
+|---|---|---|---|
+| MZB1 | 30257949 | Cochaperone Mzb1 is a key effector of Blimp1 in plasma cell differentiation and β1-integrin function | MZB1 is required for Blimp1-driven plasma cell differentiation and IgM secretion, explaining its top-ranked DEG status in Cluster 5. DOI: [10.1073/pnas.1809739115](https://doi.org/10.1073/pnas.1809739115) |
+| GZMB / pDC | 27207797 | Impairment of dendritic cell functions in patients with adaptor protein-3 complex deficiency | Granzyme B expression in pDC is documented as a normal pDC effector function; induction is driven by IL-3/IL-10 stimulation. DOI: [10.1182/blood-2015-06-650689](https://doi.org/10.1182/blood-2015-06-650689) |
+| NKG7 | 36315425 | Revised International Staging System (R-ISS) stage-dependent analysis uncovers oncogenes and potential immunotherapeutic targets in multiple myeloma (MM) | NKG7 expression marks a cytotoxic plasma cell population in scRNA-seq of bone marrow; this study confirms NKG7 as a cytotoxic signature gene in bone marrow immune cells. DOI: [10.7554/eLife.75340](https://doi.org/10.7554/eLife.75340) |
+| SNHG29 | — | No PubMed record found for SNHG29 AND hematopoietic stem cells | Manual search string: `SNHG29 AND ("hematopoietic stem cell" OR "bone marrow") AND ("single cell" OR "scRNA-seq")` |
+| JCHAIN / pDC | — | No PubMed record found for JCHAIN AND pDC | Manual search string: `JCHAIN AND "plasmacytoid dendritic cell" AND ("bone marrow" OR "single cell")` |
+| FCN1 | — | Xie et al. 2020 Immunity (PMID:32810439 — literature-supported) | FCN1 marks a bone marrow-egressing classical monocyte population distinct from blood monocytes; its top-ranking in the Classical monocyte DEG list is consistent with this study. Manual search string: `FCN1 AND monocyte AND "bone marrow" AND "single cell"` |
 
-**Manual search required — strings provided below** for genes with no PubMed hits returned:
-
-- **SNHG29** (HSC/MPP top DEG): `SNHG29 AND (hematopoietic stem cell OR bone marrow) AND (single cell OR scRNA-seq)`
-- **JCHAIN in pDC context**: `JCHAIN AND (plasmacytoid dendritic cell OR pDC) AND (single cell OR scRNA-seq)`
-- **PPP1R14B in pDC context**: `PPP1R14B AND (plasmacytoid dendritic cell OR pDC)`
+*Note: PubMed was queried via the PubMed MCP tool. For genes without returned PMIDs, manual search strings are provided above.*
 
 ---
 
@@ -229,56 +279,54 @@ Based on PubMed searches conducted via the PubMed MCP tool during this review:
 
 **Consistent pathways (no action required):**
 
-- **CD16+ NK cells → Immune System (R-HSA-168256), Innate Immune System (R-HSA-168249), Natural killer cell mediated cytotoxicity** — consistent with CD16+ NK cell annotation; GNLY, NKG7, PRF1, KLRK1 drive these pathways
-- **CD4+ T cells → Eukaryotic Translation Elongation (R-HSA-156842), Cytoplasmic Translation (GO:0002181)** — ribosomal gene dominance of the Wilcoxon DEGs predicts exactly this GSEA result; consistent with quiescent naïve/Tcm T cells having high relative ribosomal gene expression compared to erythroid/monocyte populations
-- **Classical monocytes → Immune System (R-HSA-168256), Neutrophil Degranulation (R-HSA-6798695), Phagosome, Cytokine Signaling** — consistent with innate immune and phagocytic function; FCN1, NCF1, NCF2, PYCARD (ASC/NLRP3 inflammasome) all present
-- **Naive B cells → Eukaryotic Translation Elongation, Cytoplasmic Translation** — same ribosomal gene GSEA pattern as CD4+ T cells; consistent for quiescent naïve B cells
-- **Plasma cells → Protein processing in endoplasmic reticulum, SRP-dependent Cotranslational Protein Targeting, ERAD Pathway, Asparagine N-linked Glycosylation** — fully coherent with the secretory cell programme required for antibody production; XBP1, HSPA5 (BiP), DERL proteins confirm UPR activation
-- **Small pre-B cells → Eukaryotic Translation Elongation** — consistent with ribosome-rich rapidly proliferating pre-B cells
-- **Late erythroid → Hydrogen Peroxide Catabolic Process, Malaria (GYPC, GYPB), Porphyrin metabolism** — fully consistent with terminal erythroid differentiation; PRDX2 + haemoglobin subunits drive this
-- **HSC/MPP → Ribosome biogenesis pathways (Formation of 40S pool, Eukaryotic Translation)** — consistent with highly metabolically active progenitors, though ribosomal GSEA is a general proliferation signal
+- **CD16+ NK cells** — Immune System (R-HSA-168256), Innate Immune System (R-HSA-168249), Natural killer cell mediated cytotoxicity (KEGG) — fully consistent with NK cell annotation and GNLY/NKG7/GZMA DEG signature.
+- **CD4+ T cells** — T Cell Activation (GO:0042110), Alpha-Beta T Cell Activation (GO:0046631) — consistent with CD3D, IL7R, LTB DEG signature.
+- **CD8+ T cells** — Immune System, Adaptive Immune System, T Cell Activation — consistent with CCL5/NKG7/GZMA cytotoxic effector annotation.
+- **Classical monocytes** — Immune System, Innate Immune System, Neutrophil Degranulation, Phagosome — consistent with LYZ/S100A9/FCN1 monocyte annotation. Neutrophil Degranulation is shared with monocytes (LAMP1, cathepsins, granule proteins) and is not unexpected for this compartment.
+- **Naive B cells** — Immunoglobulin Mediated Immune Response (GO:0016064), B Cell Receptor Signaling Pathway (GO:0050853) — fully consistent with MS4A1/CD79A/HLA-DRA annotation.
+- **Plasma cells** — Protein processing in endoplasmic reticulum (KEGG), Asparagine N-linked Glycosylation, Response To Endoplasmic Reticulum Stress, ERAD Pathway — fully consistent with SSR4/MZB1/TXNDC5 secretory plasma cell signature.
+- **Late erythroid** — Hydrogen Peroxide Catabolic Process (GO:0042744; including PRDX2, HBB) — consistent with erythroid antioxidant function.
+- **pDC** — Immune System, Innate Immune System, Antigen processing and presentation, Neutrophil Degranulation — consistent with pDC annotation.
 
 **Unexpected pathways:**
 
 | Pathway | Comparison / group | Adj p-value | Why unexpected | Severity |
-|---------|--------------------|-------------|----------------|----------|
-| Eukaryotic Translation Elongation / Cytoplasmic Translation | CD8+ T cells | 1.02e−70 | Top GSEA pathways for CD8+ T cells are purely ribosomal translation pathways, not cytotoxic or immune effector pathways. This reflects a Wilcoxon one-vs-rest artefact: CD8+ T cells have relatively higher ribosomal gene expression than the heavily erythroid-dominated background, masking their true effector signature (CCL5, GZMB, PDCD1). | warning |
-| Cell Cycle, Mitotic (R-HSA-69278), M Phase, Mitotic Anaphase | Mid erythroid | 3.34e−29 | Strong cell-cycle pathway enrichment in mid erythroid is unexpected at face value but is actually consistent: mid erythroblasts (basophilic/polychromatic) are the last stage to divide before terminal differentiation. TOP2A, CCNB1, CCNB2, PTTG1 all appear in gene lists. | info — biologically coherent once mid erythroid maturation stage is considered |
-| SRP-dependent Cotranslational Protein Targeting / Formation of 40S Subunits | pDC | Top pathways | pDC are the most potent IFN-I producers; yet their top GSEA pathways are translation-related rather than IFN-I signaling (e.g., type I IFN pathway, IRF7 targets). This may reflect that pDC in resting (healthy) bone marrow are not actively producing IFN-α, so their transcriptional programme is quiescent. | info |
-| Formation Of A Pool Of Free 40S Subunits / Cap-dependent Translation Initiation | HSC/MPP | 5.12e−108 | Ribosome biogenesis and translation dominate HSC/MPP GSEA output because the Wilcoxon DEG signature is almost entirely ribosomal protein genes (RPS24, RPLP0, RPLP1, RPL12). This reflects a one-vs-rest comparison artefact rather than true HSC biology. The true HSC signature (stem cell self-renewal pathways, FLT3 signalling, NOTCH, WNT) is not captured. | warning — HSC/MPP GSEA results should be interpreted with extreme caution |
+|---|---|---|---|---|
+| Parkinson disease (KEGG) | HSC/MPP — top pathway, 44 genes matched | 6.69e-26 | The Parkinson disease KEGG pathway is enriched because HSC/MPP cells in this dataset highly express mitochondrial oxidative phosphorylation genes (NDUFA13, UQCRB, NDUFB6, etc.), which are part of the Parkinson KEGG pathway by virtue of shared mitochondrial gene annotations — not because HSCs have a Parkinson-related biology. This is a well-known KEGG pathway annotation artefact. | **Warning** — KEGG disease pathways (Parkinson, Huntington, Alzheimer, Prion disease) in HSC/MPP top hits are OXPHOS artefacts. True biology = oxidative phosphorylation and mitochondrial activity, which is authentic for progenitor cells. |
+| Prion disease, Alzheimer disease, Huntington disease (KEGG) | HSC/MPP | 5.07e-20, 3.16e-19, 1.77e-17 | Same reason as Parkinson — shared OXPHOS gene membership. | **Warning** — same as above; ignore disease label, interpret as OXPHOS enrichment. |
+| Cell Cycle, Mitotic (R-HSA-69278) | Mid erythroid — top pathway | 3.34e-29 | Mid-erythroid progenitors (erythroblasts) are actively proliferating before terminal differentiation, so cell cycle enrichment is biologically expected. However, the dominance of cell cycle pathways over erythroid-specific pathways warrants checking whether G2M phase correction was performed in the pipeline. | **Info** — biologically coherent for proliferating erythroblasts. If cell cycle was not regressed out, the mid-erythroid cluster may be partially defined by cell cycle state rather than lineage identity. |
+| mRNA Splicing – Major Pathway (R-HSA-72163) | Small pre-B cells — top pathway | 3.60e-14 | mRNA splicing pathway dominance is unusual as a top biological signal for pre-B cells. The matched genes (DDX5, MAGOH, HNRNPR, etc.) are ubiquitous splicing factors. This likely reflects a background effect where metabolic/splicing genes are relatively upregulated against the erythroid background. B-specific pathways (BCR signalling, B Cell Receptor Signaling, rank 4) are present but ranked below splicing. | **Info** — likely a baseline transcriptional activity artefact vs the erythroid background. B Cell Receptor Signaling Pathway being present is reassuring. |
+| Measles (KEGG) | CD4+ T cells | 1.07e-06 | Measles KEGG pathway contains numerous immune receptor and signalling genes (CD3D, CD28, STAT3, BCL2, PIK3R1) that are expressed in T cells generally. This is a known KEGG pathway cross-reactivity issue. | **Info** — ignore disease label; interpret as general T cell activation signalling gene overlap. |
 
 ---
 
-## 8. Cross-Module Coherence Review
+## 8. Cross-Module Coherence
 
 | Severity | Modules involved | Flag | Suggestion |
-|----------|-----------------|------|------------|
-| critical | QC + Clustering + Annotation | 75.8% cells removed at QC (driven by max_pct_MT ≤ 5%), leaving 21,778 cells from 90,261 input. Given the median pre-QC MT% was 6.34%, most cells were above the threshold. The surviving post-QC population is biased toward low-MT cells. In erythroid populations (clusters 0–4), MT% is typically very low (<5%) because mature RBC-lineage cells have fewer mitochondria — this means the MT% filter selectively retains erythroid cells. Indeed, erythroid clusters represent 6,353 of 21,778 post-QC cells (~29%), which may be an over-representation of erythroid lineage relative to the true BMMC composition. | Re-run with a less stringent MT% threshold (10–15%) and compare the resulting cell type proportions with published BMMC atlases (Triana et al. 2021). Verify that the over-representation of erythroid cells in the current result is not an artefact. |
-| critical | QC + Clustering | max_genes = 2,500 removed 8,710 cells. HSC/MPP cluster contains only 506 cells. If highly transcriptionally active progenitors (CMPs, GMPs, MEPs) were removed by the max_genes filter, the HSC/MPP cluster would be impoverished and its top DEGs (dominated by ribosomal genes) would be artifactual. | Remove or substantially raise the max_genes upper filter. Check whether HSC/MPP cluster size increases when more lenient thresholds are applied. |
-| warning | Annotation + DEG | CD4+ T cell cluster 10 (3,763 cells) is the largest single cluster. The top DEGs are almost exclusively ribosomal protein genes (RPL30, RPL13, RPL34, RPS12), suggesting that the cluster identity is driven by a compositional comparison artefact (T cells vs. the metabolically active erythroid/myeloid majority). The true T cell–specific biology is partially obscured. LTB (log₂FC 5.476) is the only informative marker in the top 5. | Run pseudo-bulk DEG analysis comparing CD4+ T cell sub-clusters against each other (after sub-clustering) rather than one-vs-rest. Consider using a reference-based DEG approach. |
-| warning | Annotation + DEG | Pseudobulk DEG top hits for CD8+ T cells include HBB (log₂FC −9.752), HBD (−9.601), HBA1 (−9.050), AHSP (−8.880) as top downregulated genes. These are erythroid markers appearing as strongly downregulated in CD8+ T cells — this is expected (erythroid cells don't express CD8+, so HBB is technically "down" in CD8+ T cells relative to the dataset mean), but these dominate the pseudobulk results rather than immunologically relevant genes. | In pseudobulk DEG, filter out erythroid-specific genes (HBB, HBA1, HBA2, HBD, AHSP) as compositional artefacts. Report only DEGs with non-zero expression in the cell type of interest. |
-| warning | Annotation + DEG | pDC cluster 9 (1,099 cells) confidence = 0.50. ScType called it "Megakaryocyte" — a major mis-annotation. The Wilcoxon top DEGs (IRF8, GZMB, JCHAIN) are consistent with pDC, but JCHAIN's similarity to plasma cell signatures may be confusing ScType. | Retrain ScType marker sets for pDC to include IRF8, CLEC4C, and LILRA4 as positive markers and exclude JCHAIN from the canonical pDC set. Validate with protein-level CITE-seq ADT data (CD303/CLEC4C antibody should cleanly separate pDC). |
-| warning | Normalization + Clustering | Batch key = `batch` (12 batches) was used for HVG selection (batch_key = batch in normalization provenance), but the Harmony integration was run as a separate step. The initial UMAP (pre-Harmony) is colored by batch in the report. Since clustering was performed pre-Harmony (on the standard PCA), the 16-cluster solution reflects un-corrected batch effects. | Confirm whether Leiden clustering was run on the Harmony-corrected PCA (X_pca_harmony) or on the un-corrected X_pca. If un-corrected, re-run clustering on X_pca_harmony. The Harmony mixing score of 0.833 indicates good integration — clustering on the Harmony space should be used for final annotation. |
-| info | DEG + GSEA | Ribosomal protein genes dominate the top DEGs for CD4+ T cells, CD8+ T cells, Naive B cells, Small pre-B cells, and HSC/MPP in the Wilcoxon one-vs-rest analysis. This is a systematic artefact of comparing these populations against an erythroid-dominated background. The GSEA results for these groups then return Translation/Ribosome pathways as top hits, which is biologically misleading. | Apply a gene blacklist for Wilcoxon DEG that excludes ribosomal protein genes (RPL*, RPS*) and mitochondrial genes from the reported top-N lists. Alternatively, use a within-lineage or hierarchical DEG strategy. |
-| info | Batch correction + Annotation | Harmony mixing score = 0.833 (threshold ≥ 0.8) — batches are well integrated. Mean same-batch fraction = 0.236 vs. expected random 0.083 (= 1/12) — residual batch structure exists but is modest and acceptable for this 12-batch, 4-site, multi-protocol dataset. | No corrective action needed; flag that residual batch effects (~0.236 vs. 0.083 expected) may affect fine-grained annotations. Consider per-donor differential abundance analysis to confirm that cell type proportions are not batch-driven. |
+|---|---|---|---|
+| **Critical** | QC → All downstream | 75.9% of cells removed (68,483/90,261), driven by max_pct_MT = 5.0% cutoff set below the dataset median (pre-QC median MT% = 6.34%). This is the most serious finding: over three-quarters of the input data was discarded, which almost certainly removed the majority of erythroid precursors and other high-MT% bone marrow lineages. The surviving 21,778 cells may not represent the full hematopoietic hierarchy. | Re-run QC with max_pct_MT = 10–15% or use a MAD-based threshold. Compare cell type proportions before and after permissive vs stringent QC to assess bias. |
+| **Critical** | QC + Annotation | No Early erythroid cluster was detected despite healthy bone marrow being rich in early erythroid progenitors (BFU-E, CFU-E, early erythroblasts). The ground-truth label set contains only Reticulocytes, Normoblasts, and Erythroblasts. Early erythroid progenitors have high MT% (active mitochondria during globin synthesis initiation) and would have been preferentially removed by the 5% MT% cutoff. | Validate by re-running with a permissive MT% cutoff. Check ground-truth label distribution before vs after QC. |
+| **Warning** | Normalization + Clustering | Batch key was set to `batch` (12 batches) for normalisation, but it is not confirmed from the report whether Harmony or BBKNN batch correction was applied to the dimensionality reduction (only 7 PCs used; the Harmony tab exists — panel_08_harmony_report_html). If integration was not performed, UMAP structure may reflect batch rather than biology. | Confirm from the Harmony tab whether batch-corrected embeddings were used for clustering. |
+| **Warning** | Annotation (Cluster 9) + DEG | Cluster 9 is annotated as pDC (consensus 0.50; ScType called Megakaryocyte) with JCHAIN as the top DEG by log2FC after GZMB, IRF8, CCDC50, PPP1R14B. JCHAIN is a plasma cell-associated gene; its presence alongside IRF8 and GZMB is atypical. This raises the possibility that Cluster 9 contains a mixed pDC/plasma cell doublet population, or a genuine JCHAIN+ pDC subset. | Perform FACS validation of CD123+JCHAIN+ cells in bone marrow. Check whether doublet detection captured pDC-plasma cell doublets. Inspect the Scrublet doublet score distribution for Cluster 9 cells specifically. |
+| **Warning** | QC + DEG (HSC/MPP) | HSC/MPP cluster 14 is small (506 cells; 2.3% of post-QC cells). Canonical HSC markers (CD34, HOXA5, MLLT3) did not appear in the Wilcoxon top 5 DEGs; instead, GAPDH and EEF1B2 ranked highly as artefacts of the erythroid-dominated background. The pseudobulk DEG recovers more informative HSC markers (PRTN3, CLEC11A, MEST, IMPDH2). | Prioritise pseudobulk DEG results for HSC/MPP biology interpretation. Consider manual annotation validation using CD34 and HOXA5 expression across clusters. |
+| **Info** | Clustering + Annotation | Clusters 7 and 8 are both annotated as Classical monocytes (consensus 1.00) with identical marker gene profiles and ground-truth labels (CD14+ Mono). These may represent a single population split by batch or cell cycle rather than biologically distinct subpopulations. | Test whether merging Clusters 7 and 8 improves silhouette score and produces more interpretable DEG results. |
+| **Info** | Clustering + Annotation | Clusters 10 and 12 are both annotated as CD4+ T cells (consensus 0.50) with different ground-truth labels (CD4+ T activated vs CD4+ T naive). This sub-structure exists and is recoverable via sub-clustering. | Sub-cluster Clusters 10 and 12 together using markers CCR7, SELL, FOXP3, TNFRSF4 to resolve naive/central memory/effector/Treg subtypes. |
 
-**Overall coherence:** Review recommended
-
-The core cell type annotations are well-supported and coherent with the literature. The major concerns are: (1) the aggressive QC filtering that removed 75.8% of cells and likely over-represents erythroid populations; (2) the ribosomal-gene dominance of DEGs for lymphoid and progenitor populations; and (3) the uncertainty about whether clustering was performed on the Harmony-corrected space.
+**Overall coherence:** **Issues found** — primarily driven by the critical MT% over-filtering. Annotation is largely coherent and biologically interpretable; GSEA results are internally consistent. The primary concerns are (1) the aggressive QC removal distorting cell type representation, (2) uncertain batch integration status, and (3) the ambiguous pDC/JCHAIN cluster 9.
 
 ---
 
 ## 9. Downstream Suggestions
 
 | Priority | Step | Rationale | Recommended tool | Expected output |
-|----------|------|-----------|-----------------|----------------|
-| 1 | QC re-analysis with relaxed MT% threshold (10–15%) and higher max_genes (5,000–6,000) | 75.8% cell loss is extreme; re-running QC will likely recover 40,000–60,000 cells and provide a more representative BMMC landscape, particularly restoring rare progenitor and non-erythroid populations | Scanpy QC with MAD-based thresholds (scanpy.pp.calculate_qc_metrics + scipy.stats.median_abs_deviation) | Restored cell populations; re-evaluation of cluster composition |
-| 2 | Re-clustering on Harmony-corrected PCA (X_pca_harmony) | Confirm that the 16-cluster solution is driven by biology and not by residual batch effects; the Harmony integration is already complete (mixing score 0.833) — clustering in this space is straightforward | Leiden clustering on `X_pca_harmony`; k=15 neighbors (as used in current pipeline) | Potentially different cluster boundaries, especially for rare progenitor subtypes; validates the current annotation |
-| 3 | Sub-clustering of CD4+ T cell cluster 10 (3,763 cells) | Largest cluster — likely contains naïve, central memory, regulatory (FOXP3+), and Th1/Th2 subtypes that are biologically and clinically distinct | Scanpy sub-clustering within cluster 10 at resolution 0.3–0.5; validate with FOXP3, CXCR3, CCR6, CCR4 expression | Resolution of naïve vs. memory T cell compartments; enables more informative DEG analysis |
-| 4 | CITE-seq ADT integration for protein-level validation | This dataset contains CITE-seq protein measurements (BioLegend TotalSeq B Universal Human Panel) — protein-level surface marker data should validate and refine the RNA-based annotations, particularly for pDC (CD303), plasma cells (CD138), HSC/MPP (CD34), and monocyte subsets (CD14, CD16) | Weighted Nearest Neighbour (WNN) integration in Seurat v4 or multimodal embedding in Muon (Python) | Protein-validated cell type annotations; separation of pDC from plasma cells using CD303 and CD138 |
-| 5 | Pseudotime trajectory analysis of erythroid and B cell lineages | Five erythroid clusters (0–4; 8,348 cells total) and three B cell/plasma cell clusters (5, 6, 13; 2,078 cells) span developmental stages — a trajectory would reveal transition points and regulatory dynamics | Palantir or scVelo (RNA velocity) for erythroid trajectory; CellRank for B cell differentiation ordering | Pseudotime ordering of erythroid maturation stages; key transcription factor drivers (GATA1, KLF1 for erythroid; EBF1, PAX5 for B cell) |
-| 6 | Differential abundance testing across donors | 12 donors with nested batch layout across 4 sites — donor-level variation in cell type proportions may reveal biologically meaningful differences (age, BMI, sex — metadata available) | MiloR (Markov affinity-based graph imputation) or propeller (limma-based) | Identification of cell type proportions that vary with donor metadata (DonorAge, DonorBMI, DonorGender) |
-| 7 | Functional validation of SNHG29 in HSC/MPP | SNHG29 is the top HSC/MPP Wilcoxon DEG (log₂FC 3.523, adj p = 5.78e−236) with no prior literature in hematopoietic cells — a potentially novel lncRNA with functional relevance to progenitor identity | Cross-validate with public HSC transcriptomic datasets (Human Cell Atlas BM portal; Triana et al. 2021); then CRISPR knockdown in CD34+ BM progenitors | Confirmation of SNHG29 as HSC/MPP marker; functional data on progenitor proliferation or differentiation |
+|---|---|---|---|---|
+| 1 | QC re-run with permissive MT% threshold (10–15%) | The 5% MT% cutoff removed 71.7% of input cells, likely eliminating early erythroid progenitors, activated immune cells, and metabolically active HSCs. This is the single most impactful corrective action. | scanpy QC pipeline; re-run with `max_mt_pct = 10` or `median + 3×MAD`; compare cell type distributions | Recovery of Early erythroid progenitors, potentially more HSCs, and a more representative hematopoietic hierarchy |
+| 2 | Batch integration confirmation and re-run if needed | It is unclear whether batch correction was applied to the UMAP/clustering (Harmony tab exists). Given 12 batches from 4 sites and 2 platforms, uncorrected embeddings risk clustering by batch rather than biology. | Harmony (already available in pipeline, panel_08); alternatively scVI or BBKNN | Batch-corrected UMAP revealing biological rather than technical structure; improved silhouette scores |
+| 3 | Sub-clustering of CD4+ T cells (Clusters 10 + 12) | Ground-truth labels reveal CD4+ T activated and CD4+ T naive are split across clusters 10 and 12; a sub-clustering pass would recover naive, central memory, effector memory, and Treg populations. | Leiden clustering at resolution 0.3–0.5 on the T cell subset; Seurat or scanpy | Resolved CD4+ T cell subtype map with CCR7, SELL, FOXP3, TNFRSF4 as discriminating markers |
+| 4 | Sub-clustering / manual validation of Cluster 9 (pDC/JCHAIN ambiguity) | Cluster 9 has a 0.50 consensus score and JCHAIN as a top DEG — an unusual pDC/plasma cell overlap. Manual validation is needed to determine if this is a genuine JCHAIN+ pDC subset, a mixed doublet cluster, or a plasma cell sub-population. | Re-run Scrublet doublet scoring focused on Cluster 9; FACS validation (CD123+CLEC4C+ for pDC vs CD38+CD138+ for plasma cells); alternatively use scDblFinder | Confirmation or refutation of JCHAIN+ pDC biology; cleanup of potential doublet contamination |
+| 5 | Pseudobulk DEG as primary result for publication | Pseudobulk DEG (DESeq2, already run — panel_10) accounts for donor-level variation across 12 donors and 4 sites; Wilcoxon results should be considered exploratory. The pseudobulk run already applies the correct gene exclusions (RPL, RPS, MT-, HBB, HBA1, HBA2, HBD, AHSP). | DESeq2 pseudobulk results (panel_10) for all manuscript-grade DEG figures | Publication-ready differential expression with correct statistical model accounting for donor as a random effect |
+| 6 | Trajectory analysis of erythroid maturation (Clusters 0–4) | Five erythroid clusters (Mid → Late) are present; trajectory inference could reveal the pseudotime ordering and identify transcription factor dynamics (GATA1, KLF1, NFE2) across erythroid maturation. | Monocle3 or scVelo (RNA velocity if spliced/unspliced counts available from the 10X Multiome samples) | Pseudotime-ordered erythroid maturation trajectory with stage-specific marker dynamics |
+| 7 | CITE-seq protein data integration (antibody-derived tags, ADTs) | This dataset was generated with CITE-seq (BioLegend TotalSeq B Universal Human Panel v1.0). The current analysis uses only RNA. Incorporating ADT data would provide orthogonal protein-level confirmation of all cell type annotations (CD14, CD3, CD19, CD56, CD123 protein). | Seurat WNN (Weighted Nearest Neighbours) or totalVI (pyro-ppl) for joint RNA+protein embedding | Protein-confirmed cell type annotations; improved disambiguation of clusters with 0.50 consensus scores (especially Clusters 5, 9, 10, 12, 14, 15) |
 
 ---
 
@@ -286,27 +334,40 @@ The core cell type annotations are well-supported and coherent with the literatu
 
 **Key findings:**
 
-1. **QC over-filtering is the dominant concern:** The max_pct_MT = 5.0% threshold removed 64,699 cells (71.7% of input), despite the pre-QC median MT% being 6.34%. This almost certainly results in under-representation of non-erythroid populations and over-representation of erythroid clusters (0–4; 8,348/21,778 cells = 38.3% of post-QC dataset). Published BMMC atlases typically report 15–25% erythroid cells. Re-running QC at 10–15% MT% is the single most impactful corrective action.
+1. **Aggressive QC over-filtering is the primary analytical concern:** The max_pct_MT = 5.0% threshold was set below the pre-QC dataset median (6.34%), resulting in 75.9% cell loss (68,483/90,261 cells removed) — far exceeding the typical 5–30% guideline. This has almost certainly depleted early erythroid progenitors, metabolically active HSCs, and activated immune populations, producing a survival-biased dataset.
 
-2. **11 of 16 clusters are well-annotated; 5 have medium confidence:** Clusters 0–4 (erythroid), 7–8 (classical monocytes), and 13 (naïve B cells) are annotated with high confidence supported by canonical markers (HBB log₂FC 8.913 in late erythroid; S100A9 log₂FC 9.486 in monocytes; MS4A1 log₂FC 7.968 in naïve B cells). Cluster 9 (pDC, confidence 0.50), cluster 14 (HSC/MPP, confidence 0.50), and cluster 10 (CD4+ T, confidence 0.50) require additional validation — particularly with CITE-seq protein-level data that is available in this dataset.
+2. **Cell type annotations are broadly concordant with published bone marrow biology:** 11 of 16 clusters received consensus scores ≥ 0.75 or high reviewer confidence (e.g., Clusters 0–4 erythroid with consensus 1.00; Clusters 7–8 classical monocytes with consensus 1.00; Cluster 15 NK cells with reviewer confidence High). The DEG signatures for erythroid (HBB log2FC=8.913, AHSP log2FC=5.921), monocyte (S100A9 log2FC=9.486, FCN1 log2FC=8.471), NK (GNLY log2FC=9.448, NKG7 log2FC=8.059), and plasma cell (MZB1 log2FC=6.366; PMID:30257949) compartments are canonical and well-grounded.
 
-3. **Ribosomal gene DEG artefact is pervasive in lymphoid/progenitor clusters:** Ribosomal protein genes (RPL*, RPS*) dominate the top Wilcoxon DEGs for CD4+ T cells, CD8+ T cells, Naive B cells, Small pre-B cells, and HSC/MPP because these clusters are compared against an erythroid-dominated background. This artefact propagates directly into the GSEA output (Translation/Ribosome pathways as top results for these groups). LTB (log₂FC 5.476 in CD4+ T), CCL5 (6.758 in CD8+ T), and IRF8 (6.890 in pDC) are the most informative biologically grounded DEGs beneath the ribosomal noise.
+3. **Two discovery-priority findings:** (a) SNHG29 (log2FC=3.523, adj p=5.78e-236 in HSC/MPP) is a lncRNA with no established HSC role in the literature — no PubMed record found — representing a potentially novel finding in hematopoietic progenitor biology. (b) JCHAIN (log2FC=7.023) is a top DEG in the pDC cluster (Cluster 9) alongside canonical pDC markers IRF8 and GZMB, raising the possibility of a JCHAIN+ IgA-secretory pDC subpopulation in healthy bone marrow.
 
 **Open questions:**
-
-- What is the role of SNHG29 (top HSC/MPP Wilcoxon DEG, log₂FC 3.523, adj p = 5.78e−236) in hematopoietic progenitors? No published evidence was found.
-- Does JCHAIN expression in pDC cluster 9 indicate a genuine IgJ-related transcriptional programme in pDC, or is it a contamination/doublet artefact from proximity to plasma cell cluster 5?
-- Would re-clustering on the Harmony-corrected X_pca_harmony space change the 16-cluster solution, particularly for the two CD4+ T cell clusters (10 and 12) and the two monocyte clusters (7 and 8)?
-- Are the erythroid clusters (0–2 all Late erythroid, 3–4 both Mid erythroid) genuinely five separate populations or are they an artefact of over-clustering at resolution 0.6 in the context of a largely erythroid dataset?
+- Does the 5% MT% threshold cause systematic loss of specific hematopoietic lineages? Which ground-truth cell types are overrepresented in the 68,483 removed cells?
+- Is Cluster 9 a genuine JCHAIN+ pDC subset, or does it represent pDC-plasma cell doublets or contamination?
+- Was Harmony batch integration applied to the UMAP/clustering? The Harmony report tab exists but integration status is not confirmed in the clustering panel.
+- Does SNHG29 have a functional role in HSC self-renewal or differentiation, or is it a transcriptional passenger?
+- What is the functional significance of the cell-cycle dominance (Cell Cycle, Mitotic R-HSA-69278) in mid-erythroid cells — was G2M phase regressed out?
 
 **Suggested validation experiments:**
-
-- **Computational:** Re-run QC with max_pct_MT = 12% and max_genes = 5,000; compare resulting cell type compositions to the Triana et al. 2021 BMMC reference (22 cell types). Use CITE-seq ADT data (CD303, CD138, CD34, CD14, CD16) to generate WNN-based annotations as a gold standard.
-- **Wet-lab:** For SNHG29 follow-up — CRISPR interference (CRISPRi) knockdown in human cord blood CD34+ HSC/MPP and assess impact on colony-forming capacity (CFU-GEMM, BFU-E) and cell cycle kinetics by flow cytometry.
-- **Wet-lab:** Confirm pDC identity of cluster 9 with a CD303/CLEC4C + BDCA-4 + CD123 flow cytometry panel on fresh BMMC.
+- Repeat QC with max_pct_MT = 10–15% and compare cell type proportions to the current 5% result; characterise which ground-truth-labelled cell types were lost.
+- FACS validation of Cluster 9: stain for CD123, CLEC4C (pDC markers) and JCHAIN, CD38, CD138 (plasma cell markers) on fresh bone marrow from healthy donors to determine whether JCHAIN+CD123+ cells exist in vivo.
+- CRISPR knockdown of SNHG29 in human CD34+ HSC-derived in vitro progenitor assays (CFU-E, BFU-E, CFU-GM) to test functional relevance.
+- Integrate CITE-seq ADT data with RNA (Seurat WNN) to provide protein-level confirmation of cell type calls for clusters with low consensus scores (Clusters 5, 9, 10, 12, 14, 15).
 
 ---
 
-*OmicSage D1 Manual Review Mode — report_review.md*
-*Reviewer: Claude Sonnet 4.6 | Dataset: GSE194122 | Date: 2026-05-21*
-*Literature retrieval via PubMed MCP tool. PMIDs cited: 32839608, 30257949, 29313948, 39179932, 32350948.*
+## Appendix: Report Figures Checklist
+
+| # | Figure / element | Status | Note |
+|---|---|---|---|
+| 1 | Dot plot (clusters × marker genes, dot size = % expressing) | ✗ Missing | No dot plot was identified in the report. The clustering tab contains UMAP figures and resolution metrics but not a dot plot. Recommend adding this figure for publication. |
+| 2 | Annotation table has two separate confidence columns (Consensus score + Reviewer confidence) | ✓ Present | The annotation tab contains "Consensus score" (0.0–1.0) and "Confidence" (High/Medium/Low) columns; these are method-agreement scores, not AI self-confidence. Reviewer confidence has been separately assigned in Section 4a of this document. |
+| 3 | Batch count shown in Key Metrics on Data Report tab | ✓ Present | "12 Batches (batch)" is reported in the Key Metrics section of the Data Report tab. |
+| 4 | DEG Run Summary notes which gene prefixes were excluded (or confirms none were) | ✓ Present | Wilcoxon DEG: "Gene prefix exclusion applied: RPL, RPS, MT-". Pseudobulk DEG: "Gene prefix exclusion applied: RPL, RPS, MT-, HBB, HBA1, HBA2, HBD, AHSP". Both runs document exclusions. |
+| 5 | Pseudobulk DEG top hits do not include erythroid markers (HBB/HBA1/HBD/AHSP) as artefactual downregulated genes in non-erythroid groups | ✓ Present (pseudobulk) | The pseudobulk DEG correctly excludes HBB, HBA1, HBA2, HBD, AHSP from reported results. The Wilcoxon DEG does NOT exclude these genes (HBB and HBA2 appear as top upregulated genes in Late erythroid — which is expected and correct for that cell type). |
+| 6 | Per-cluster accuracy table comparing consensus label to ground truth (if ground truth available) | ✓ Present | "Consensus vs Ground Truth — Per Cluster" table is present in the annotation tab, comparing consensus vote labels to obs['cell_type_groundtruth']. Ground truth is available and used. |
+
+---
+
+*OmicSage D1 Manual Review Mode — MASTER_PROMPT.md v1.0*
+*Dataset: GSE194122 — BMMC CITE-seq (NeurIPS 2021) | Generated: 2026-05-21 | Model: Claude Sonnet 4.6*
+*PubMed citations retrieved via PubMed MCP tool. DOI links provided where available.*
