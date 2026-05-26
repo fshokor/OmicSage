@@ -1,12 +1,12 @@
 ## Session Context
 Date: 2026-05-26
 Phase: Phase 4 — CITE-seq Module (Session 4 of 6)
-Last thing we completed: adt_reduce.py — ADT dimensionality reduction
-                          59 tests written and passing (516 total, 1 skipped)
+Last thing we completed: adt_harmony.py — Abatch correction
+                          66 tests written and passing (736 total, 1 skipped)
 
 Files added last session:
-  - pipeline/modules/cite/adt_reduce.py  — PCA + neighbors + UMAP on CLR ADT
-  - tests/test_adt_reduce.py             — 59 tests, all passing
+  - pipeline/modules/cite/adt_harmony.py  
+  - tests/test_adt_harmony.py             — 66 tests, all passing
 
 ## Modality Roadmap (corrected — carry forward every session)
   Phase 4 — CITE-seq Module      ← IN PROGRESS
@@ -19,37 +19,16 @@ scATAC-seq as a standalone modality is deferred — covered in Phase 6.
   Session 1 — adt_normalize.py      ✓ done (392 tests, 1 skipped)
   Session 2 — adt_doublets.py       ✓ done (457 total, 1 skipped)
   Session 3 — adt_reduce.py         ✓ done (516 total, 1 skipped)
-  Session 4 — adt_harmony.py        ← TODAY
-  Session 5 — adt_annotate.py       ← Leiden clustering + marker annotation
+  Session 4 — adt_harmony.py        ✓ done (736 total, 1 skipped)
+  Session 5 — adt_annotate.py       ← TODAY Leiden clustering + marker annotation
   Session 6 — wnn.py + cite_pipeline.py + reports  ← Phase 4 milestone
 
 ## Today's Goal
-Build the **ADT Harmony batch correction module** — Phase 4, Session 4.
+Build the **ADT Annotation module** — Phase 4, Session 5.
 
 One clearly scoped deliverable:
-  `pipeline/modules/cite/adt_harmony.py`
+  `pipeline/modules/cite/adt_annotate.py`
 
-This module takes `mdata["adt"].obsm["X_pca_adt"]` (output of adt_reduce.py)
-and performs:
-  1. Harmony integration on ADT PCA embedding, keyed by a batch column
-  2. Writes corrected embedding to obsm["X_pca_harmony_adt"]
-  3. Recomputes neighbor graph using X_pca_harmony_adt
-  4. Recomputes UMAP → overwrites obsm["X_umap_adt"] with harmony-corrected UMAP
-  5. Returns updated AnnData + metrics dict
-
-Do NOT start annotation this session — batch correction only.
-
-## Reference for this session
-ADT batch correction (Harmony):
-  https://www.sc-best-practices.org/surface_protein/batch_correction.html
-
-Key parameters from notebook source (confirmed):
-  sc.external.pp.harmony_integrate(adata=mdata["prot"], key="donor", random_state=0)
-  sc.pp.neighbors(mdata["prot"], n_pcs=20, use_rep="X_pca_harmony", random_state=0)
-  sc.tl.umap(mdata["prot"], random_state=0)
-
-OmicSage naming: use_rep="X_pca_harmony_adt" (not "X_pca_harmony") to avoid
-collision with RNA harmony embedding (X_pca_harmony) from the RNA pipeline.
 
 ## Session 5 Preview — adt_annotate.py
   Reference: https://www.sc-best-practices.org/surface_protein/annotation.html
