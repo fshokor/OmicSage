@@ -1,94 +1,107 @@
 ## Session Context
-Date: 2026-05-17
-Phase: 1 — Core scRNA Pipeline (annotation step)
-Last thing we completed: Phase 3 AI layer — all 10 sessions done (466+ tests passing).
-                          Decision made: stop AI pipeline development, keep manual version.
-                          The AI layer code is complete and tested but will NOT be extended further
-                          for now. Manual pipeline is the primary path going forward.
-File we were working on last: ai/report_reviewer.py + tests/test_groundedness.py
+Date: 2026-05-26
+Phase: Phase 4 — CITE-seq Module (Session 2 of 4)
+Last thing we completed: adt_normalize.py — CLR normalization module
+                          37 tests written and passing (392 total, 1 skipped)
 
-## Decision Logged
-After completing the full AI layer (Sessions 0-10 of Phase 3), we evaluated the added
-complexity vs. value at this stage of the project and decided:
-  → Keep the manual pipeline as the single primary path
-  → Pause all AI pipeline development
-  → AI layer code stays in the repo, intact and tested, but no further extension
-  → The architecture still supports ai_features: true — just not being developed further now
-  → Next focus: complete the scRNA pipeline's annotation module
+Files added this session:
+  - pipeline/modules/cite/adt_normalize.py   — CLR normalization for ADT
+  - pipeline/modules/cite/__init__.py        — package init (create if missing)
+  - tests/test_adt_normalize.py              — 37 tests, all passing
 
-See .dev_memory/DECISIONS.md for full rationale.
+## Modality Roadmap (corrected — carry forward every session)
+  Phase 4 — CITE-seq Module      ← IN PROGRESS
+  Phase 5 — Spatial Module       ← Visium, MERFISH, Xenium
+  Phase 6 — Multiome Integration ← RNA + ATAC jointly
+
+scATAC-seq as a standalone modality is deferred — covered in Phase 6.
 
 ## Today's Goal
-Build the **Annotation Module** — manual cell type annotation using SingleR + marker review.
+Build the **ADT doublet detection module** — Phase 4, Session 2.
 
-This is the final major piece of the Phase 1 scRNA pipeline before the milestone run.
+One clearly scoped deliverable:
+  `pipeline/modules/cite/adt_doublets.py`
 
-## Annotation Plan — What to Build
+ADT doublet detection catches doublets that RNA-only Scrublet misses,
+using the protein signal. It must run on CLR-normalized ADT values
+(output of adt_normalize.py), not raw counts.
 
-The annotation module lives in `pipeline/modules/annotation/`.
+This module takes `mdata["adt"].layers["adt_clr"]` and performs:
+  1. Doublet detection on CLR-normalized ADT using scrublet or
+     an ADT-appropriate method (check reference for recommendation)
+  2. Adds obs columns to mdata["adt"]:
+       obs["adt_doublet_score"]     — continuous score (0–1)
+       obs["adt_predicted_doublet"] — boolean flag
+  3. Optionally filters doublets from both mdata["adt"] AND mdata["rna"]
+     (cross-modal filtering — a cell doublet in protein space should be
+     removed from RNA too)
+  4. Returns updated AnnData + metrics dict
 
-### Step 1 — SingleR automatic annotation (R)
-File: `pipeline/modules/annotation/singler_annotate.R`
-- Input: clustered AnnData saved as RDS or read via zellkonverter
-- Reference: `celldex::HumanPrimaryCellAtlasData()` (download on first run)
-- Output:
-  - Per-cell predictions (cell_type, singler_score, delta_next)
-  - Per-cluster consensus label (majority vote)
-  - Flag low-confidence cells: delta_next < 0.1
-  - Save: `results/{project}/annotation/singler_predictions.csv`
+Do NOT start dimensionality reduction this session — doublets only.
 
-### Step 2 — Marker review summary (Python)
-File: `pipeline/modules/annotation/marker_review.py`
-- Input: AnnData with clustering + rank_genes_groups results
-- For each cluster: extract top 10 markers (logFC + p-val)
-- Output: `results/{project}/annotation/marker_summary.csv`
-  Columns: cluster_id, top_markers (comma-sep), known_cell_type (manual fill), confidence
+## Correct Phase 4 session order
+  Session 1 — adt_normalize.py      ✓ done (392 tests, 1 skipped)
+  Session 2 — adt_doublets.py       ← today
+  Session 3 — adt_reduce.py         ← PCA + neighbor graph + UMAP
+  Session 4 — wnn.py                ← RNA + protein joint embedding
 
-### Step 3 — Nextflow process
-File: `pipeline/modules/annotation/scrna_annotation.nf`
-- Wraps singler_annotate.R as a Nextflow process
-- Connects to scrna.nf workflow after CLUSTERING step
-- Outputs annotated h5ad + annotation CSVs into results dir
+## Reference for this session
+ADT doublet detection:
+  https://www.sc-best-practices.org/surface_protein/doublet_detection.html
 
-### Step 4 — Annotated AnnData output
-- Write cell_type column to adata.obs from SingleR consensus
-- Write singler_score and delta_next columns
-- Save as `results/{project}/annotated.h5ad`
+ADT dimensionality reduction (Session 3):
+  https://www.sc-best-practices.org/surface_protein/dimensionality_reduction.html
 
-### Step 5 — Annotation section in HTML report
-- Add annotation tab to the combined HTML report (00_combined_report.html)
-- Include: UMAP colored by cell_type, annotation table, low-confidence cell count
+ADT batch correction (relevant for Session 4 WNN):
+  https://www.sc-best-practices.org/surface_protein/batch_correction.html
 
-## Expected File Outputs
-```
-pipeline/modules/annotation/
-  ├── scrna_annotation.nf
-  ├── singler_annotate.R
-  └── marker_review.py
-
-results/{project}/annotation/
-  ├── singler_predictions.csv
-  ├── marker_summary.csv
-  └── annotation_umap.png
-```
+Full surface protein chapter index (bookmark):
+  https://www.sc-best-practices.org/surface_protein/normalization.html
 
 ## Known Issues Carried Forward
 - Always use `python -m pytest` not bare `pytest`
 - Always `conda activate omicsage` before running anything
-- rpy2 NOT used — R scripts are called via subprocess or Nextflow, not rpy2
-- Docker images may still need building (see BLOCKERS.md B001)
+- rpy2 NOT used — R scripts called via subprocess or Nextflow, not rpy2
+- `seurat_v3` HVG flavor numerically unstable on small fixtures — use
+  `flavor='seurat'` in small-fixture tests
 - obs['cell_type_vote'] is the consensus column naming convention
+- `cell_type_confidence` = weighted fraction of methods agreeing (0.0–1.0)
+  NOT AI self-reported confidence
+- muon CLR FutureWarning on __version__ is internal to muon — not our code,
+  suppress with warnings.catch_warnings() as already done in adt_normalize.py
+
+## adt_normalize.py API (carry forward — adt_reduce.py depends on this)
+  normalize_adt(adata, clr_axis=0, dsb_empty_adata=None,
+                isotype_controls=None, inplace=False)
+    → (AnnData, dict)
+
+  Input:  mdata["adt"].X  — raw integer ADT counts
+  Output layers:
+    layers["counts"]   — raw counts (preserved)
+    layers["adt_clr"]  — CLR-normalized values
+    .X                 — CLR-normalized values (same as adt_clr)
+  Provenance: adata.uns["omicsage_adt_normalize"]
+  clr_axis=0 default  (per-protein across cells, muon default)
 
 ## Verify Last Session Works
 ```bash
 conda activate omicsage
 python -m pytest tests/ -v
-# Expected: 466+ passed, 1 skipped
+# Expected: 392 passed, 1 skipped
+# If count is wrong, stop and investigate before writing any new code
 ```
 
 ## Relevant Context
-- Primary benchmark dataset: GSE166635 HCC (Wang et al. 2025)
-- Annotation reference: celldex HumanPrimaryCellAtlasData (download on first run in R)
-- SingleR is available in the R environment (Seurat v5 + Bioconductor stack)
-- Phase milestone: reproduce Wang et al. 2025 cell type assignments from raw counts
-- The combined HTML report system (Phase 2) is complete — annotation output plugs into it
+- Benchmark dataset: GSE194122 BMMC CITE-seq (NeurIPS 2021)
+  → BioLegend TotalSeq B Universal Human Panel (~140 antibodies)
+  → mdata["adt"] post-normalize has layers["adt_clr"] with CLR values
+- RNA doublets already caught by Scrublet in qc.py (obs["predicted_doublet"])
+  ADT doublet detection is complementary — catches doublets RNA missed
+- Cross-modal filtering rule: a doublet flagged in ADT space must also be
+  removed from mdata["rna"] — they share barcodes, so both must stay in sync
+- Phase 4 milestone: WNN UMAP showing RNA + protein integrated embedding
+  (Session 4 goal — do not start until Sessions 2 and 3 are complete)
+- UMAP key naming convention (establish now, enforce across all sessions):
+    obsm["X_umap"]      → RNA UMAP  (already exists from reduce.py)
+    obsm["X_umap_adt"]  → ADT UMAP  (Session 3)
+    obsm["X_umap_wnn"]  → WNN UMAP  (Session 4)
