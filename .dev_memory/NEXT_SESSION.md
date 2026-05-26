@@ -1,12 +1,12 @@
 ## Session Context
 Date: 2026-05-26
-Phase: Phase 4 — CITE-seq Module (Session 4 of 6)
-Last thing we completed: adt_harmony.py — Abatch correction
-                          66 tests written and passing (736 total, 1 skipped)
+Phase: Phase 4 — CITE-seq Module (Session 6 of 6)
+Last thing we completed: adt_annotate.py — Abatch correction
+                          69 tests written and passing (805 total, 1 skipped)
 
 Files added last session:
-  - pipeline/modules/cite/adt_harmony.py  
-  - tests/test_adt_harmony.py             — 66 tests, all passing
+  - pipeline/modules/cite/adt_annotate.py  
+  - tests/test_adt_annotate.py             — 69 tests, all passing
 
 ## Modality Roadmap (corrected — carry forward every session)
   Phase 4 — CITE-seq Module      ← IN PROGRESS
@@ -20,31 +20,14 @@ scATAC-seq as a standalone modality is deferred — covered in Phase 6.
   Session 2 — adt_doublets.py       ✓ done (457 total, 1 skipped)
   Session 3 — adt_reduce.py         ✓ done (516 total, 1 skipped)
   Session 4 — adt_harmony.py        ✓ done (736 total, 1 skipped)
-  Session 5 — adt_annotate.py       ← TODAY Leiden clustering + marker annotation
-  Session 6 — wnn.py + cite_pipeline.py + reports  ← Phase 4 milestone
+  Session 5 — adt_annotate.py       ✓ done (805 total, 1 skipped)
+  Session 6 — wnn.py + cite_pipeline.py + reports  ← NEXT Phase 4 milestone
 
 ## Today's Goal
-Build the **ADT Annotation module** — Phase 4, Session 5.
 
-One clearly scoped deliverable:
-  `pipeline/modules/cite/adt_annotate.py`
-
-
-## Session 5 Preview — adt_annotate.py
-  Reference: https://www.sc-best-practices.org/surface_protein/annotation.html
-  Steps (from notebook source, confirmed):
-    1. Leiden clustering at low resolution (resolution=0.1, flavor="igraph",
-       n_iterations=2, directed=False) on harmony-corrected neighbor graph
-    2. rank_genes_groups on leiden clusters (for marker dotplot)
-    3. Manual cluster → cell type mapping stored in obs["adt_celltype"]
-       (OmicSage convention: "adt_celltype", not "celltype", to avoid
-       collision with RNA annotation obs["cell_type_vote"])
-    4. Returns updated AnnData + metrics dict (n_clusters, cluster_sizes,
-       annotation_map)
-  Annotation is marker-based (manual map) — no LLM this session.
-
-## Session 6 Preview — wnn.py + cite_pipeline.py + reports
+### Session 6 Preview — wnn.py + cite_pipeline.py + reports
   Three deliverables in one session (they are tightly coupled):
+  Refrence: https://www.sc-best-practices.org/multimodal_integration/paired_integration.html#cite-seq-data
 
   A. wnn.py
      - WNN joint embedding: RNA (X_pca) + ADT (X_pca_harmony_adt)
