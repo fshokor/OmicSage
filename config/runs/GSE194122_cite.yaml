@@ -1,0 +1,154 @@
+# OmicSage — CITE-seq Pipeline Configuration
+# Dataset  : GSE194122 BMMC CITE-seq (NeurIPS 2021)
+# Modality : CITE-seq (ADT pipeline + RNA+ADT joint integration)
+#
+# Prerequisites
+# -------------
+# The RNA pipeline must have been run first:
+#   python run_pipeline.py --config config/runs/GSE194122.yaml
+# This produces:
+#   data/processed/GSE194122/01_qc_adt.h5ad   ← ADT input for this pipeline
+#   data/processed/GSE194122/05_annotated.h5ad ← RNA input for integration
+#
+# Common usage patterns
+# ---------------------
+# Full pipeline (all 6 steps):
+#   python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml
+#
+# ADT steps only (no integration):
+#   python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --to-step annotate_adt
+#
+# Resume from a step:
+#   python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --from-step harmony_adt
+#
+# Run a single step:
+#   python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --step normalize_adt
+#
+# Force re-run (ignore cache):
+#   python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --from-step reduce_adt --force
+#
+# Step order
+# ----------
+#   normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → integration
+#
+# Checkpointed outputs (data/processed/GSE194122/)
+# -------------------------------------------------
+#   cite_01_normalized_adt.h5ad
+#   cite_02_doublets_adt.h5ad
+#   cite_03_reduced_adt.h5ad
+#   cite_04_harmony_adt.h5ad
+#   cite_05_annotated_adt.h5ad
+#   cite_06_integration.h5mu   ← MuData (RNA + ADT joint embedding)
+
+dataset:
+  id: GSE194122
+  name: "BMMC CITE-seq (NeurIPS 2021)"
+  modality: cite
+  organism: human
+
+paths:
+  # ADT input: produced by the QC step of the RNA pipeline
+  adt_input: data/processed/GSE194122/01_qc_adt.h5ad
+
+  # RNA input for integration: annotated RNA from the RNA pipeline
+  # Must have:
+  #   .X                  = log1p-normalised RNA
+  #   layers["counts"]    = raw counts (required for totalVI)
+  #   obs["cell_type_vote"] = consensus cell type labels
+  rna_input: data/processed/GSE194122/05_annotated.h5ad
+
+  # Where to write checkpointed outputs
+  processed_dir: data/processed/GSE194122
+
+  # Where to write HTML reports
+  reports_dir: reports/GSE194122
+
+# ── Global CITE-seq settings ──────────────────────────────────────────────────
+# batch_key is used by both harmony_adt and integration.
+# Override per-step under steps.harmony_adt.params.batch_key
+# or steps.integration.params.batch_key if needed.
+cite:
+  batch_key: batch
+
+# ── Step configuration ────────────────────────────────────────────────────────
+
+steps:
+
+  normalize_adt:
+    enabled: true
+    params:
+      # CLR axis:
+      #   0 = per-protein across cells (muon default, Seurat margin=1) ← recommended
+      #   1 = per-cell across proteins (Seurat margin=2)
+      clr_axis: 0
+
+  doublets:
+    enabled: true
+    params:
+      # CLR threshold above which a marker is considered "expressed".
+      # 2.5 is the sc-best-practices recommendation for CLR-normalised ADT.
+      threshold: 2.5
+
+      # filter_doublets: if true, flagged cells are removed from the AnnData.
+      # If false (default), doublets are only flagged in obs["adt_predicted_doublet"]
+      # but kept — safer for exploratory runs.
+      filter_doublets: false
+
+  reduce_adt:
+    enabled: true
+    params:
+      n_comps: 50       # PCA components to compute
+      n_pcs: 20         # PCs used for neighbor graph (sc-best-practices ch.36)
+      n_neighbors: 15   # kNN graph k
+
+  harmony_adt:
+    enabled: true
+    params:
+      batch_key: batch  # obs column used for Harmony batch correction
+      n_pcs: 20         # PCs used after Harmony correction
+      n_neighbors: 15
+      random_state: 0
+
+  annotate_adt:
+    enabled: true
+    params:
+      # Leiden clustering resolution — lower = fewer, broader clusters.
+      # 0.1 is the sc-best-practices default for broad immune cell types.
+      # Inspect cite_05_annotated_adt.h5ad and adjust if needed.
+      resolution: 0.1
+
+      # annotation_map: map Leiden cluster IDs → cell type labels.
+      # Leave as null on the first run — inspect clusters first, then
+      # fill in the map and re-run this step only:
+      #   python run_cite_pipeline.py --config ... --step annotate_adt --force
+      #
+      # Example (fill in after inspecting clusters):
+      # annotation_map:
+      #   "0": "CD4 T"
+      #   "1": "CD8 T"
+      #   "2": "B cell"
+      #   "3": "NK"
+      #   "4": "Monocyte"
+      #   "5": "DC"
+      annotation_map: null
+
+      random_state: 0
+
+  integration:
+    enabled: true
+    params:
+      # method: "mofa" (default) or "totalvi"
+      # MOFA+  — linear, fast, interpretable, no GPU needed  ← recommended first run
+      # totalVI — deep generative model, best benchmark score, needs more RAM/time
+      method: mofa
+
+      batch_key: batch  # obs column for batch-aware integration
+
+      # MOFA+ parameters (used when method: mofa)
+      n_factors: 15     # number of latent factors; 15 is a good starting point
+
+      # totalVI parameters (used when method: totalvi)
+      # Reduce max_epochs for a quick test run (e.g. max_epochs: 10)
+      max_epochs: 400
+
+      random_state: 0
