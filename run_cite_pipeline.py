@@ -533,7 +533,10 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
 
     mdata.uns["dataset_name"] = cfg["dataset"].get("name", cfg["dataset"]["id"])
 
-    mdata.write(out)
+    # mudata >=0.4 emits FutureWarnings from internal .update() during write
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        mdata.write(out)
     print(f"[integration] {method.upper()}  {mdata.n_obs:,} cells → {out}")
 
     # Per-step HTML report

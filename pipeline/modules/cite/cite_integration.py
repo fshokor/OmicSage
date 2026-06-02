@@ -184,49 +184,55 @@ def _compute_scib_metrics(
         warnings.simplefilter("ignore")
         sc.pp.neighbors(adata_tmp, use_rep=embed_key, random_state=0)
 
+    # Wrap every scib call in catch_warnings — scib internals emit FutureWarnings
+    # (e.g. pd.value_counts deprecated in graph_connectivity.py) that escape the
+    # runner's global filterwarnings because they originate inside scib's own module.
     results: dict = {}
-    try:
-        # ── Batch correction ──
-        results[f"{label}_ilisi"] = float(
-            np.mean(scib.metrics.ilisi_graph(
-                adata_tmp, batch_key=batch_key, type_="embed",
-                use_rep=embed_key,
-            ))
-        )
-    except Exception as exc:
-        results[f"{label}_ilisi_error"] = str(exc)
-
-    try:
-        results[f"{label}_graph_conn"] = float(
-            scib.metrics.graph_connectivity(adata_tmp, label_key=batch_key)
-        )
-    except Exception as exc:
-        results[f"{label}_graph_conn_error"] = str(exc)
-
-    if cell_type_key is not None:
-        # Also cast cell_type_key to Categorical for clisi_graph / silhouette
-        adata_tmp.obs[cell_type_key] = pd.Categorical(
-            adata_tmp.obs[cell_type_key].astype(str)
-        )
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
 
         try:
-            results[f"{label}_clisi"] = float(
-                np.mean(scib.metrics.clisi_graph(
-                    adata_tmp, label_key=cell_type_key, type_="embed",
+            # ── Batch correction ──
+            results[f"{label}_ilisi"] = float(
+                np.mean(scib.metrics.ilisi_graph(
+                    adata_tmp, batch_key=batch_key, type_="embed",
                     use_rep=embed_key,
                 ))
             )
         except Exception as exc:
-            results[f"{label}_clisi_error"] = str(exc)
+            results[f"{label}_ilisi_error"] = str(exc)
 
         try:
-            results[f"{label}_asw_label"] = float(
-                scib.metrics.silhouette(
-                    adata_tmp, label_key=cell_type_key, embed=embed_key,
-                )
+            results[f"{label}_graph_conn"] = float(
+                scib.metrics.graph_connectivity(adata_tmp, label_key=batch_key)
             )
         except Exception as exc:
-            results[f"{label}_asw_label_error"] = str(exc)
+            results[f"{label}_graph_conn_error"] = str(exc)
+
+        if cell_type_key is not None:
+            # Also cast cell_type_key to Categorical for clisi_graph / silhouette
+            adata_tmp.obs[cell_type_key] = pd.Categorical(
+                adata_tmp.obs[cell_type_key].astype(str)
+            )
+
+            try:
+                results[f"{label}_clisi"] = float(
+                    np.mean(scib.metrics.clisi_graph(
+                        adata_tmp, label_key=cell_type_key, type_="embed",
+                        use_rep=embed_key,
+                    ))
+                )
+            except Exception as exc:
+                results[f"{label}_clisi_error"] = str(exc)
+
+            try:
+                results[f"{label}_asw_label"] = float(
+                    scib.metrics.silhouette(
+                        adata_tmp, label_key=cell_type_key, embed=embed_key,
+                    )
+                )
+            except Exception as exc:
+                results[f"{label}_asw_label_error"] = str(exc)
 
     return results
 
