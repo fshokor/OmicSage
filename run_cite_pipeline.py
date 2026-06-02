@@ -460,7 +460,7 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
     print("[integration] running …")
     import anndata as ad
     import mudata as mu
-    from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi
+    from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi, run_both
 
     # Load ADT (annotated) and RNA (annotated with cell_type_vote)
     adt = _load_adt(input_path)
@@ -485,9 +485,11 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
 
     mdata = mu.MuData({"rna": rna, "adt": adt})
 
-    method    = params.get("method", "mofa").lower()
-    batch_key = params.get("batch_key",
-                cfg.get("cite", {}).get("batch_key", "batch"))
+    method        = params.get("method", "mofa").lower()
+    batch_key     = params.get("batch_key",
+                    cfg.get("cite", {}).get("batch_key", "batch"))
+    compute_scib  = params.get("compute_scib", False)
+    cell_type_key = params.get("cell_type_key", None)
 
     if method == "mofa":
         print(f"[integration] MOFA+  batch_key={batch_key}  n_factors={params.get('n_factors', 15)}")
@@ -497,6 +499,8 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
             n_factors=params.get("n_factors", 15),
             random_state=params.get("random_state", 0),
             inplace=True,
+            compute_scib=compute_scib,
+            cell_type_key=cell_type_key,
         )
     elif method == "totalvi":
         print(f"[integration] totalVI  batch_key={batch_key}  max_epochs={params.get('max_epochs', 400)}")
@@ -506,11 +510,25 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
             max_epochs=params.get("max_epochs", 400),
             random_state=params.get("random_state", 0),
             inplace=True,
+            compute_scib=compute_scib,
+            cell_type_key=cell_type_key,
+        )
+    elif method == "both":
+        print(f"[integration] MOFA+ + totalVI  batch_key={batch_key}")
+        mdata, metrics = run_both(
+            mdata,
+            batch_key=batch_key,
+            n_factors=params.get("n_factors", 15),
+            max_epochs=params.get("max_epochs", 400),
+            random_state=params.get("random_state", 0),
+            inplace=True,
+            compute_scib=compute_scib,
+            cell_type_key=cell_type_key,
         )
     else:
         raise ValueError(
             f"[integration] Unknown method '{method}'. "
-            f"Use 'mofa' or 'totalvi'."
+            f"Use 'mofa', 'totalvi', or 'both'."
         )
 
     mdata.uns["dataset_name"] = cfg["dataset"].get("name", cfg["dataset"]["id"])
@@ -526,6 +544,7 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
             metrics=metrics,
             report_path=str(reports_dir / "cite_06_integration_report.html"),
             dataset_name=cfg["dataset"].get("name", cfg["dataset"]["id"]),
+            color_keys=params.get("umap_color_keys") or None,
         )
     except Exception as e:
         print(f"[integration] WARNING: report failed: {e}")

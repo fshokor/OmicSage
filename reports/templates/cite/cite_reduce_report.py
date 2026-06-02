@@ -4,6 +4,11 @@ reports/templates/cite/cite_reduce_report.py
 
 Generated after reduce_adt step.
 Output: cite_03_reduce_report.html
+
+Changes vs previous version
+-----------------------------
+- Added elbow plot (variance explained per PC) from uns["pca_adt"]["variance_ratio"].
+  Vertical dashed line marks the n_pcs_used value chosen for the neighbor graph.
 """
 
 from __future__ import annotations
@@ -67,19 +72,90 @@ def _fig_to_b64(fig) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
+# ---------------------------------------------------------------------------
+# Elbow plot (NEW)
+# ---------------------------------------------------------------------------
+
+def _plot_elbow(adt: AnnData, metrics: dict) -> str:
+    """
+    Elbow plot: variance explained (%) per PC from uns["pca_adt"]["variance_ratio"].
+    A vertical dashed line marks n_pcs_used (the cutoff chosen for the neighbor graph).
+    This helps confirm the n_pcs choice is at or past the inflection point.
+    """
+    pca_uns = adt.uns.get("pca_adt", {})
+    variance_ratio = pca_uns.get("variance_ratio")
+
+    if variance_ratio is None:
+        fig, ax = plt.subplots(figsize=(6, 4))
+        ax.text(0.5, 0.5,
+                "uns['pca_adt']['variance_ratio'] not found.\n"
+                "Re-run reduce_adt to populate PCA provenance.",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="#888", wrap=True)
+        ax.axis("off")
+        return _fig_to_b64(fig)
+
+    variance_ratio = np.asarray(variance_ratio)
+    n_comps = len(variance_ratio)
+    pcs = np.arange(1, n_comps + 1)
+    var_pct = variance_ratio * 100.0
+    cumvar_pct = np.cumsum(var_pct)
+
+    n_pcs_used = int(metrics.get("n_pcs_used", 0))
+
+    fig, ax1 = plt.subplots(figsize=(8, 4))
+
+    # Per-PC variance bar chart
+    ax1.bar(pcs, var_pct, color="#4C78A8", alpha=0.7, width=0.8, label="Per-PC variance")
+    ax1.set_xlabel("Principal Component", fontsize=10)
+    ax1.set_ylabel("Variance explained (%)", fontsize=10, color="#4C78A8")
+    ax1.tick_params(axis="y", labelcolor="#4C78A8")
+
+    # Cumulative variance line (right axis)
+    ax2 = ax1.twinx()
+    ax2.plot(pcs, cumvar_pct, color="#e07b3a", linewidth=1.8,
+             linestyle="-", marker=".", markersize=3, label="Cumulative variance")
+    ax2.set_ylabel("Cumulative variance (%)", fontsize=10, color="#e07b3a")
+    ax2.tick_params(axis="y", labelcolor="#e07b3a")
+    ax2.set_ylim(0, 105)
+
+    # Mark n_pcs_used
+    if 0 < n_pcs_used <= n_comps:
+        ax1.axvline(n_pcs_used, color="#c0392b", linewidth=1.5, linestyle="--",
+                    label=f"n_pcs_used = {n_pcs_used}")
+        cum_at_cutoff = float(cumvar_pct[n_pcs_used - 1])
+        ax2.annotate(
+            f"{cum_at_cutoff:.0f}% cumulative\nat PC {n_pcs_used}",
+            xy=(n_pcs_used, cum_at_cutoff),
+            xytext=(n_pcs_used + max(1, n_comps * 0.06), cum_at_cutoff - 8),
+            arrowprops=dict(arrowstyle="->", color="#c0392b", lw=1),
+            fontsize=8, color="#c0392b",
+        )
+
+    # Combined legend
+    lines1, labels1 = ax1.get_legend_handles_labels()
+    lines2, labels2 = ax2.get_legend_handles_labels()
+    ax1.legend(lines1 + lines2, labels1 + labels2, frameon=False, fontsize=9,
+               loc="upper right")
+
+    ax1.set_title("ADT PCA Elbow Plot", fontsize=12, fontweight="bold")
+    ax1.spines[["top"]].set_visible(False)
+    ax2.spines[["top"]].set_visible(False)
+    ax1.set_xlim(0.5, n_comps + 0.5)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+# ---------------------------------------------------------------------------
+# Embedding plots (unchanged from previous version)
+# ---------------------------------------------------------------------------
+
 def _plot_embedding(
     adt: AnnData,
     embed_key: str,
     color_keys: list[str],
     title_prefix: str,
 ) -> str:
-    """
-    Generic multi-panel embedding plot.
-    One panel per color_key — mimics sc.pl.umap(color=[...]).
-    Categorical obs columns get tab20 colours + legend.
-    Numeric obs columns get a viridis scatter + colorbar.
-    Falls back gracefully if a key is missing from obs.
-    """
     if embed_key not in adt.obsm:
         fig, ax = plt.subplots(figsize=(5, 4))
         ax.text(0.5, 0.5, f"{embed_key} not found", ha="center", va="center",
@@ -89,7 +165,6 @@ def _plot_embedding(
 
     coords = adt.obsm[embed_key]
 
-    # Resolve valid keys — warn about missing ones
     valid_keys = []
     for k in color_keys:
         if k in adt.obs.columns:
@@ -97,8 +172,7 @@ def _plot_embedding(
         else:
             print(f"    [warn] color key '{k}' not in adt.obs — skipped", flush=True)
 
-    # Always add a plain (no colour) panel as first panel
-    all_keys = [None] + valid_keys   # None = plain scatter
+    all_keys = [None] + valid_keys
 
     n_panels = len(all_keys)
     ncols    = min(3, n_panels)
@@ -112,14 +186,12 @@ def _plot_embedding(
         ax = axes[row][col]
 
         if key is None:
-            # Plain scatter
             ax.scatter(coords[:, 0], coords[:, 1],
                        s=2, alpha=0.5, color="#4C78A8", rasterized=True)
             ax.set_title(f"{title_prefix}", fontsize=10, fontweight="bold")
-
         else:
-            vals = adt.obs[key]
             import pandas as pd
+            vals = adt.obs[key]
             is_numeric = pd.api.types.is_numeric_dtype(vals)
 
             if is_numeric:
@@ -151,7 +223,6 @@ def _plot_embedding(
         ax.set_xticks([]); ax.set_yticks([])
         ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
 
-    # Hide unused axes
     for idx in range(n_panels, nrows * ncols):
         row, col = divmod(idx, ncols)
         axes[row][col].set_visible(False)
@@ -161,22 +232,20 @@ def _plot_embedding(
 
 
 def _plot_umap(adt: AnnData, color_keys: Optional[list[str]] = None) -> str:
-    """ADT UMAP with one panel per color key."""
     keys = color_keys or ["batch"]
     return _plot_embedding(adt, "X_umap_adt", keys, "ADT UMAP (pre-Harmony)")
 
 
 def _plot_pca_multi(adt: AnnData, color_keys: Optional[list[str]] = None) -> str:
-    """ADT PCA with one panel per color key."""
     keys = color_keys or ["batch"]
     return _plot_embedding(adt, "X_pca_adt", keys, "ADT PCA")
 
 
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
 def _section_obs_columns(adt: AnnData) -> str:
-    """
-    Table of all obs columns with dtype and n_unique values.
-    Use this to decide which columns to add to umap_color_keys in the config.
-    """
     rows = ""
     for col in adt.obs.columns:
         dtype  = str(adt.obs[col].dtype)
@@ -192,7 +261,6 @@ def _section_obs_columns(adt: AnnData) -> str:
             f"<td>{n_uniq}</td>"
             f"<td style='font-size:0.82rem;color:#555;'>{sample_vals}</td></tr>"
         )
-
     return f"""
     <section>
       <h2>Available obs Columns</h2>
@@ -209,11 +277,6 @@ def _section_obs_columns(adt: AnnData) -> str:
 
 
 def _section_protein_panel(adt: AnnData, metrics: dict) -> str:
-    """
-    Two-column layout: Kept | Removed.
-    Run 1: all proteins in Kept, Removed column empty.
-    Run 2: proteins split by isotype filtering.
-    """
     all_proteins_before = metrics.get("n_vars_before_filter", adt.n_vars)
     removed = metrics.get("isotype_controls_removed", [])
     kept    = list(adt.var_names)
@@ -221,7 +284,6 @@ def _section_protein_panel(adt: AnnData, metrics: dict) -> str:
     def _li_list(items, color):
         if not items:
             return '<span style="color:#aaa;font-size:0.85rem;">—</span>'
-        # 3 proteins per row using CSS grid
         cells = "".join(
             f'<div style="padding:3px 6px;font-size:0.83rem;'
             f'font-family:SFMono-Regular,Consolas,monospace;color:{color};">{p}</div>'
@@ -332,6 +394,27 @@ def _section_summary(metrics: dict, dataset_name: str, timestamp: str) -> str:
     </section>"""
 
 
+def _section_elbow(fig_elbow: str) -> str:
+    return f"""
+    <section>
+      <h2>PCA Elbow Plot</h2>
+      <p>
+        Bar chart: variance explained per PC (left axis, blue).<br>
+        Line: cumulative variance (right axis, orange).<br>
+        Dashed red line marks <code>n_pcs_used</code> — the cutoff sent to the
+        neighbor graph. A good cutoff sits at or just past the elbow (inflection point).
+        If most variance is captured well before the red line, consider lowering
+        <code>n_pcs</code> in the config.
+      </p>
+      <div class="fig-grid">
+        <div class="fig-wrap wide">
+          <h3>Variance Explained per PC</h3>
+          <img src="data:image/png;base64,{fig_elbow}" alt="PCA elbow plot">
+        </div>
+      </div>
+    </section>"""
+
+
 def _section_figures(
     fig_pca: str,
     fig_umap: str,
@@ -372,14 +455,17 @@ def run_cite_reduce_report(
     active_layer = metrics.get("active_layer", "adt_clr")
     color_keys   = metrics.get("umap_color_keys") or ["batch"]
 
+    print("  Rendering elbow plot ...", flush=True)
+    fig_elbow = _plot_elbow(adt, metrics)
     print("  Rendering PCA multi-panel ...", flush=True)
-    fig_pca  = _plot_pca_multi(adt, color_keys)
+    fig_pca   = _plot_pca_multi(adt, color_keys)
     print("  Rendering UMAP multi-panel ...", flush=True)
-    fig_umap = _plot_umap(adt, color_keys)
+    fig_umap  = _plot_umap(adt, color_keys)
 
     html = _render_page(
         sections=[
             _section_summary(metrics, dataset_name, timestamp),
+            _section_elbow(fig_elbow),
             _section_obs_columns(adt),
             _section_protein_panel(adt, metrics),
             _section_figures(fig_pca, fig_umap, active_layer),

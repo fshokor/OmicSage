@@ -4,6 +4,13 @@ reports/templates/cite/cite_doublets_report.py
 
 Generated after doublets step.
 Output: cite_02_doublets_report.html
+
+Changes vs previous version
+-----------------------------
+- Added tutorial scatter plot (CLR expression of one mutually-exclusive pair,
+  doublet cells coloured red) matching sc-best-practices figure.
+  Calls adt_doublets.plot_doublet_scatter() which is the single source of
+  truth for that figure logic.
 """
 
 from __future__ import annotations
@@ -91,7 +98,6 @@ def _plot_score_histogram(adt: AnnData) -> str:
 
 
 def _plot_score_by_donor(adt: AnnData) -> str:
-    """Box plot of doublet scores per donor/batch."""
     score_col = "adt_doublet_score"
     batch_col = next((c for c in ["donor", "batch", "sample"] if c in adt.obs.columns), None)
     if score_col not in adt.obs.columns or batch_col is None:
@@ -116,6 +122,75 @@ def _plot_score_by_donor(adt: AnnData) -> str:
     ax.set_title(f"Doublet Score by {batch_col}", fontsize=12, fontweight="bold")
     plt.setp(ax.get_xticklabels(), rotation=45, ha="right", fontsize=8)
     ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _plot_doublet_scatter_panels(adt: AnnData, metrics: dict) -> str:
+    """
+    Tutorial scatter plots — one panel per evaluated marker pair.
+    Each panel: CLR(markerA) vs CLR(markerB), coloured by doublet flag.
+    Matches the sc-best-practices doublet detection figure.
+
+    Uses adt_doublets.plot_doublet_scatter() as the single source of truth
+    for the per-pair figure logic.
+    """
+    try:
+        from pipeline.modules.cite.adt_doublets import plot_doublet_scatter
+    except ImportError:
+        from adt_doublets import plot_doublet_scatter  # direct import fallback
+
+    threshold = float(metrics.get("threshold", 2.5))
+    pairs_evaluated = metrics.get("pairs_evaluated", [])
+
+    if not pairs_evaluated:
+        fig, ax = plt.subplots(figsize=(5, 3))
+        ax.text(0.5, 0.5, "No marker pairs were evaluated\n(markers not found in panel).",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="#888", wrap=True)
+        ax.axis("off")
+        return _fig_to_b64(fig)
+
+    # One panel per evaluated pair — lay them out side by side
+    n = len(pairs_evaluated)
+    ncols = min(n, 2)
+    nrows = int(np.ceil(n / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 6, nrows * 5),
+                             squeeze=False)
+
+    for i, (a, b) in enumerate(pairs_evaluated):
+        row, col = divmod(i, ncols)
+        ax = axes[row][col]
+
+        try:
+            subfig = plot_doublet_scatter(adt, pair=(a, b), threshold=threshold)
+            # Blit the sub-figure axes into the grid axes
+            subfig.canvas.draw()
+            buf = io.BytesIO()
+            subfig.savefig(buf, format="png", dpi=_DPI, bbox_inches="tight")
+            plt.close(subfig)
+            buf.seek(0)
+            from PIL import Image
+            img = Image.open(buf)
+            ax.imshow(img)
+            ax.axis("off")
+        except Exception as exc:
+            ax.text(0.5, 0.5, f"Plot error: {exc}",
+                    ha="center", va="center", transform=ax.transAxes,
+                    fontsize=9, color="#c0392b", wrap=True)
+            ax.axis("off")
+
+    # Hide any spare axes
+    for i in range(n, nrows * ncols):
+        row, col = divmod(i, ncols)
+        axes[row][col].set_visible(False)
+
+    fig.suptitle(
+        "ADT Doublet Detection — Marker Pair Scatter Plots\n"
+        "(red = doublet flag; dashed lines = CLR threshold)",
+        fontsize=12, fontweight="bold", y=1.01,
+    )
     fig.tight_layout()
     return _fig_to_b64(fig)
 
@@ -175,10 +250,17 @@ def _section_summary(metrics: dict, dataset_name: str, timestamp: str) -> str:
     </section>"""
 
 
-def _section_figures(fig_hist: str, fig_donor: str) -> str:
+def _section_figures(fig_hist: str, fig_donor: str, fig_scatter: str) -> str:
     return f"""
     <section>
       <h2>Figures</h2>
+      <p>
+        <strong>Left:</strong> Doublet score distribution — cells with score&nbsp;&gt;&nbsp;0
+        co-express markers from at least one mutually-exclusive pair.<br>
+        <strong>Middle:</strong> Doublet scores per donor — check for donor-specific enrichment.<br>
+        <strong>Bottom:</strong> Marker pair scatter (sc-best-practices fig.) — cells in the
+        upper-right quadrant (both markers above CLR threshold) are flagged as doublets.
+      </p>
       <div class="fig-grid">
         <div class="fig-wrap">
           <h3>Doublet Score Distribution</h3>
@@ -187,6 +269,10 @@ def _section_figures(fig_hist: str, fig_donor: str) -> str:
         <div class="fig-wrap">
           <h3>Doublet Score by Donor/Batch</h3>
           <img src="data:image/png;base64,{fig_donor}" alt="Doublet score by donor">
+        </div>
+        <div class="fig-wrap wide">
+          <h3>Marker Pair Co-expression (Tutorial Figure)</h3>
+          <img src="data:image/png;base64,{fig_scatter}" alt="Doublet marker scatter">
         </div>
       </div>
     </section>"""
@@ -203,13 +289,14 @@ def run_cite_doublets_report(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     print(f"Building CITE doublets report for '{dataset_name}' ...", flush=True)
-    fig_hist  = _plot_score_histogram(adt)
-    fig_donor = _plot_score_by_donor(adt)
+    fig_hist    = _plot_score_histogram(adt)
+    fig_donor   = _plot_score_by_donor(adt)
+    fig_scatter = _plot_doublet_scatter_panels(adt, metrics)
 
     html = _render_page(
         sections=[
             _section_summary(metrics, dataset_name, timestamp),
-            _section_figures(fig_hist, fig_donor),
+            _section_figures(fig_hist, fig_donor, fig_scatter),
         ],
         timestamp=timestamp,
         dataset_name=dataset_name,

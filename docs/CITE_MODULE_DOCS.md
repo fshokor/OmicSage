@@ -2,7 +2,7 @@
 
 > Locations: `pipeline/modules/cite/` · `reports/templates/cite/` · repo root
 > Phase: 4 — CITE-seq Module
-> Last updated: 2026-05-26 (session 7)
+> Last updated: 2026-06-02 (session 8)
 
 This document describes every script in the CITE-seq pipeline — what it does,
 what goes in, what comes out, and how it connects to the next step.
@@ -149,6 +149,12 @@ exclusive lineage surface markers. A real single cell cannot simultaneously
 express both CD3 (T-cell marker) and CD19 (B-cell marker) above background.
 Co-expression above a CLR threshold is scored as evidence of a doublet.
 
+Also exposes `plot_doublet_scatter()` which renders the tutorial figure from
+sc-best-practices: CLR expression of one marker pair on each axis, singlets
+grey, doublets red, threshold dashed lines, co-expression quadrant shaded.
+This function is called by `cite_doublets_report.py` and can be called
+independently from a notebook.
+
 **Why it exists**
 
 Scrublet (used in `qc.py`) detects RNA-level doublets. Some multiplets pass
@@ -181,6 +187,10 @@ For each marker pair (e.g. CD3 / CD19):
 Both pairs are resolved by prefix match — if neither marker from a pair is
 found in `var_names`, that pair is skipped and recorded in `metrics["pairs_skipped"]`.
 
+**Public functions**
+
+### detect_adt_doublets
+
 **Parameters**
 
 | Parameter | Type | Default | Description |
@@ -208,12 +218,29 @@ mdata   : MuData  →  updated object
 metrics : dict    →  n_cells_before, n_doublets_detected, pct_doublets,
                       pairs_evaluated, pairs_skipped, n_cells_after,
                       threshold, filter_doublets
+                      _resolved_pairs  (internal, stripped from uns provenance)
 ```
+
+### plot_doublet_scatter
+
+Standalone figure function — can be called from notebooks independently of the
+full report pipeline.
+
+**Parameters**
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `adt` | AnnData | required | `mdata["adt"]` after `detect_adt_doublets` has been called |
+| `pair` | (str, str) | First default pair | Marker pair to plot; prefix-matched against `var_names` |
+| `threshold` | float | `2.5` | CLR threshold line drawn on both axes |
+| `figsize` | (float, float) | `(6, 5)` | Figure size in inches |
+
+**Returns**: `matplotlib.figure.Figure`
 
 **Usage**
 
 ```python
-from pipeline.modules.cite.adt_doublets import detect_adt_doublets
+from pipeline.modules.cite.adt_doublets import detect_adt_doublets, plot_doublet_scatter
 
 # Default — flag only, do not remove
 mdata, metrics = detect_adt_doublets(mdata)
@@ -229,6 +256,10 @@ mdata, metrics = detect_adt_doublets(
     threshold=3.0,
     filter_doublets=False,
 )
+
+# Tutorial scatter plot (called automatically by cite_doublets_report.py)
+fig = plot_doublet_scatter(mdata["adt"], pair=("CD3", "CD19"), threshold=2.5)
+fig.savefig("doublet_scatter.png", dpi=150, bbox_inches="tight")
 ```
 
 **Connects to**: `cite_doublets_report.py` for the report, then `adt_reduce.py`
@@ -263,7 +294,7 @@ unconditionally.
 |------|----------|
 | `obsm["X_pca_adt"]` | ADT PCA embedding (n_cells × n_comps_actual) |
 | `obsm["X_umap_adt"]` | ADT UMAP embedding, pre-Harmony (n_cells × 2) |
-| `uns["pca_adt"]` | PCA variance statistics |
+| `uns["pca_adt"]` | PCA variance statistics — `variance_ratio` array used by elbow plot |
 | `uns["omicsage_adt_reduce"]` | Provenance record |
 
 Note: `obsm["X_umap_adt"]` is overwritten by `adt_harmony.py` with the post-Harmony
@@ -300,6 +331,7 @@ mdata  : MuData  →  mdata["adt"].layers["adt_clr"]  (output of normalize_adt)
 adata_reduced  : AnnData  →  mdata["adt"] with PCA and UMAP computed
                               obsm["X_pca_adt"]   = ADT PCA
                               obsm["X_umap_adt"]  = ADT UMAP (pre-Harmony)
+                              uns["pca_adt"]["variance_ratio"] = per-PC variance (elbow plot)
 metrics        : dict     →  n_cells, n_vars, n_comps_actual, n_pcs_used,
                               variance_explained_total, umap_computed
 ```
@@ -527,7 +559,7 @@ python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml \
 
 **What it does**
 
-Implements two multi-modal integration methods for paired RNA + ADT data:
+Implements **three** multi-modal integration options for paired RNA + ADT data:
 
 - **MOFA+** (Multi-Omics Factor Analysis) — a linear factor model that
   decomposes the joint RNA + ADT variance into shared latent factors.
@@ -536,10 +568,15 @@ Implements two multi-modal integration methods for paired RNA + ADT data:
 - **totalVI** (Total Variational Inference) — a deep generative model that
   explicitly models RNA with a negative-binomial distribution and ADT as a
   foreground/background NB mixture. Higher benchmark scores but slower and
-  requires more RAM.
+  requires more RAM. Requires raw integer counts for both modalities.
 
-Both methods produce a joint latent embedding stored in `mdata.obsm`, plus a
-UMAP computed from that embedding for visualization.
+- **Both** (`run_both`) — runs MOFA+ then totalVI sequentially on the same
+  MuData. All four embedding keys are written. When `compute_scib=True`,
+  scib metrics are computed for both methods and a side-by-side comparison
+  chart is rendered in the report.
+
+All methods also optionally compute **scib benchmark metrics** via the `scib`
+package when `compute_scib=True`.
 
 **Why it exists**
 
@@ -560,6 +597,20 @@ analyses, MOFA+ produces results that are good enough to proceed.
 totalVI should be preferred for a final analysis or publication because it
 achieves higher scIB benchmark scores and explicitly models ADT background noise.
 
+**scib benchmark metrics**
+
+When `compute_scib=True`, `_compute_scib_metrics()` is called after integration.
+It builds a temporary AnnData, recomputes neighbors on the embedding, and runs:
+
+| Metric | Category | Interpretation |
+|--------|----------|----------------|
+| `iLISI` | Batch correction | Higher = better batch mixing |
+| `graph_connectivity` | Batch correction | Higher = better global connectivity |
+| `cLISI` | Bio conservation | Higher = cleaner cell-type clusters (requires `cell_type_key`) |
+| `ASW_label` | Bio conservation | Higher = better silhouette for cell types (requires `cell_type_key`) |
+
+Requires `pip install scib`. Silently skips if not installed (returns `scib_error` key).
+
 **Important implementation detail — MOFA+ batch key**
 
 muon namespaces conflicting obs columns when building `mdata.obs`. If both
@@ -576,7 +627,8 @@ downstream visualization.
 
 ```python
 run_mofa(mdata, batch_key, n_factors=15, use_layer=None,
-         random_state=0, inplace=False)
+         random_state=0, inplace=False,
+         compute_scib=False, cell_type_key=None)
 → (MuData, dict)
 ```
 
@@ -588,18 +640,23 @@ run_mofa(mdata, batch_key, n_factors=15, use_layer=None,
 | `use_layer` | str | None | Use this layer from each modality instead of `.X` |
 | `random_state` | int | `0` | MOFA+ seed |
 | `inplace` | bool | False | Modify `mdata` in place |
+| `compute_scib` | bool | False | Compute scib benchmark metrics after integration |
+| `cell_type_key` | str | None | obs column for cell types; required for cLISI and ASW_label |
 
 Output keys written to `mdata`:
 ```
 obsm["X_mofa"]        →  MOFA+ latent factors (n_cells × n_factors)
 obsm["X_umap_mofa"]   →  UMAP from MOFA+ embedding (n_cells × 2)
 uns["omicsage_mofa"]  →  provenance
+metrics["scib"]       →  dict of scib scores (only when compute_scib=True)
+metrics["method"]     →  "mofa"
 ```
 
 ### run_totalvi
 
 ```python
-run_totalvi(mdata, batch_key, max_epochs=400, random_state=0, inplace=False)
+run_totalvi(mdata, batch_key, max_epochs=400, random_state=0, inplace=False,
+            compute_scib=False, cell_type_key=None)
 → (MuData, dict)
 ```
 
@@ -610,12 +667,52 @@ run_totalvi(mdata, batch_key, max_epochs=400, random_state=0, inplace=False)
 | `max_epochs` | int | `400` | Training epochs — use `10` for a quick test |
 | `random_state` | int | `0` | scvi-tools seed |
 | `inplace` | bool | False | Modify `mdata` in place |
+| `compute_scib` | bool | False | Compute scib benchmark metrics after integration |
+| `cell_type_key` | str | None | obs column for cell types; required for cLISI and ASW_label |
 
 Output keys written to `mdata`:
 ```
 obsm["X_totalVI"]       →  totalVI latent representation (n_cells × n_latent)
 obsm["X_umap_totalVI"]  →  UMAP from totalVI embedding (n_cells × 2)
 uns["omicsage_totalVI"] →  provenance
+metrics["scib"]         →  dict of scib scores (only when compute_scib=True)
+metrics["method"]       →  "totalvi"
+```
+
+### run_both
+
+```python
+run_both(mdata, batch_key, n_factors=15, max_epochs=400, random_state=0,
+         inplace=False, compute_scib=False, cell_type_key=None)
+→ (MuData, dict)
+```
+
+Runs `run_mofa` then `run_totalvi` sequentially on the same MuData.
+All four embedding keys are written to the same object.
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `mdata` | MuData | required | Must satisfy prerequisites for both MOFA+ and totalVI |
+| `batch_key` | str | required | obs column for batch |
+| `n_factors` | int | `15` | MOFA+ latent factors |
+| `max_epochs` | int | `400` | totalVI training epochs |
+| `random_state` | int | `0` | Seed for both methods |
+| `inplace` | bool | False | Modify `mdata` in place |
+| `compute_scib` | bool | False | Compute scib metrics for both embeddings |
+| `cell_type_key` | str | None | obs column for cell types (scib bio metrics) |
+
+Output keys written to `mdata`:
+```
+obsm["X_mofa"]             →  MOFA+ latent factors
+obsm["X_umap_mofa"]        →  UMAP from MOFA+ embedding
+obsm["X_totalVI"]          →  totalVI latent representation
+obsm["X_umap_totalVI"]     →  UMAP from totalVI embedding
+metrics["method"]          →  "both"
+metrics["mofa"]            →  full MOFA+ metrics dict
+metrics["totalvi"]         →  full totalVI metrics dict
+metrics["scib_comparison"] →  merged scib dict (only when compute_scib=True)
+                               keys: mofa_ilisi, mofa_graph_conn, mofa_clisi,
+                                     totalvi_ilisi, totalvi_graph_conn, totalvi_clisi, ...
 ```
 
 **Note on WNN (deferred)**
@@ -632,7 +729,7 @@ mdata.obsp["wnn_distances"]       →  WNN distances
 **Usage**
 
 ```python
-from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi
+from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi, run_both
 
 # MOFA+ (default, recommended for first run)
 mdata, metrics = run_mofa(mdata, batch_key="batch", n_factors=15)
@@ -644,6 +741,31 @@ mdata, metrics = run_totalvi(mdata, batch_key="batch", max_epochs=400)
 
 # Quick test run
 mdata, metrics = run_totalvi(mdata, batch_key="batch", max_epochs=10)
+
+# Run both and compare
+mdata, metrics = run_both(mdata, batch_key="batch")
+print(list(mdata.obsm.keys()))
+# ["X_mofa", "X_umap_mofa", "X_totalVI", "X_umap_totalVI"]
+
+# Run both with scib benchmarking
+mdata, metrics = run_both(
+    mdata, batch_key="batch",
+    compute_scib=True,
+    cell_type_key="cell_type_vote",
+)
+print(metrics["scib_comparison"])
+# {"mofa_ilisi": 1.73, "mofa_graph_conn": 0.91,
+#  "totalvi_ilisi": 1.85, "totalvi_graph_conn": 0.94, ...}
+```
+
+**Config equivalent** (`GSE194122_cite.yaml`):
+
+```yaml
+integration:
+  params:
+    method: both          # "mofa" | "totalvi" | "both"
+    compute_scib: true
+    cell_type_key: cell_type_vote
 ```
 
 **Connects to**: `cite_integration_report.py` for the report
@@ -671,11 +793,13 @@ benchmarking. `run_cite_pipeline.py` (the CLI) calls this internally.
 | Key | Type | Default | Description |
 |-----|------|---------|-------------|
 | `batch_key` | str | `"donor"` | obs column for Harmony + integration |
-| `integration` | str | `"mofa"` | `"mofa"` or `"totalvi"` (case-insensitive) |
+| `integration` | str | `"mofa"` | `"mofa"`, `"totalvi"`, or `"both"` (case-insensitive) |
 | `n_factors` | int | `15` | MOFA+ latent factors |
 | `max_epochs` | int | `400` | totalVI training epochs |
 | `annotation_map` | dict | None | Passed to `annotate_adt` |
 | `filter_doublets` | bool | False | Passed to `detect_adt_doublets` |
+| `compute_scib` | bool | False | Compute scib metrics at integration step |
+| `cell_type_key` | str | None | obs column for cell types (scib bio metrics) |
 
 **Input**
 
@@ -697,8 +821,10 @@ mdata  : MuData  →  fully processed MuData with all embeddings populated
                     mdata["adt"].obsm["X_pca_harmony_adt"] = Harmony PCA
                     mdata["adt"].obsm["X_umap_adt"]        = ADT UMAP
                     mdata["adt"].obs["leiden"]             = Leiden clusters
-                    mdata.obsm["X_mofa"]                   = MOFA+ factors (mofa)
-                    mdata.obsm["X_umap_mofa"]              = MOFA+ UMAP (mofa)
+                    mdata.obsm["X_mofa"]                   = MOFA+ factors (mofa/both)
+                    mdata.obsm["X_umap_mofa"]              = MOFA+ UMAP (mofa/both)
+                    mdata.obsm["X_totalVI"]                = totalVI factors (totalvi/both)
+                    mdata.obsm["X_umap_totalVI"]           = totalVI UMAP (totalvi/both)
                     mdata.uns["omicsage_cite_pipeline"]    = full provenance
 ```
 
@@ -713,8 +839,10 @@ mdata_out = run_cite_pipeline(mdata)
 # Custom config
 mdata_out = run_cite_pipeline(mdata, config={
     "batch_key":    "batch",
-    "integration":  "totalvi",
+    "integration":  "both",
     "max_epochs":   50,
+    "compute_scib": True,
+    "cell_type_key": "cell_type_vote",
     "filter_doublets": True,
     "annotation_map": {"0": "CD4 T", "1": "B cell"},
 })
@@ -796,6 +924,17 @@ Before any step runs, the runner checks that every required input file exists.
 If a file is missing it exits with a clear message identifying which step needs
 to be run first.
 
+**New integration params read from config**
+
+The runner now reads and passes the following integration params from YAML:
+
+| YAML key | Passed to | Description |
+|----------|-----------|-------------|
+| `method` | `run_mofa` / `run_totalvi` / `run_both` | `"mofa"` \| `"totalvi"` \| `"both"` |
+| `compute_scib` | all integration functions | Compute scib metrics |
+| `cell_type_key` | all integration functions | obs column for bio conservation metrics |
+| `umap_color_keys` | `run_cite_integration_report` | obs columns to colour before/after UMAPs |
+
 **Usage**
 
 ```bash
@@ -816,7 +955,7 @@ python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml \
 python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml \
     --step annotate_adt --force
 
-# Switch integration from MOFA+ to totalVI — edit config, then:
+# Switch integration from MOFA+ to both methods with scib benchmarking
 python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml \
     --step integration --force
 
@@ -913,6 +1052,20 @@ steps:
       max_epochs: 400
 ```
 
+**Run both methods with scib benchmarking:**
+```yaml
+steps:
+  integration:
+    params:
+      method: both
+      compute_scib: true
+      cell_type_key: cell_type_vote
+      umap_color_keys:
+        - batch
+        - cell_type_vote
+        - donor
+```
+
 **Apply annotation map:**
 ```yaml
 steps:
@@ -971,7 +1124,10 @@ cards with subtle box-shadow, 130 dpi PNG figures embedded as base64.
 |--------|--------------|
 | Score histogram | Distribution of `adt_doublet_score` with threshold line |
 | Score by donor | Boxplot of doublet scores per donor/batch — spots problematic samples |
+| Marker pair scatter | Tutorial figure: CLR(markerA) vs CLR(markerB) for each evaluated pair; singlets grey, doublets red; dashed threshold lines; shaded co-expression quadrant |
 
+The scatter panel is rendered by calling `adt_doublets.plot_doublet_scatter()`
+once per evaluated pair and compositing into a grid. One panel per pair.
 Also shows a summary table with pairs evaluated, pairs skipped, and whether
 filtering was applied.
 
@@ -983,8 +1139,13 @@ filtering was applied.
 
 | Figure | What it shows |
 |--------|--------------|
-| ADT PCA | PC1 vs PC2 — plain scatter and coloured by batch side-by-side |
-| ADT UMAP | Pre-Harmony UMAP coloured by batch — batch effects visible here |
+| Elbow plot | Per-PC variance (bar, left axis) + cumulative variance (line, right axis); red dashed line marks `n_pcs_used`; annotation shows cumulative % at cutoff |
+| ADT PCA | PC1 vs PC2 — plain scatter and coloured panels (one per `umap_color_keys`) |
+| ADT UMAP | Pre-Harmony UMAP — one panel per `umap_color_keys`; batch effects visible here |
+
+The elbow plot reads `uns["pca_adt"]["variance_ratio"]` written by `adt_reduce.py`.
+Use it to verify that `n_pcs_used` sits at or past the inflection point. If most
+variance is explained well before the dashed line, lower `n_pcs` in the config.
 
 The pre-Harmony UMAP is important as a baseline for comparing with the
 post-Harmony UMAP in the next report.
@@ -1022,18 +1183,39 @@ been provided.
 
 ### `cite_integration_report.py`
 
-**Function**: `run_cite_integration_report(mdata, metrics, report_path, dataset_name)`
+**Function**: `run_cite_integration_report(mdata, metrics, report_path, dataset_name, color_keys=None)`
 
 | Figure | What it shows |
 |--------|--------------|
-| UMAP by batch | Joint MOFA+/totalVI UMAP coloured by batch — should show mixing |
-| UMAP by cell type | Same UMAP coloured by `cell_type_vote` from RNA (or `adt_celltype`) |
-| UMAP by ADT cluster | Same UMAP coloured by ADT Leiden cluster |
+| Before/after UMAPs | One row per `color_key`: left = pre-integration ADT UMAP (`X_umap_adt`); right = joint embedding UMAP (`X_umap_mofa` or `X_umap_totalVI`) |
+| MOFA+ variance | Stacked bar: variance explained per factor, broken down by modality (RNA vs ADT) |
+| MOFA+ weights | Heatmap of top feature weights per factor — left panel RNA genes, right panel ADT proteins |
+| scib metrics | Horizontal bar chart coloured by metric type (blue = batch correction, orange = bio conservation); full table of numeric values below |
+| scib comparison | Grouped bar chart when `method=both`: MOFA+ vs totalVI side by side for each metric |
 
-Auto-detects which integration method was used from `mdata.obsm` keys
-(`X_mofa` vs `X_totalVI`). All three panels use the same coordinate space
-so correspondence between batch structure, cell type, and ADT cluster is
-directly visible.
+**New parameter: `color_keys`**
+
+Pass any list of obs column names to colour the before/after UMAP panels.
+Categorical columns use `tab20` colours + legend. Numeric columns use `viridis`
++ colorbar. Falls back to auto-detection when `None` (uses `batch_key` + first
+available cell type column).
+
+```python
+run_cite_integration_report(
+    mdata, metrics,
+    color_keys=["batch", "cell_type_vote", "donor"],
+)
+```
+
+The `color_keys` list is read from `steps.integration.params.umap_color_keys`
+in the YAML config and passed through `run_cite_pipeline.py` automatically.
+
+**Auto-detection of method**
+
+Reads `metrics["method"]` to determine which sections to render:
+- `"mofa"` — before/after UMAPs + MOFA+ diagnostics + scib (if present)
+- `"totalvi"` — before/after UMAPs + scib (if present)
+- `"both"` — MOFA+ and totalVI before/after sections + MOFA+ diagnostics + scib comparison
 
 ---
 
@@ -1073,8 +1255,9 @@ RNA and ADT AnnData objects are joined into a MuData.
 | Key | Contents | Written by |
 |-----|----------|-----------|
 | `obsm["X_pca_adt"]` | ADT PCA (uncorrected) | `adt_reduce.py` |
+| `uns["pca_adt"]["variance_ratio"]` | Per-PC variance ratio array | `adt_reduce.py` |
+| `obsm["X_umap_adt"]` | ADT UMAP (pre-Harmony, then overwritten post-Harmony) | `adt_reduce.py` → `adt_harmony.py` |
 | `obsm["X_pca_harmony_adt"]` | ADT Harmony PCA | `adt_harmony.py` |
-| `obsm["X_umap_adt"]` | ADT UMAP (post-Harmony) | `adt_harmony.py` |
 
 **On `mdata` (joint space)**
 

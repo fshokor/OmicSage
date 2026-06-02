@@ -181,18 +181,36 @@ steps:
   integration:
     enabled: true
     params:
-      # method: "mofa" (default) or "totalvi"
-      # MOFA+  — linear, fast, interpretable, no GPU needed  ← recommended first run
-      # totalVI — deep generative model, best benchmark score, needs more RAM/time
-      method: mofa
+      # method: "mofa"    — linear, fast, interpretable, no GPU needed
+      #         "totalvi" — deep generative model, best benchmark; needs raw counts
+      #         "both"    — run MOFA+ then totalVI; scib comparison chart in report
+      method: both
 
       batch_key: batch  # obs column for batch-aware integration
 
-      # MOFA+ parameters (used when method: mofa)
+      # MOFA+ parameters (used when method: mofa or both)
       n_factors: 15     # number of latent factors; 15 is a good starting point
 
-      # totalVI parameters (used when method: totalvi)
+      # totalVI parameters (used when method: totalvi or both)
       # Reduce max_epochs for a quick test run (e.g. max_epochs: 10)
-      max_epochs: 400
+      max_epochs: 10
 
       random_state: 0
+
+      # scib benchmark metrics
+      # Requires: pip install scib
+      # Computes iLISI, graph_connectivity (batch correction)
+      #      and cLISI, ASW_label (bio conservation, needs cell_type_key)
+      compute_scib: true
+      # cell_type_key: obs column holding cell type labels for scib bio metrics.
+      # Use "cell_type_vote" (from RNA pipeline) or "adt_celltype" (from ADT pipeline).
+      cell_type_key: cell_type_vote
+
+      # UMAP colour keys for the before/after integration comparison in the report.
+      # Any obs column from mdata.obs / mdata["rna"].obs / mdata["adt"].obs is valid.
+      # Leave null to auto-detect (batch_key + first available cell type column).
+      umap_color_keys:
+        - batch
+        - cell_type_vote
+        # - donor
+        # - adt_celltype

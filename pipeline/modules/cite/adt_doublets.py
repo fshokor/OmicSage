@@ -30,6 +30,9 @@ detect_adt_doublets(
     inplace=False,
 )
 → (MuData, dict)
+
+plot_doublet_scatter(mdata["adt"], pair=(marker_a, marker_b))
+→ matplotlib Figure   (used by cite_doublets_report.py)
 """
 
 from __future__ import annotations
@@ -105,14 +108,13 @@ def detect_adt_doublets(
                                   filter_doublets=False)
       threshold             float threshold used
       filter_doublets       bool  whether filtering was applied
+      resolved_pairs        list  (idx_a, idx_b, name_a, name_b) for plotting
     """
     if marker_pairs is None:
         marker_pairs = DEFAULT_MARKER_PAIRS
 
     if not inplace:
         import copy
-        # Deep-copy the mod dict so obs column writes don't mutate the caller's object.
-        # We copy each modality individually (cheaper than deepcopy of the whole MuData).
         new_mod = {"adt": mdata["adt"].copy()}
         if "rna" in mdata.mod:
             new_mod["rna"] = mdata["rna"].copy()
@@ -136,8 +138,6 @@ def detect_adt_doublets(
     # Resolve marker names → column indices
     # ------------------------------------------------------------------
     def _resolve_marker(name: str) -> Optional[int]:
-        """Return column index of first var_name that starts with `name`
-        (case-insensitive prefix match).  Returns None if not found."""
         name_up = name.upper()
         for idx, vn in enumerate(var_names):
             if vn.upper().startswith(name_up):
@@ -146,7 +146,7 @@ def detect_adt_doublets(
 
     pairs_evaluated: List[Tuple[str, str]] = []
     pairs_skipped: List[Tuple[str, str]] = []
-    resolved: List[Tuple[int, int, str, str]] = []  # (idx_a, idx_b, name_a, name_b)
+    resolved: List[Tuple[int, int, str, str]] = []
 
     for (a, b) in marker_pairs:
         idx_a = _resolve_marker(a)
@@ -158,7 +158,6 @@ def detect_adt_doublets(
             pairs_evaluated.append((a, b))
 
     if not resolved:
-        # No evaluable pairs — write neutral obs columns and return
         adata_adt.obs["adt_doublet_score"] = 0.0
         adata_adt.obs["adt_predicted_doublet"] = False
         metrics = _build_metrics(
@@ -169,6 +168,7 @@ def detect_adt_doublets(
             n_cells_after=n_cells_before,
             threshold=threshold,
             filter_doublets=filter_doublets,
+            resolved_pairs=[],
         )
         _write_provenance(adata_adt, metrics)
         return mdata, metrics
@@ -177,7 +177,6 @@ def detect_adt_doublets(
     # Score each cell: fraction of pairs where both markers > threshold
     # ------------------------------------------------------------------
     n_pairs = len(resolved)
-    # shape: (n_cells, n_pairs)  — True where both markers exceed threshold
     pair_flags = np.zeros((n_cells_before, n_pairs), dtype=bool)
 
     for col_idx, (idx_a, idx_b, _a, _b) in enumerate(resolved):
@@ -185,7 +184,7 @@ def detect_adt_doublets(
         expr_b = _get_column(clr, idx_b)
         pair_flags[:, col_idx] = (expr_a > threshold) & (expr_b > threshold)
 
-    doublet_score = pair_flags.sum(axis=1) / n_pairs          # 0.0 – 1.0
+    doublet_score = pair_flags.sum(axis=1) / n_pairs
     predicted_doublet = doublet_score > 0
 
     adata_adt.obs["adt_doublet_score"] = doublet_score.astype(np.float64)
@@ -218,6 +217,7 @@ def detect_adt_doublets(
         n_cells_after=n_cells_after,
         threshold=threshold,
         filter_doublets=filter_doublets,
+        resolved_pairs=resolved,
     )
 
     _write_provenance(mdata["adt"], metrics)
@@ -225,11 +225,141 @@ def detect_adt_doublets(
 
 
 # ---------------------------------------------------------------------------
+# Tutorial scatter plot  (sc-best-practices ch. doublet_detection)
+# ---------------------------------------------------------------------------
+
+def plot_doublet_scatter(
+    adt,
+    pair: Optional[Tuple[str, str]] = None,
+    threshold: float = 2.5,
+    figsize: Tuple[float, float] = (6, 5),
+):
+    """
+    Scatter plot of CLR expression for one mutually-exclusive marker pair,
+    coloured by ``obs["adt_predicted_doublet"]``.
+
+    Reproduces the sc-best-practices doublet-detection tutorial figure:
+    each dot is a cell; axes are CLR expression of the two markers;
+    the threshold lines mark the co-expression region; doublets are red.
+
+    Parameters
+    ----------
+    adt : AnnData
+        ``mdata["adt"]`` after ``detect_adt_doublets`` has been called.
+        Must have ``layers["adt_clr"]`` and ``obs["adt_predicted_doublet"]``.
+    pair : (str, str), optional
+        Marker pair to plot (prefix match, case-insensitive).
+        Defaults to the first evaluable pair from DEFAULT_MARKER_PAIRS.
+    threshold : float
+        CLR threshold line drawn on both axes.  Default: 2.5.
+    figsize : (float, float)
+        Figure size in inches.
+
+    Returns
+    -------
+    matplotlib.figure.Figure
+    """
+    import matplotlib.pyplot as plt
+
+    if "adt_clr" not in adt.layers:
+        raise KeyError("adt.layers['adt_clr'] not found.")
+
+    if "adt_predicted_doublet" not in adt.obs.columns:
+        raise KeyError(
+            "adt.obs['adt_predicted_doublet'] not found. "
+            "Run detect_adt_doublets() first."
+        )
+
+    # Resolve which pair to plot
+    var_names = list(adt.var_names)
+
+    def _resolve(name):
+        name_up = name.upper()
+        for idx, vn in enumerate(var_names):
+            if vn.upper().startswith(name_up):
+                return idx, vn
+        return None, None
+
+    if pair is None:
+        pair = DEFAULT_MARKER_PAIRS[0]
+
+    idx_a, vn_a = _resolve(pair[0])
+    idx_b, vn_b = _resolve(pair[1])
+
+    if idx_a is None or idx_b is None:
+        # Fallback: try any pair from defaults
+        for fallback in DEFAULT_MARKER_PAIRS[1:]:
+            idx_a, vn_a = _resolve(fallback[0])
+            idx_b, vn_b = _resolve(fallback[1])
+            if idx_a is not None and idx_b is not None:
+                break
+        if idx_a is None:
+            # Nothing resolvable — placeholder
+            fig, ax = plt.subplots(figsize=figsize)
+            ax.text(0.5, 0.5,
+                    f"Markers '{pair[0]}' / '{pair[1]}' not found in var_names.\n"
+                    "Check marker names against the protein panel.",
+                    ha="center", va="center", fontsize=10, color="#888",
+                    transform=ax.transAxes, wrap=True)
+            ax.axis("off")
+            return fig
+
+    clr = adt.layers["adt_clr"]
+    expr_a = _get_column(clr, idx_a)
+    expr_b = _get_column(clr, idx_b)
+    doublet_flag = adt.obs["adt_predicted_doublet"].values.astype(bool)
+
+    n_doublets  = int(doublet_flag.sum())
+    n_singlets  = int((~doublet_flag).sum())
+    n_total     = len(doublet_flag)
+    pct         = 100.0 * n_doublets / max(n_total, 1)
+
+    fig, ax = plt.subplots(figsize=figsize)
+
+    # Singlets first (grey, behind)
+    ax.scatter(
+        expr_a[~doublet_flag], expr_b[~doublet_flag],
+        s=3, alpha=0.4, color="#9ecae1", rasterized=True,
+        label=f"Singlet (n={n_singlets:,})",
+    )
+    # Doublets on top (red)
+    if n_doublets > 0:
+        ax.scatter(
+            expr_a[doublet_flag], expr_b[doublet_flag],
+            s=5, alpha=0.75, color="#e63946", rasterized=True,
+            label=f"Doublet (n={n_doublets:,}, {pct:.1f}%)",
+        )
+
+    # Threshold lines — define the co-expression quadrant
+    ax.axvline(threshold, color="#e63946", linewidth=1.2, linestyle="--", alpha=0.8)
+    ax.axhline(threshold, color="#e63946", linewidth=1.2, linestyle="--", alpha=0.8)
+
+    # Shade the co-expression quadrant (both markers > threshold)
+    xmax = max(expr_a.max(), threshold + 1)
+    ymax = max(expr_b.max(), threshold + 1)
+    ax.fill_between(
+        [threshold, xmax], threshold, ymax,
+        color="#e63946", alpha=0.06, label="Co-expression region",
+    )
+
+    ax.set_xlabel(f"CLR({vn_a})", fontsize=11)
+    ax.set_ylabel(f"CLR({vn_b})", fontsize=11)
+    ax.set_title(
+        f"ADT Doublet Detection — {vn_a} vs {vn_b}\n"
+        f"(threshold = {threshold}  |  {n_doublets:,} / {n_total:,} cells flagged)",
+        fontsize=12, fontweight="bold",
+    )
+    ax.legend(frameon=False, fontsize=9, markerscale=3)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return fig
+
+
+# ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
 
 def _get_column(matrix, col_idx: int) -> np.ndarray:
-    """Extract a dense 1-D array from a dense or sparse matrix column."""
     col = matrix[:, col_idx]
     if hasattr(col, "toarray"):
         return np.asarray(col.toarray()).ravel()
@@ -245,6 +375,7 @@ def _build_metrics(
     n_cells_after: int,
     threshold: float,
     filter_doublets: bool,
+    resolved_pairs: list,
 ) -> dict:
     pct = round(100.0 * n_doublets / n_cells_before, 3) if n_cells_before else 0.0
     return {
@@ -256,13 +387,17 @@ def _build_metrics(
         "n_cells_after": n_cells_after,
         "threshold": threshold,
         "filter_doublets": filter_doublets,
+        # Kept for report plotting — not serialised to h5ad provenance
+        "_resolved_pairs": resolved_pairs,
     }
 
 
 def _write_provenance(adata, metrics: dict) -> None:
     import datetime
+    # Strip non-serialisable _resolved_pairs before writing to uns
+    safe_metrics = {k: v for k, v in metrics.items() if not k.startswith("_")}
     adata.uns["omicsage_adt_doublets"] = {
         "timestamp": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "omicsage_module": "adt_doublets",
-        **metrics,
+        **safe_metrics,
     }
