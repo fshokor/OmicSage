@@ -50,6 +50,8 @@ def reduce_adt(
     n_neighbors: int = _DEFAULT_N_NEIGHBORS,
     svd_solver: str = "arpack",
     random_state: int = _DEFAULT_RANDOM_STATE,
+    isotype_controls: Optional[list[str]] = None,
+    umap_color_keys: Optional[list[str]] = None,
     inplace: bool = False,
 ) -> tuple[AnnData, dict]:
     """
@@ -72,6 +74,15 @@ def reduce_adt(
         SVD solver for PCA.  Default: "arpack" (sc-best-practices ch.36).
     random_state : int
         Random seed for reproducibility.  Default: 0.
+    isotype_controls : list of str, optional
+        Names of isotype control antibodies to remove before PCA.
+        These carry no biological information after DSB normalization
+        (they were only needed to estimate background) and should be
+        excluded so they do not distort the principal components.
+        When None (default, first run), no proteins are removed — all
+        protein names are visible in the report so you can identify
+        which to exclude on the next run.
+        Example: ["Mouse-IgG1", "Mouse-IgG2a", "Mouse-IgG2b", "Rat-IgG2b"]
     inplace : bool
         If True, modify mdata["adt"] in place.
         If False (default), operate on a copy.
@@ -126,12 +137,38 @@ def reduce_adt(
     adata = adt_src if inplace else adt_src.copy()
 
     # ------------------------------------------------------------------
-    # 3. Set .X to CLR values (scanpy PCA operates on .X)
+    # 3. Remove isotype controls before PCA (tutorial step)
     # ------------------------------------------------------------------
-    adata.X = adata.layers["adt_clr"].copy()
+    isotypes_removed: list[str] = []
+    if isotype_controls:
+        present = [c for c in isotype_controls if c in adata.var_names]
+        missing = [c for c in isotype_controls if c not in adata.var_names]
+        if missing:
+            import warnings as _w
+            _w.warn(
+                f"isotype_controls not found in var_names (ignored): {missing}",
+                UserWarning, stacklevel=2,
+            )
+        if present:
+            import muon as mu
+            keep = [v for v in adata.var_names if v not in present]
+            mu.pp.filter_var(adata, var=keep)
+            isotypes_removed = present
+            n_vars = adata.n_vars  # update after filtering
 
     # ------------------------------------------------------------------
-    # 4. Cap n_comps so PCA never requests more components than possible
+    # 4. Set .X to active layer (DSB if available, else CLR)
+    # ------------------------------------------------------------------
+    # Prefer DSB for PCA — bimodal distributions give cleaner components
+    if "adt_dsb" in adata.layers:
+        adata.X = adata.layers["adt_dsb"].copy()
+        active_layer = "adt_dsb"
+    else:
+        adata.X = adata.layers["adt_clr"].copy()
+        active_layer = "adt_clr"
+
+    # ------------------------------------------------------------------
+    # 5. Cap n_comps so PCA never requests more components than possible
     # ------------------------------------------------------------------
     max_comps = min(n_cells - 1, n_vars - 1)
     n_comps_actual = min(n_comps, max_comps)
@@ -140,7 +177,7 @@ def reduce_adt(
     n_pcs_used = min(n_pcs, n_comps_actual)
 
     # ------------------------------------------------------------------
-    # 5. PCA
+    # 6. PCA
     # ------------------------------------------------------------------
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -159,7 +196,7 @@ def reduce_adt(
         adata.uns["pca_adt"] = adata.uns.pop("pca")
 
     # ------------------------------------------------------------------
-    # 6. Neighbor graph (uses obsm["X_pca_adt"] via use_rep)
+    # 7. Neighbor graph (uses obsm["X_pca_adt"] via use_rep)
     # ------------------------------------------------------------------
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -172,7 +209,7 @@ def reduce_adt(
         )
 
     # ------------------------------------------------------------------
-    # 7. UMAP (always computed — required by OmicSage convention)
+    # 8. UMAP (always computed — required by OmicSage convention)
     # ------------------------------------------------------------------
     with warnings.catch_warnings():
         warnings.simplefilter("ignore", FutureWarning)
@@ -182,7 +219,7 @@ def reduce_adt(
     adata.obsm["X_umap_adt"] = adata.obsm.pop("X_umap")
 
     # ------------------------------------------------------------------
-    # 8. Variance explained (total across computed components)
+    # 9. Variance explained (total across computed components)
     # ------------------------------------------------------------------
     variance_explained_total: Optional[float] = None
     if "pca_adt" in adata.uns and "variance_ratio" in adata.uns["pca_adt"]:
@@ -191,7 +228,7 @@ def reduce_adt(
         )
 
     # ------------------------------------------------------------------
-    # 9. Provenance
+    # 10. Provenance
     # ------------------------------------------------------------------
     provenance = {
         "module": "adt_reduce",
@@ -203,6 +240,8 @@ def reduce_adt(
             "n_neighbors": n_neighbors,
             "svd_solver": svd_solver,
             "random_state": random_state,
+            "active_layer": active_layer,
+            "isotype_controls_removed": isotypes_removed,
         },
         "outputs": {
             "pca_key": "X_pca_adt",
@@ -212,7 +251,7 @@ def reduce_adt(
     adata.uns["omicsage_adt_reduce"] = provenance
 
     # ------------------------------------------------------------------
-    # 10. Metrics
+    # 11. Metrics
     # ------------------------------------------------------------------
     metrics: dict = {
         "n_cells": n_cells,
@@ -224,6 +263,10 @@ def reduce_adt(
         "umap_computed": True,
         "pca_key": "X_pca_adt",
         "umap_key": "X_umap_adt",
+        "active_layer": active_layer,
+        "isotype_controls_removed": isotypes_removed,
+        "n_vars_before_filter": int(adt_src.n_vars),
+        "umap_color_keys": umap_color_keys or ["batch"],
     }
 
     return adata, metrics

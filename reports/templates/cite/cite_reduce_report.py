@@ -67,86 +67,215 @@ def _fig_to_b64(fig) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
-def _plot_pca_scatter(adt: AnnData) -> str:
-    """ADT PCA — PC1 vs PC2, coloured by doublet score if available."""
-    pca_key = "X_pca_adt"
-    if pca_key not in adt.obsm:
+def _plot_embedding(
+    adt: AnnData,
+    embed_key: str,
+    color_keys: list[str],
+    title_prefix: str,
+) -> str:
+    """
+    Generic multi-panel embedding plot.
+    One panel per color_key — mimics sc.pl.umap(color=[...]).
+    Categorical obs columns get tab20 colours + legend.
+    Numeric obs columns get a viridis scatter + colorbar.
+    Falls back gracefully if a key is missing from obs.
+    """
+    if embed_key not in adt.obsm:
         fig, ax = plt.subplots(figsize=(5, 4))
-        ax.text(0.5, 0.5, "X_pca_adt not found", ha="center", va="center",
+        ax.text(0.5, 0.5, f"{embed_key} not found", ha="center", va="center",
                 transform=ax.transAxes, fontsize=11, color="#888")
         ax.axis("off")
         return _fig_to_b64(fig)
 
-    pca = adt.obsm[pca_key]
-    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    coords = adt.obsm[embed_key]
 
-    # Left: plain scatter
-    axes[0].scatter(pca[:, 0], pca[:, 1], s=2, alpha=0.5,
-                    color="#4C78A8", rasterized=True)
-    axes[0].set_title("ADT PCA — PC1 vs PC2", fontsize=11, fontweight="bold")
-    axes[0].set_xlabel("PC 1", fontsize=9); axes[0].set_ylabel("PC 2", fontsize=9)
-    axes[0].spines[["top", "right"]].set_visible(False)
+    # Resolve valid keys — warn about missing ones
+    valid_keys = []
+    for k in color_keys:
+        if k in adt.obs.columns:
+            valid_keys.append(k)
+        else:
+            print(f"    [warn] color key '{k}' not in adt.obs — skipped", flush=True)
 
-    # Right: coloured by batch if available
-    batch_col = next((c for c in ["batch", "donor", "sample"] if c in adt.obs.columns), None)
-    if batch_col:
-        labels = adt.obs[batch_col].astype(str)
-        unique = sorted(labels.unique())
-        cmap   = plt.get_cmap("tab20", max(len(unique), 2))
-        for i, b in enumerate(unique):
-            mask = labels == b
-            axes[1].scatter(pca[mask, 0], pca[mask, 1], s=2, alpha=0.6,
-                            color=cmap(i), label=b, rasterized=True)
-        axes[1].legend(markerscale=4, frameon=False, fontsize=8,
-                       ncol=max(1, len(unique) // 10))
-        axes[1].set_title(f"ADT PCA — coloured by {batch_col}", fontsize=11, fontweight="bold")
-    else:
-        axes[1].scatter(pca[:, 0], pca[:, 1], s=2, alpha=0.5,
-                        color="#e07b3a", rasterized=True)
-        axes[1].set_title("ADT PCA — PC1 vs PC2", fontsize=11, fontweight="bold")
-    axes[1].set_xlabel("PC 1", fontsize=9); axes[1].set_ylabel("PC 2", fontsize=9)
-    axes[1].spines[["top", "right"]].set_visible(False)
+    # Always add a plain (no colour) panel as first panel
+    all_keys = [None] + valid_keys   # None = plain scatter
+
+    n_panels = len(all_keys)
+    ncols    = min(3, n_panels)
+    nrows    = int(np.ceil(n_panels / ncols))
+    fig, axes = plt.subplots(nrows, ncols,
+                             figsize=(ncols * 5.5, nrows * 4.5),
+                             squeeze=False)
+
+    for idx, key in enumerate(all_keys):
+        row, col = divmod(idx, ncols)
+        ax = axes[row][col]
+
+        if key is None:
+            # Plain scatter
+            ax.scatter(coords[:, 0], coords[:, 1],
+                       s=2, alpha=0.5, color="#4C78A8", rasterized=True)
+            ax.set_title(f"{title_prefix}", fontsize=10, fontweight="bold")
+
+        else:
+            vals = adt.obs[key]
+            import pandas as pd
+            is_numeric = pd.api.types.is_numeric_dtype(vals)
+
+            if is_numeric:
+                v = vals.values.astype(float)
+                vmin, vmax = np.nanpercentile(v, [2, 98])
+                sc = ax.scatter(coords[:, 0], coords[:, 1],
+                                c=v, cmap="viridis",
+                                vmin=vmin, vmax=vmax,
+                                s=2, alpha=0.6, rasterized=True)
+                plt.colorbar(sc, ax=ax, fraction=0.04, pad=0.02)
+                ax.set_title(f"{title_prefix}\n{key}", fontsize=10, fontweight="bold")
+            else:
+                labels = vals.astype(str)
+                unique = sorted(labels.unique())
+                cmap   = plt.get_cmap("tab20", max(len(unique), 2))
+                for i, lbl in enumerate(unique):
+                    mask = (labels == lbl).values
+                    ax.scatter(coords[mask, 0], coords[mask, 1],
+                               s=2, alpha=0.7, color=cmap(i),
+                               label=lbl, rasterized=True)
+                ncol = max(1, len(unique) // 12)
+                ax.legend(markerscale=4, frameon=False, fontsize=7,
+                          loc="upper right", ncol=ncol,
+                          title=key, title_fontsize=7)
+                ax.set_title(f"{title_prefix}\n{key}", fontsize=10, fontweight="bold")
+
+        ax.set_xlabel(f"{embed_key.split('_')[-1].upper()} 1", fontsize=8)
+        ax.set_ylabel(f"{embed_key.split('_')[-1].upper()} 2", fontsize=8)
+        ax.set_xticks([]); ax.set_yticks([])
+        ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
+
+    # Hide unused axes
+    for idx in range(n_panels, nrows * ncols):
+        row, col = divmod(idx, ncols)
+        axes[row][col].set_visible(False)
 
     fig.tight_layout()
     return _fig_to_b64(fig)
 
 
-def _plot_umap(adt: AnnData) -> str:
-    """ADT UMAP coloured by batch."""
-    umap_key = "X_umap_adt"
-    if umap_key not in adt.obsm:
-        fig, ax = plt.subplots(figsize=(5, 4))
-        ax.text(0.5, 0.5, "X_umap_adt not found", ha="center", va="center",
-                transform=ax.transAxes, fontsize=11, color="#888")
-        ax.axis("off")
-        return _fig_to_b64(fig)
+def _plot_umap(adt: AnnData, color_keys: Optional[list[str]] = None) -> str:
+    """ADT UMAP with one panel per color key."""
+    keys = color_keys or ["batch"]
+    return _plot_embedding(adt, "X_umap_adt", keys, "ADT UMAP (pre-Harmony)")
 
-    umap = adt.obsm[umap_key]
-    batch_col = next((c for c in ["batch", "donor", "sample"] if c in adt.obs.columns), None)
 
-    fig, ax = plt.subplots(figsize=(7, 5))
-    if batch_col:
-        labels = adt.obs[batch_col].astype(str)
-        unique = sorted(labels.unique())
-        cmap   = plt.get_cmap("tab20", max(len(unique), 2))
-        for i, b in enumerate(unique):
-            mask = labels == b
-            ax.scatter(umap[mask, 0], umap[mask, 1], s=2, alpha=0.6,
-                       color=cmap(i), label=b, rasterized=True)
-        ax.legend(markerscale=4, frameon=False, fontsize=8,
-                  ncol=max(1, len(unique) // 10))
-        ax.set_title(f"ADT UMAP (pre-Harmony) — coloured by {batch_col}",
-                     fontsize=12, fontweight="bold")
+def _plot_pca_multi(adt: AnnData, color_keys: Optional[list[str]] = None) -> str:
+    """ADT PCA with one panel per color key."""
+    keys = color_keys or ["batch"]
+    return _plot_embedding(adt, "X_pca_adt", keys, "ADT PCA")
+
+
+def _section_obs_columns(adt: AnnData) -> str:
+    """
+    Table of all obs columns with dtype and n_unique values.
+    Use this to decide which columns to add to umap_color_keys in the config.
+    """
+    rows = ""
+    for col in adt.obs.columns:
+        dtype  = str(adt.obs[col].dtype)
+        n_uniq = adt.obs[col].nunique()
+        sample_vals = ", ".join(
+            str(v) for v in adt.obs[col].astype(str).unique()[:5]
+        )
+        if n_uniq > 5:
+            sample_vals += " ..."
+        rows += (
+            f"<tr><td><code>{col}</code></td>"
+            f"<td>{dtype}</td>"
+            f"<td>{n_uniq}</td>"
+            f"<td style='font-size:0.82rem;color:#555;'>{sample_vals}</td></tr>"
+        )
+
+    return f"""
+    <section>
+      <h2>Available obs Columns</h2>
+      <p>These are all columns available in <code>adt.obs</code>.
+         Add any column name to <code>reduce_adt.params.umap_color_keys</code>
+         in the config to colour the PCA and UMAP panels by that variable.</p>
+      <table>
+        <thead>
+          <tr><th>Column</th><th>dtype</th><th>N unique</th><th>Sample values</th></tr>
+        </thead>
+        <tbody>{rows}</tbody>
+      </table>
+    </section>"""
+
+
+def _section_protein_panel(adt: AnnData, metrics: dict) -> str:
+    """
+    Two-column layout: Kept | Removed.
+    Run 1: all proteins in Kept, Removed column empty.
+    Run 2: proteins split by isotype filtering.
+    """
+    all_proteins_before = metrics.get("n_vars_before_filter", adt.n_vars)
+    removed = metrics.get("isotype_controls_removed", [])
+    kept    = list(adt.var_names)
+
+    def _li_list(items, color):
+        if not items:
+            return '<span style="color:#aaa;font-size:0.85rem;">—</span>'
+        # 3 proteins per row using CSS grid
+        cells = "".join(
+            f'<div style="padding:3px 6px;font-size:0.83rem;'
+            f'font-family:SFMono-Regular,Consolas,monospace;color:{color};">{p}</div>'
+            for p in items
+        )
+        return (
+            '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;">'
+            + cells +
+            '</div>'
+        )
+
+    if not removed:
+        callout = (
+            '<div style="background:#e8f4fd;border-left:4px solid #3498db;'
+            'padding:12px 16px;border-radius:0 6px 6px 0;'
+            'margin-bottom:16px;font-size:0.88rem;color:#1a3a5c;">'
+            '<strong>First run — no isotype controls removed.</strong> '
+            'Identify isotype controls (typically IgG / Ctrl) in the Kept column, '
+            'add them to <code>reduce_adt.params.isotype_controls</code> in the config, '
+            'then re-run with <code>--step reduce_adt --force</code>.'
+            '</div>'
+        )
     else:
-        ax.scatter(umap[:, 0], umap[:, 1], s=2, alpha=0.5,
-                   color="#4C78A8", rasterized=True)
-        ax.set_title("ADT UMAP (pre-Harmony)", fontsize=12, fontweight="bold")
+        removed_str = ", ".join(f"<code>{p}</code>" for p in removed)
+        callout = (
+            '<div style="background:#d4edda;border-left:4px solid #28a745;'
+            'padding:12px 16px;border-radius:0 6px 6px 0;'
+            'margin-bottom:16px;font-size:0.88rem;color:#155724;">'
+            f'<strong>Isotype controls removed before PCA:</strong> {removed_str}<br>'
+            f'{all_proteins_before} proteins → {adt.n_vars} proteins used for PCA.'
+            '</div>'
+        )
 
-    ax.set_xlabel("UMAP 1", fontsize=9); ax.set_ylabel("UMAP 2", fontsize=9)
-    ax.set_xticks([]); ax.set_yticks([])
-    ax.spines[["top", "right", "bottom", "left"]].set_visible(False)
-    fig.tight_layout()
-    return _fig_to_b64(fig)
+    kept_col    = _li_list(kept,    "#1a1a2e")
+    removed_col = _li_list(removed, "#cc3333")
+
+    return (
+        '<section>'
+        f'<h2>Protein Panel ({all_proteins_before} proteins, {adt.n_vars} used for PCA)</h2>'
+        + callout +
+        '<div style="display:grid;grid-template-columns:1fr 1fr;gap:24px;">'
+        '<div>'
+        f'<div style="font-weight:600;color:#0f3460;margin-bottom:8px;'
+        f'border-bottom:2px solid #e8eaf6;padding-bottom:6px;">Kept ({len(kept)})</div>'
+        + kept_col +
+        '</div>'
+        '<div>'
+        f'<div style="font-weight:600;color:#cc3333;margin-bottom:8px;'
+        f'border-bottom:2px solid #fde;padding-bottom:6px;">Removed ({len(removed)})</div>'
+        + removed_col +
+        '</div>'
+        '</div>'
+        '</section>'
+    )
 
 
 def _render_page(sections: list[str], timestamp: str, dataset_name: str) -> str:
@@ -203,22 +332,28 @@ def _section_summary(metrics: dict, dataset_name: str, timestamp: str) -> str:
     </section>"""
 
 
-def _section_figures(fig_pca: str, fig_umap: str) -> str:
+def _section_figures(
+    fig_pca: str,
+    fig_umap: str,
+    active_layer: str = "adt_clr",
+) -> str:
+    pca_b64  = (
+        '<div class="fig-wrap wide"><h3>ADT PCA</h3>'
+        f'<img src="data:image/png;base64,{fig_pca}" alt="ADT PCA"></div>'
+    )
+    umap_b64 = (
+        '<div class="fig-wrap wide"><h3>ADT UMAP (pre-Harmony)</h3>'
+        f'<img src="data:image/png;base64,{fig_umap}" alt="ADT UMAP"></div>'
+    )
     return f"""
     <section>
       <h2>Embeddings</h2>
-      <p>PCA and UMAP computed from CLR-normalised ADT values.
-         UMAP shown here is pre-Harmony — batch effects may be visible.
-         The post-Harmony UMAP is in the next report (cite_04).</p>
+      <p>PCA and UMAP computed from <code>{active_layer}</code>-normalised ADT values.
+         Each panel shows one colour key. UMAP is pre-Harmony — batch effects
+         may be visible. The post-Harmony UMAP is in the next report (cite_04).</p>
       <div class="fig-grid">
-        <div class="fig-wrap wide">
-          <h3>ADT PCA — PC1 vs PC2</h3>
-          <img src="data:image/png;base64,{fig_pca}" alt="ADT PCA">
-        </div>
-        <div class="fig-wrap">
-          <h3>ADT UMAP (pre-Harmony)</h3>
-          <img src="data:image/png;base64,{fig_umap}" alt="ADT UMAP">
-        </div>
+        {pca_b64}
+        {umap_b64}
       </div>
     </section>"""
 
@@ -234,13 +369,20 @@ def run_cite_reduce_report(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     print(f"Building CITE reduce report for '{dataset_name}' ...", flush=True)
-    fig_pca  = _plot_pca_scatter(adt)
-    fig_umap = _plot_umap(adt)
+    active_layer = metrics.get("active_layer", "adt_clr")
+    color_keys   = metrics.get("umap_color_keys") or ["batch"]
+
+    print("  Rendering PCA multi-panel ...", flush=True)
+    fig_pca  = _plot_pca_multi(adt, color_keys)
+    print("  Rendering UMAP multi-panel ...", flush=True)
+    fig_umap = _plot_umap(adt, color_keys)
 
     html = _render_page(
         sections=[
             _section_summary(metrics, dataset_name, timestamp),
-            _section_figures(fig_pca, fig_umap),
+            _section_obs_columns(adt),
+            _section_protein_panel(adt, metrics),
+            _section_figures(fig_pca, fig_umap, active_layer),
         ],
         timestamp=timestamp,
         dataset_name=dataset_name,

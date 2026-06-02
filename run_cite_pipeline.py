@@ -331,6 +331,8 @@ def run_reduce_adt(input_path: Path, out: Path, reports_dir: Path,
         n_comps=params.get("n_comps", 50),
         n_pcs=params.get("n_pcs", 20),
         n_neighbors=params.get("n_neighbors", 15),
+        isotype_controls=params.get("isotype_controls") or None,
+        umap_color_keys=params.get("umap_color_keys") or None,
         inplace=False,
     )
 

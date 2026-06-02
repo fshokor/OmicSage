@@ -106,6 +106,28 @@ steps:
       n_comps: 50       # PCA components to compute
       n_pcs: 20         # PCs used for neighbor graph (sc-best-practices ch.36)
       n_neighbors: 15   # kNN graph k
+ 
+      # Isotype controls to remove before PCA (tutorial recommendation).
+      # These carry no biological information after DSB normalization.
+      # First run: set to null — inspect protein names in the report,
+      # then fill in exact names matching adata.var_names and re-run:
+      #   python run_cite_pipeline.py --config ... --step reduce_adt --force
+      # For GSE194122 (BioLegend TotalSeq-A Universal Cocktail V1.0):
+      isotype_controls: null
+      # isotype_controls:
+      #   - "Mouse-IgG1"
+      #   - "Mouse-IgG2a"
+      #   - "Mouse-IgG2b"
+      #   - "Rat-IgG2b"
+ 
+      # Colour keys for PCA and UMAP panels — any obs column is valid.
+      # Add as many as you want; each gets its own panel in the report.
+      # Inspect available obs columns in the report's obs table first.
+      umap_color_keys:
+        - "batch"
+        - "Site"
+        # - "n_counts"
+        # - "adt_predicted_doublet"
 
   harmony_adt:
     enabled: true
