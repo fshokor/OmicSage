@@ -411,11 +411,6 @@ class TestValidation:
         with pytest.raises(ValueError, match="clr_axis must be 0 or 1"):
             normalize_adt(adata, clr_axis=-1)
 
-    def test_dsb_raises_not_implemented(self):
-        adata = _make_adt_adata()
-        empty_adata = _make_adt_adata(n_cells=5)
-        with pytest.raises(NotImplementedError, match="DSB"):
-            normalize_adt(adata, dsb_empty_adata=empty_adata)
 
     def test_non_integer_input_warns(self, caplog):
         """Non-integer .X should trigger a warning, not an error."""

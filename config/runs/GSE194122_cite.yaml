@@ -81,6 +81,12 @@ steps:
       #   0 = per-protein across cells (muon default, Seurat margin=1) ← recommended
       #   1 = per-cell across proteins (Seurat margin=2)
       clr_axis: 0
+      dsb_empty_droplets_path: null   # fill in once empty droplets are prepared
+      isotype_controls:
+        - "Mouse-IgG1"
+        - "Mouse-IgG2a"
+        - "Mouse-IgG2b"
+        - "Rat-IgG2b"
 
   doublets:
     enabled: true
@@ -116,6 +122,7 @@ steps:
       # 0.1 is the sc-best-practices default for broad immune cell types.
       # Inspect cite_05_annotated_adt.h5ad and adjust if needed.
       resolution: 0.1
+      n_iterations: 2
 
       # annotation_map: map Leiden cluster IDs → cell type labels.
       # Leave as null on the first run — inspect clusters first, then
@@ -130,9 +137,24 @@ steps:
       #   "3": "NK"
       #   "4": "Monocyte"
       #   "5": "DC"
-      annotation_map: null
+      # annotation_map derived from dotplot inspection of GSE194122 BMMC clusters.
+      # Cluster 3 assigned CD14 Mono — CD11c + CD172a pattern; verify CD41
+      # expression if platelet contamination is suspected after DSB.
+      # Re-run this step only after changing the map:
+      #   python run_cite_pipeline.py --config ... --step annotate_adt --force
+      annotation_map: #null
+        "0": "Erythroid"    # CD71, CD36, CD88  — largest cluster ~29%
+        "1": "Erythroid"    # CD71, CD36, CD33  — second erythroid cluster
+        "2": "B"            # CD19, CD72, CD9
+        "3": "CD14 Mono"    # CD11c, CD172a     — verify CD41 after DSB
+        "4": "CD4 T"        # CD5, CD4, CD45RA
+        "5": "CD8 T"        # CD2, CD8, CD3
+        "6": "Plasma"       # CD38, CD63, CD54
+        "7": "NK"           # CD16, CD45RA, CD56
+        "8": "DC"           # CD123, CD162, CD304
 
       random_state: 0
+      preset: "bmmc"
 
   integration:
     enabled: true

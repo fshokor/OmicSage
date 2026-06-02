@@ -1,203 +1,307 @@
 ## Session Context
-Date: 2026-05-26
-Phase: Phase 4 — CITE-seq Module (Session 7 of 7)
-Last thing we completed: cite_integration.py — MOFA+ and totalVI integration
-                          50 tests written and passing (855 total, 1 skipped)
-
-Files added last session:
-  - pipeline/modules/cite/cite_integration.py  — MOFA+ and totalVI
-  - tests/test_cite_integration.py             — 50 tests, all passing
-
-## Modality Roadmap (corrected — carry forward every session)
-  Phase 4 — CITE-seq Module      ← IN PROGRESS (final session)
-  Phase 5 — Spatial Module       ← Visium, MERFISH, Xenium
-  Phase 6 — Multiome Integration ← RNA + ATAC jointly
-
-scATAC-seq as a standalone modality is deferred — covered in Phase 6.
-
-## Revised Phase 4 Session Order (7 sessions total)
-  Session 1 — adt_normalize.py      ✓ done (392 tests, 1 skipped)
-  Session 2 — adt_doublets.py       ✓ done (457 total, 1 skipped)
-  Session 3 — adt_reduce.py         ✓ done (516 total, 1 skipped)
-  Session 4 — adt_harmony.py        ✓ done (736 total, 1 skipped)
-  Session 5 — adt_annotate.py       ✓ done (805 total, 1 skipped)
-  Session 6 — cite_integration.py   ✓ done (855 total, 1 skipped)
-  Session 7 — cite_pipeline.py + reports  ← TODAY
+Date: 2026-06-01
+Phase: 4 — CITE-seq pipeline
+Last thing we completed: Full audit of cite pipeline against sc-best-practices tutorial.
+  Identified systematic issues in normalization, doublet detection, and annotation
+  that need to be fixed to align with the tutorial results.
+Last files modified:
+  - pipeline/modules/cite/adt_annotate.py
+  - reports/templates/cite/cite_annotate_report.py
 
 ## Today's Goal
+Align every step of the CITE-seq pipeline and its reports with the
+sc-best-practices tutorial (chapters: QC, normalization, doublet detection,
+dimensionality reduction, batch correction, annotation).
 
-### Session 7 — cite_pipeline.py + HTML report
+Reference URLs (fetch and read before implementing each section):
+  https://www.sc-best-practices.org/surface_protein/quality_control.html
+  https://www.sc-best-practices.org/surface_protein/normalization.html
+  https://www.sc-best-practices.org/surface_protein/doublet_detection.html
+  https://www.sc-best-practices.org/surface_protein/dimensionality_reduction.html
+  https://www.sc-best-practices.org/surface_protein/batch_correction.html
+  https://www.sc-best-practices.org/surface_protein/annotation.html
 
-  A. cite_pipeline.py
-     - End-to-end orchestrator for the full CITE-seq pipeline
-     - One function: run_cite_pipeline(mdata, config=None) → MuData
-     - Calls in order:
-         normalize_adt → detect_adt_doublets → reduce_adt →
-         run_harmony_adt → annotate_adt → run_mofa (default integration)
-     - config dict controls optional steps and parameters:
-         config["batch_key"]        — default "donor"
-         config["integration"]      — "mofa" | "totalvi", default "mofa"
-         config["n_factors"]        — MOFA+ factors, default 15
-         config["max_epochs"]       — totalVI epochs, default 400
-         config["annotation_map"]   — passed to annotate_adt, default None
-         config["filter_doublets"]  — passed to detect_adt_doublets, default False
-     - Returns fully processed MuData with all embeddings populated
-     - Provenance: mdata.uns["omicsage_cite_pipeline"] — dict of per-step
-       metrics and timestamps
+One deliverable per step — do not implement multiple steps in one session.
+Agree on the step order with Fatima before writing any code.
 
-  B. reports/templates/cite_report.py
-     - HTML report generator covering all Phase 4 steps in one document
-     - Input: fully processed MuData (output of run_cite_pipeline)
-     - Output: reports/cite_report_{timestamp}.html
-     - Sections:
-         1. Dataset summary (n_cells, n_proteins, n_donors)
-         2. ADT normalization (CLR distribution plot)
-         3. Doublet detection (score histogram, n_doublets)
-         4. Dimensionality reduction (ADT UMAP before/after Harmony)
-         5. Annotation (Leiden cluster sizes, cell type map if provided)
-         6. Integration (MOFA/totalVI UMAP coloured by batch + cluster)
-     - Uses matplotlib/scanpy plotting only — no Quarto dependency
-     - One function: generate_cite_report(mdata, output_dir) → str (path)
+## What Needs To Change — Per Step
 
-## WNN — Deferred
-  WNN via muon.pp.neighbors is deferred to a future standalone session.
-  Root cause: muon's Jaccard+Euclidean NNDescent metric hangs on small
-  fixtures due to pynndescent behaviour in CI/sandbox environments.
-  The API contract is already documented in cite_integration.py.
-  When resuming: write a @pytest.mark.slow WNN test class with n_cells=2000
-  fixture and run separately from the main suite.
-  Expected output keys (when implemented):
-    mdata.obsm["X_umap_wnn"]         — WNN UMAP
-    mdata.obsp["wnn_connectivities"] — WNN graph connectivities
-    mdata.obsp["wnn_distances"]      — WNN graph distances
+---
 
-## Known Issues Carried Forward
-- Always use `python -m pytest` not bare `pytest`
-- Always `conda activate omicsage` before running anything
-- rpy2 NOT used — R scripts called via subprocess or Nextflow, not rpy2
-- `seurat_v3` HVG flavor numerically unstable on small fixtures — use
-  `flavor='seurat'` in small-fixture tests
-- obs['cell_type_vote'] is the consensus column naming convention for RNA
-- `cell_type_confidence` = weighted fraction of methods agreeing (0.0–1.0)
-  NOT AI self-reported confidence
-- muon CLR FutureWarning on __version__ is internal to muon — not our code,
-  suppress with warnings.catch_warnings() as already done in adt_normalize.py
-- _resolve_marker is a closure inside detect_adt_doublets — do not test it
-  as a module-level symbol; test marker resolution via the public API instead
-- MOFA+: muon namespaces batch_key as "rna:donor"/"adt:donor" in mdata.obs —
-  fixed in cite_integration.py by pushing batch_key to mdata.obs before
-  calling mu.tl.mofa. cite_pipeline.py must do the same if calling run_mofa.
+### STEP 1 — Normalization (HIGHEST PRIORITY — unblocks everything else)
+File: pipeline/modules/cite/adt_normalize.py
+Report: reports/templates/cite/cite_normalize_report.py
+Checkpoint: data/processed/GSE194122/cite_01_normalized.h5ad
 
-## API Reference (carry forward every session)
+PROBLEM:
+  Currently only CLR normalization is applied (DSB applied: No in report).
+  CLR does not remove ambient protein background. All proteins show a
+  floor near 0 with long right tails — no bimodal distributions.
+  The tutorial explicitly recommends DSB as the primary normalization
+  because it uses empty droplets to model and subtract ambient signal,
+  producing interpretable background-corrected values where
+  negative = background, positive = truly expressed.
+  This affects every downstream step: doublet detection, PCA, annotation scoring.
 
-### adt_normalize.py
-  normalize_adt(adata, clr_axis=0, dsb_empty_adata=None,
-                isotype_controls=None, inplace=False)
-    → (AnnData, dict)
-  Input:  mdata["adt"].X  — raw integer ADT counts
-  Output layers:
-    layers["counts"]   — raw counts (preserved)
-    layers["adt_clr"]  — CLR-normalized values
-    .X                 — CLR-normalized values (same as adt_clr)
-  Provenance: adata.uns["omicsage_adt_normalize"]
+WHAT TO CHANGE:
+  1. Implement DSB normalization in adt_normalize.py:
+     - Use the `dsb` Python package (pip install dsb) or implement via
+       the DSB algorithm: background estimation from empty droplets +
+       protein-specific denoising
+     - Empty droplet barcodes for GSE194122 are available — the NeurIPS
+       2021 dataset was specifically designed with empty droplets included.
+       They are typically stored alongside the raw count matrix.
+     - Store DSB-normalized values in adata.layers["adt_dsb"]
+     - Keep CLR in adata.layers["adt_clr"] as a fallback
+     - Set adata.X to the DSB layer after normalization (pipeline default)
+  2. Add `dsb` to requirements-ci.txt and environment.yml
+  3. Update the report:
+     - Change stat card "DSB applied: No" → "DSB applied: Yes"
+     - Add before/after DSB violin plots showing bimodal distributions
+       (the key quality check from the tutorial)
+     - Add ambient background level per protein (from DSB model params)
+  4. Update config schema to add dsb_empty_droplets_path parameter
 
-### adt_doublets.py
-  detect_adt_doublets(mdata, marker_pairs=None, threshold=2.5,
-                      filter_doublets=False, inplace=False)
-    → (MuData, dict)
-  Input:  mdata["adt"].layers["adt_clr"]
-  Output obs columns on mdata["adt"]:
-    obs["adt_doublet_score"]      — float (0–1)
-    obs["adt_predicted_doublet"]  — bool
-  Threshold: strict greater-than
-  Provenance: adata.uns["omicsage_adt_doublets"]
+TUTORIAL REFERENCE RESULT:
+  After DSB, each protein shows a clear bimodal distribution:
+  left peak = background-expressing cells, right peak = truly expressing cells.
+  This is Figure 1 in the normalization chapter.
 
-### adt_reduce.py
-  reduce_adt(mdata, n_comps=50, n_pcs=20, n_neighbors=15,
-             svd_solver="arpack", random_state=0, inplace=False)
-    → (AnnData, dict)
-  Input:  mdata["adt"].layers["adt_clr"]
-  Output on mdata["adt"]:
-    obsm["X_pca_adt"]   — ADT PCA (n_cells × n_comps_actual)
-    obsm["X_umap_adt"]  — ADT UMAP before batch correction (n_cells × 2)
-  n_pcs=20 default (sc-best-practices ch.37)
-  Provenance: adata.uns["omicsage_adt_reduce"]
+---
 
-### adt_harmony.py
-  run_harmony_adt(mdata, batch_key, n_pcs=20, n_neighbors=15,
-                  random_state=0, inplace=False)
-    → (AnnData, dict)
-  Input:  mdata["adt"].obsm["X_pca_adt"], mdata["adt"].obs[batch_key]
-  Output on mdata["adt"]:
-    obsm["X_pca_harmony_adt"] — Harmony-corrected ADT PCA
-    obsm["X_umap_adt"]        — UMAP from harmony embedding (overwrites)
-  Provenance: adata.uns["omicsage_adt_harmony"]
+### STEP 2 — Doublet Detection
+File: pipeline/modules/cite/adt_doublets.py
+Report: reports/templates/cite/cite_doublets_report.py
+Checkpoint: data/processed/GSE194122/cite_02_doublets.h5ad
 
-### adt_annotate.py
-  annotate_adt(mdata, annotation_map=None, resolution=0.1,
-               n_iterations=2, random_state=0, inplace=False)
-    → (AnnData, dict)
-  Input:  mdata["adt"].obsp["connectivities"] (from adt_harmony.py)
-  Output on mdata["adt"]:
-    obs["leiden"]       — Leiden cluster IDs (always)
-    obs["adt_celltype"] — cell type labels (only if annotation_map provided)
-  Provenance: adata.uns["omicsage_adt_annotate"]
+PROBLEM:
+  Currently only 1 doublet flagged across 21,778 cells (0.0%).
+  The tutorial expects ~4-5% doublets. The histogram shows all cells
+  piled at score ≈ 0 — the doublet scoring is not producing a real
+  distribution. Root cause: doublet scoring is running on CLR-normalized
+  data where the background floor makes lineage marker co-expression
+  invisible. With DSB normalization the bimodal distributions make it
+  clear when a cell co-expresses two exclusive lineage markers.
 
-### cite_integration.py
-  run_mofa(mdata, batch_key, n_factors=15, use_layer=None,
-           random_state=0, inplace=False)
-    → (MuData, dict)
-  Input:  mdata["rna"].X (log1p), mdata["adt"].X (CLR), obs[batch_key]
-  Output on mdata:
-    obsm["X_mofa"]      — MOFA+ latent factors
-    obsm["X_umap_mofa"] — UMAP from MOFA+ embedding
-  NOTE: pushes batch_key to mdata.obs before calling mu.tl.mofa
-  Provenance: mdata.uns["omicsage_mofa"]
+WHAT TO CHANGE:
+  1. Re-run doublet detection after DSB normalization is in place
+     (implement Step 1 first — this step depends on it)
+  2. The tutorial uses co-expression of lineage-exclusive marker pairs
+     to score doublets: CD3/CD19 (T+B), CD3/CD14 (T+Mono), CD19/CD14 (B+Mono)
+     A cell expressing both markers of a pair above the positive peak
+     (as defined by DSB bimodal threshold) is a doublet candidate.
+  3. The threshold should be set on the DSB-normalized values, not CLR.
+     DSB values have a natural threshold near 0 (negative = background).
+     Cells with DSB > 0 for both markers in a pair are doublets.
+  4. Expected output: histogram with a real right tail, ~4-5% flagged.
+  5. Update the report to show:
+     - Real doublet score distribution (not a spike at 0)
+     - Per-donor doublet rate (some donors may have higher rates)
+     - Scatter plots of exclusive marker pairs with doublets highlighted
+       (CD3 vs CD19, CD3 vs CD14) — this is the key figure in the tutorial
 
-  run_totalvi(mdata, batch_key, max_epochs=400, random_state=0,
-              inplace=False)
-    → (MuData, dict)
-  Input:  mdata["rna"].layers["counts"], mdata["adt"].layers["counts"],
-          mdata["rna"].obs[batch_key]
-  Output on mdata:
-    obsm["X_totalVI"]      — totalVI latent representation
-    obsm["X_umap_totalVI"] — UMAP from totalVI embedding
-  Provenance: mdata.uns["omicsage_totalVI"]
+TUTORIAL REFERENCE RESULT:
+  Doublet score histogram shows a clear bimodal or right-skewed distribution.
+  Scatter of CD3 vs CD19 shows a main diagonal cluster of doublets
+  co-expressing both markers above background.
 
-## Embedding Key Naming Convention (enforce across all sessions)
-  RNA space (on mdata["rna"]):
-    obsm["X_pca"]              — RNA PCA           (reduce.py)
-    obsm["X_pca_harmony"]      — RNA Harmony PCA   (future RNA integration)
-    obsm["X_umap"]             — RNA UMAP          (reduce.py)
+---
 
-  ADT space (on mdata["adt"]):
-    obsm["X_pca_adt"]          — ADT PCA           (adt_reduce.py)
-    obsm["X_pca_harmony_adt"]  — ADT Harmony PCA   (adt_harmony.py)
-    obsm["X_umap_adt"]         — ADT UMAP          (adt_harmony.py — overwritten)
+### STEP 3 — Dimensionality Reduction
+File: pipeline/modules/cite/adt_reduce.py
+Report: reports/templates/cite/cite_reduce_report.py
+Checkpoint: data/processed/GSE194122/cite_03_reduced.h5ad
 
-  Joint space (on mdata):
-    obsm["X_mofa"]             — MOFA+ factors     (cite_integration.py)
-    obsm["X_umap_mofa"]        — MOFA+ UMAP        (cite_integration.py)
-    obsm["X_totalVI"]          — totalVI latent    (cite_integration.py)
-    obsm["X_umap_totalVI"]     — totalVI UMAP      (cite_integration.py)
-    obsm["X_umap_wnn"]         — WNN UMAP          (deferred)
+PROBLEM:
+  Minor — currently 20 PCs used, tutorial uses 18. Not critical.
+  Main issue: PCA is running on CLR values — should run on DSB after Step 1.
+  No PCA loadings figure showing which proteins drive each PC.
+
+WHAT TO CHANGE:
+  1. After DSB is in place, confirm PCA runs on layers["adt_dsb"] not CLR.
+  2. Add PCA loadings heatmap to the report:
+     - Top 10 proteins contributing to PC1–PC4
+     - Confirms PCs are biologically meaningful
+     - (PC1 should separate T vs B, PC2 myeloid, etc.)
+  3. Add elbow plot with a vertical line at the selected n_components
+     so the threshold decision is visible.
+  4. Tutorial uses 18 PCs — consider changing default from 20 to 18,
+     or making this data-driven (e.g. 80% variance explained).
+
+TUTORIAL REFERENCE RESULT:
+  PC1 separates lymphoid from myeloid. Loadings show CD3/CD4/CD8 on one
+  side, CD14/CD16/HLA-DR on the other. Elbow at ~18 PCs.
+
+---
+
+### STEP 4 — Batch Correction
+File: pipeline/modules/cite/adt_harmony.py
+Report: reports/templates/cite/cite_harmony_report.py
+Checkpoint: data/processed/GSE194122/cite_04_harmony.h5ad
+
+PROBLEM:
+  Harmony is working correctly — pre/post UMAP shows good batch mixing
+  with biological structure preserved. This step aligns with the tutorial.
+  Minor issues only.
+
+WHAT TO CHANGE:
+  1. Add quantitative batch mixing metrics to the report:
+     - iLISI (integration LISI): measures batch mixing — higher is better.
+       Computable from the post-Harmony UMAP embedding.
+     - cLISI (cell-type LISI): measures cell type separation — higher is better.
+       Requires adt_celltype to be present (run after annotation).
+     - Show as a summary table: iLISI before / iLISI after / improvement %
+  2. Add per-batch ADT library size violin plot:
+     - Shows whether batches differ in library size before correction
+     - Justifies why Harmony was needed
+  These are nice-to-have additions — implement only if time allows after
+  higher priority steps are done.
+
+TUTORIAL REFERENCE RESULT:
+  Post-Harmony UMAP shows all 12 donors intermixed within each cell type
+  cluster. Quantitative LISI scores confirm mixing.
+
+---
+
+### STEP 5 — Annotation (SECOND PRIORITY)
+File: pipeline/modules/cite/adt_annotate.py
+Report: reports/templates/cite/cite_annotate_report.py
+Checkpoint: data/processed/GSE194122/cite_05_annotated.h5ad
+
+PROBLEM (three separate issues):
+
+  A. BMMC_MARKER_PANEL is missing erythroid markers.
+     Clusters 0 and 1 (largest clusters, ~36% of cells combined) show
+     CD71, CD36, CD88 as top markers in the dotplot — these are erythroid
+     markers. The panel has no "Erythroid" entry so these clusters get
+     mislabelled. This is the biggest annotation error.
+
+  B. Scoring assigns wrong labels to T cell clusters.
+     Cluster 4 (4841 cells, 22%) is labelled "Treg" but shows CD3, CD4,
+     CD5, CD45RA, CD45RO — this is clearly CD4 T. Treg and CD4 T share
+     most markers; the fold-change scoring cannot discriminate them because
+     the key discriminating markers (CD25-high, CD127-low for Treg) are not
+     weighted differently from shared markers.
+     Cluster 3 (3120 cells, 14%) is labelled "Platelet" but the dotplot
+     shows CD11c, CD172a, CD41 — this is more consistent with monocytes
+     or a mixed population.
+
+  C. CD4 T is completely absent from the annotation output despite being
+     the expected dominant population in BMMC.
+
+WHAT TO CHANGE:
+
+  1. Add Erythroid to BMMC_MARKER_PANEL immediately:
+     "Erythroid": ["CD71", "CD36", "CD235a", "CD88"]
+     Also add "HSPC" (haematopoietic stem/progenitor):
+     "HSPC": ["CD34", "CD38", "CD90", "CD117", "CD133", "CD135"]
+     Note: CD235a (Glycophorin A) may appear as "CD235a" or "GYPA"
+     depending on the panel — check var_names.
+
+  2. Use manual annotation_map for this run (bypass scoring):
+     Based on the dotplot (rank_genes_groups on leiden clusters):
+       "0": "Erythroid"      # CD71, CD36, CD88 — largest cluster 29%
+       "1": "Erythroid"      # CD71, CD36, CD33 — second erythroid cluster
+       "2": "B"              # CD19, CD72, CD9
+       "3": "CD14 Mono"      # CD11c, CD172a — review after DSB
+       "4": "CD4 T"          # CD5, CD4, CD45RA
+       "5": "CD8 T"          # CD2, CD8, CD3
+       "6": "Plasma"         # CD38, CD63, CD54
+       "7": "NK"             # CD16, CD45RA, CD56
+       "8": "DC"             # CD123, CD162, CD304
+     Add this as the default annotation_map in the config YAML.
+     NOTE: Verify cluster 3 (CD14 Mono vs Platelet) by checking
+     CD41 expression — if CD41-high it is Platelet, CD14-high = Mono.
+
+  3. After DSB is in place, re-run scoring with updated panel.
+     DSB values will make the bimodal thresholds clearer and the
+     fold-change scoring more accurate.
+
+  4. No changes needed to report structure — the dotplot, marker UMAP
+     grid, and cell type UMAP are all correct. Just fix the data.
+
+TUTORIAL REFERENCE RESULT:
+  Tutorial annotation for GSE194122 BMMC shows:
+  CD4 T, CD8 T, NK, B, Plasma, CD14 Mono, CD16 Mono, DC, pDC,
+  Erythroid progenitor, HSPC — 11 broad populations.
+  Erythroid progenitors are the largest cluster in BMMC (~30%).
+
+---
+
+### STEP 6 — Integration (MOFA+ / totalVI)
+File: pipeline/modules/cite/cite_integration.py
+Report: reports/templates/cite/cite_integration_report.py
+Checkpoint: data/processed/GSE194122/cite_06_integrated.h5ad
+
+PROBLEM:
+  Integration appears to run but the report does not show biological
+  validation figures. MOFA+ variance decomposition is not reported.
+
+WHAT TO CHANGE:
+  1. Add MOFA+ variance decomposition bar chart to the report:
+     - Per-factor variance explained broken down by modality (RNA % vs ADT %)
+     - Shows which factors are driven by which modality
+     - Key biological interpretation figure from the tutorial
+  2. Add MOFA+ top weights heatmap:
+     - Top 5 RNA genes + top 5 ADT proteins per factor (top 4 factors)
+     - Two-panel heatmap (RNA genes | ADT proteins)
+  3. Add totalVI latent space UMAP (if totalVI was run):
+     - Coloured by cell type and by batch
+     - Separate from the Harmony ADT UMAP
+  These are deferred until Steps 1–5 are correct, since the integration
+  quality depends on clean normalization and annotation.
+
+TUTORIAL REFERENCE RESULT:
+  MOFA+ Factor 1 is driven by ADT (lymphoid vs myeloid surface markers).
+  Factor 2 separates by RNA (transcriptional programs within T cells).
+  Integration UMAP shows cleaner separation than ADT-only UMAP.
+
+---
+
+## Known Issues From Last Session
+
+1. BMMC_MARKER_PANEL missing Erythroid — clusters 0+1 mislabelled
+2. DSB not implemented — CLR only, affects doublet detection and annotation
+3. Only 1 doublet flagged — doublet detection broken without DSB
+4. run_cite_pipeline.py was not forwarding `preset` param to annotate_adt()
+   — fixed by adding params.get("preset") to the annotate_adt() call
+5. adt_annotate.py rank_genes_groups runs on "leiden" (correct — diagnostic)
+   and annotation scoring uses fold-change mean_in - mean_out (correct logic,
+   but still misannotates without DSB and without Erythroid in panel)
+
+## Files Modified Last Session
+- pipeline/modules/cite/adt_annotate.py
+  (preset system, BMMC_MARKER_PANEL, fold-change scoring, step ordering)
+- reports/templates/cite/cite_annotate_report.py
+  (scanpy import fix, removed concordance plot, added cell type UMAP,
+   dotplot always uses leiden groupby)
 
 ## Verify Last Session Works
 ```bash
 conda activate omicsage
-python -m pytest tests/ -v
-# Expected: 855 passed, 1 skipped
-# If count is wrong, stop and investigate before writing any new code
+python -m pytest tests/test_adt_annotate.py -v --tb=short
 ```
+Expected: all tests passing (check count matches last known baseline).
+
+## Recommended Session Order
+Session A (today): Step 1 — DSB normalization (highest impact, unblocks all)
+Session B (next):  Step 5 — Fix annotation map + Erythroid in panel
+Session C:         Step 2 — Re-run doublets on DSB-normalized data
+Session D:         Steps 3+4 — Minor additions (loadings heatmap, LISI)
+Session E:         Step 6 — MOFA+ variance decomposition in report
 
 ## Relevant Context
-- Benchmark dataset: GSE194122 BMMC CITE-seq (NeurIPS 2021)
-  → BioLegend TotalSeq B Universal Human Panel (~140 antibodies)
-  → batch key for Harmony and integration is "donor"
-- cite_pipeline.py should default to MOFA+ (faster, no GPU needed)
-  and allow switching to totalVI via config["integration"] = "totalvi"
-- The HTML report uses matplotlib/scanpy only — no Quarto, no Jinja2
-  templates, no external dependencies beyond what is already in the
-  omicsage conda environment
-- mofapy2 and scvi-tools must be added to environment.yml / CI deps
-  if not already present (check before the session starts)
+- Dataset: GSE194122 NeurIPS 2021 BMMC CITE-seq
+  134 proteins, BioLegend TotalSeq-A Human Universal Cocktail V1.0
+  12 batches (s1d1 through s4d9), 21,778 cells after RNA QC
+- Empty droplet barcodes needed for DSB — check how the data was ingested.
+  In the NeurIPS dataset the raw (unfiltered) matrix contains empty droplets.
+  Path likely: data/raw/GSE194122/ — look for barcodes_unfiltered.tsv or
+  the unfiltered_feature_bc_matrix folder from cellranger.
+- ADT data path: data/processed/GSE194122/01_qc_adt.h5ad
+- RNA annotated path: data/processed/GSE194122/05_annotated.h5ad
+- Batch key: "batch" throughout
+- Pipeline convention: inplace=False, return (AnnData, dict),
+  provenance in uns["omicsage_<module>"]
+- Always run python -m pytest (not pytest) to use conda env
+- Always verify baseline test count before writing new code

@@ -417,6 +417,7 @@ def run_annotate_adt(input_path: Path, out: Path, reports_dir: Path,
 
     adt_annotated, metrics = annotate_adt(
         mdata,
+        preset=params.get("preset"),  
         annotation_map=annotation_map,
         resolution=params.get("resolution", 0.1),
         n_iterations=params.get("n_iterations", 2),
