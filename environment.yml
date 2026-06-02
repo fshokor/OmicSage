@@ -47,3 +47,4 @@ dependencies:
     - scikit-misc
     - kneed>=0.8.5
     - celltypist>=1.6 
+    - scib>=1.1.0
