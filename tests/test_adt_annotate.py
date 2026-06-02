@@ -5,22 +5,22 @@ Coverage:
   Happy path
   - Returns (AnnData, dict) tuple
   - obs["leiden"] always written
-  - obs["adt_celltype"] written when annotation_map provided
-  - obs["adt_celltype"] NOT written when annotation_map is None
+  - obs["adt_celltype_manual"] written when annotation_map provided
+  - obs["adt_celltype_manual"] NOT written when annotation_map is None
   - No obs["celltype"] written (RNA collision guard)
   - rank_genes_groups computed (uns["rank_genes_groups"] present)
   - dendrogram computed (uns["dendrogram_leiden"] present)
 
   Output shapes and types
   - leiden values are strings
-  - adt_celltype values are strings when annotated
+  - adt_celltype_manual values are strings when annotated
   - UMAP and PCA embeddings untouched
   - RNA modality entirely untouched
   - Layers preserved (adt_clr, counts)
 
   Annotation logic
   - annotation_map=None: annotated=False, celltype_key=None
-  - annotation_map provided: annotated=True, celltype_key="adt_celltype"
+  - annotation_map provided: annotated=True, celltype_key="adt_celltype_manual"
   - Unknown keys in annotation_map emit UserWarning (not an error)
   - Unknown keys in annotation_map do not crash the function
   - Partial map: unmapped clusters keep their numeric string IDs
@@ -38,7 +38,7 @@ Coverage:
   - annotation_map in metrics matches applied map
   - annotated flag correct
   - leiden_key == "leiden"
-  - celltype_key == "adt_celltype" when annotated
+  - celltype_key == "adt_celltype_manual" when annotated
   - celltype_key is None when not annotated
   - resolution in metrics correct
   - random_state in metrics correct
@@ -219,12 +219,12 @@ class TestAnnotateAdtHappyPath:
         mdata = _make_mdata()
         clusters = _get_clusters(mdata)
         adata, _ = annotate_adt(mdata, annotation_map={c: f"CT_{c}" for c in clusters})
-        assert "adt_celltype" in adata.obs.columns
+        assert "adt_celltype_manual" in adata.obs.columns
 
     def test_adt_celltype_not_written_without_map(self):
         mdata = _make_mdata()
         adata, _ = annotate_adt(mdata, annotation_map=None)
-        assert "adt_celltype" not in adata.obs.columns
+        assert "adt_celltype_manual" not in adata.obs.columns
 
     def test_no_celltype_column_written(self):
         """Guard: obs["celltype"] must never appear (RNA collision)."""
@@ -259,7 +259,7 @@ class TestOutputShapesAndTypes:
         mdata = _make_mdata()
         clusters = _get_clusters(mdata)
         adata, _ = annotate_adt(mdata, annotation_map={c: f"CT_{c}" for c in clusters})
-        for val in adata.obs["adt_celltype"]:
+        for val in adata.obs["adt_celltype_manual"]:
             assert isinstance(val, str)
 
     def test_umap_adt_untouched(self):
@@ -330,7 +330,7 @@ class TestAnnotationLogic:
         mdata = _make_mdata()
         clusters = _get_clusters(mdata)
         _, metrics = annotate_adt(mdata, annotation_map={c: f"T_{c}" for c in clusters})
-        assert metrics["celltype_key"] == "adt_celltype"
+        assert metrics["celltype_key"] == "adt_celltype_manual"
 
     def test_unknown_keys_emit_warning(self):
         mdata = _make_mdata()
@@ -342,7 +342,7 @@ class TestAnnotationLogic:
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             adata, _ = annotate_adt(mdata, annotation_map={"999": "Ghost Cell"})
-        assert "adt_celltype" in adata.obs.columns
+        assert "adt_celltype_manual" in adata.obs.columns
 
     def test_partial_map_unmapped_clusters_keep_numeric_id(self):
         mdata = _make_mdata()
@@ -352,7 +352,7 @@ class TestAnnotationLogic:
         partial_map = {clusters[0]: "KnownType"}
         adata, _ = annotate_adt(mdata, annotation_map=partial_map)
         unmapped = clusters[1:]
-        celltype_values = adata.obs["adt_celltype"].unique().tolist()
+        celltype_values = adata.obs["adt_celltype_manual"].unique().tolist()
         for cluster_id in unmapped:
             assert cluster_id in celltype_values
 
@@ -361,7 +361,7 @@ class TestAnnotationLogic:
         clusters = _get_clusters(mdata)
         full_map = {c: f"Cell_{c}" for c in clusters}
         adata, _ = annotate_adt(mdata, annotation_map=full_map)
-        celltype_values = set(adata.obs["adt_celltype"].tolist())
+        celltype_values = set(adata.obs["adt_celltype_manual"].tolist())
         expected = {f"Cell_{c}" for c in clusters}
         assert celltype_values == expected
 
@@ -380,7 +380,7 @@ class TestAnnotationLogic:
         mdata = _make_mdata()
         adata, metrics = annotate_adt(mdata, annotation_map={})
         assert metrics["annotated"] is True
-        assert (adata.obs["adt_celltype"] == adata.obs["leiden"]).all()
+        assert (adata.obs["adt_celltype_manual"] == adata.obs["leiden"]).all()
 
 
 # ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ class TestMetricsDict:
         mdata = _make_mdata()
         clusters = _get_clusters(mdata)
         _, metrics = annotate_adt(mdata, annotation_map={c: f"T_{c}" for c in clusters})
-        assert metrics["celltype_key"] == "adt_celltype"
+        assert metrics["celltype_key"] == "adt_celltype_manual"
 
     def test_resolution_in_metrics(self):
         mdata = _make_mdata()
@@ -551,7 +551,7 @@ class TestProvenance:
         mdata = _make_mdata()
         clusters = _get_clusters(mdata)
         adata, _ = annotate_adt(mdata, annotation_map={c: "X" for c in clusters})
-        assert adata.uns["omicsage_adt_annotate"]["outputs"]["celltype_key"] == "adt_celltype"
+        assert adata.uns["omicsage_adt_annotate"]["outputs"]["celltype_key"] == "adt_celltype_manual"
 
 
 # ---------------------------------------------------------------------------
@@ -652,3 +652,329 @@ class TestEdgeCases:
         adata, metrics = annotate_adt(mdata)
         assert metrics["n_cells"] == 200
         assert sum(metrics["cluster_sizes"].values()) == 200
+
+
+# ===========================================================================
+# Tests for auto-scoring (obs["adt_celltype_score"])
+# ===========================================================================
+
+def _make_mdata_with_markers(
+    n_cells: int = 120,
+    n_groups: int = 3,
+    seed: int = 42,
+) -> MuData:
+    """
+    MuData whose ADT panel contains at least CD3, CD19, CD14 — the proteins
+    in the default marker pairs AND the bmmc preset.  Clusters are
+    well-separated so scoring can deterministically pick a winner.
+    """
+    rng = np.random.default_rng(seed)
+    # Protein names that cover both default marker pairs and bmmc preset keys
+    var_names = [
+        "CD3-TotalSeqA", "CD19-TotalSeqA", "CD14-TotalSeqA",
+        "CD4-TotalSeqA",  "CD8a-TotalSeqA", "CD56-TotalSeqA",
+        "CD20-TotalSeqA", "CD11c-TotalSeqA","CD16-TotalSeqA",
+        "CD38-TotalSeqA", "CD71-TotalSeqA", "CD36-TotalSeqA",
+    ]
+    n_vars = len(var_names)
+    n_cells_per = n_cells // n_groups
+
+    raw = rng.integers(0, 30, size=(n_cells, n_vars)).astype(np.float32)
+    clr = rng.normal(loc=0.0, scale=1.0, size=(n_cells, n_vars)).astype(np.float32)
+
+    # Make each group strongly express a different protein (CD3 / CD19 / CD14)
+    for g in range(n_groups):
+        start = g * n_cells_per
+        end   = start + n_cells_per
+        clr[start:end, g] += 8.0   # group g strongly expresses protein g
+
+    # Build structured PCA
+    angles = np.linspace(0, 2 * np.pi, n_groups, endpoint=False)
+    chunks = []
+    for angle in angles:
+        center = np.array([10 * np.cos(angle), 10 * np.sin(angle)])
+        chunk  = rng.normal(loc=center, scale=0.3, size=(n_cells_per, 2))
+        chunks.append(chunk)
+    pca_2d = np.vstack(chunks).astype(np.float32)
+    n_pca  = 20
+    pad    = rng.normal(scale=0.01, size=(len(pca_2d), n_pca - 2)).astype(np.float32)
+    pca    = np.hstack([pca_2d, pad]).astype(np.float32)
+
+    adata = ad.AnnData(X=raw.copy())
+    adata.obs_names = [f"cell_{i}" for i in range(len(pca_2d))]
+    adata.var_names = var_names
+
+    adata.layers["counts"]  = raw[:len(pca_2d)].copy()
+    adata.layers["adt_clr"] = clr[:len(pca_2d)].copy()
+    adata.obsm["X_pca_adt"]         = pca.copy()
+    adata.obsm["X_pca_harmony_adt"] = pca.copy()
+    adata.obsm["X_umap_adt"]        = rng.standard_normal((len(pca_2d), 2)).astype(np.float32)
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        sc.pp.neighbors(adata, n_neighbors=10, n_pcs=2,
+                        use_rep="X_pca_harmony_adt", random_state=0)
+
+    return MuData({"adt": adata})
+
+
+# ---------------------------------------------------------------------------
+# Scoring — happy path
+# ---------------------------------------------------------------------------
+
+class TestScoringHappyPath:
+    _SIMPLE_PANEL = {
+        "T cell":   ["CD3"],
+        "B cell":   ["CD19"],
+        "Monocyte": ["CD14"],
+    }
+
+    def test_score_column_written_with_marker_panel(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert "adt_celltype_score" in adata.obs.columns
+
+    def test_score_column_written_with_preset_bmmc(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, preset="bmmc")
+        assert "adt_celltype_score" in adata.obs.columns
+
+    def test_score_column_not_written_without_panel_or_preset(self):
+        mdata = _make_mdata()
+        adata, _ = annotate_adt(mdata)
+        assert "adt_celltype_score" not in adata.obs.columns
+
+    def test_score_values_are_strings(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        for val in adata.obs["adt_celltype_score"]:
+            assert isinstance(val, str)
+
+    def test_score_values_are_subset_of_panel_keys_plus_unknown(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        valid = set(self._SIMPLE_PANEL.keys()) | {"Unknown"}
+        for val in adata.obs["adt_celltype_score"].unique():
+            assert val in valid
+
+    def test_score_all_cells_labelled(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert adata.obs["adt_celltype_score"].isna().sum() == 0
+
+    def test_score_n_obs_unchanged(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert len(adata.obs["adt_celltype_score"]) == adata.n_obs
+
+    def test_score_and_manual_can_coexist(self):
+        """Both columns written independently when both params given."""
+        mdata = _make_mdata_with_markers()
+        clusters = _get_clusters(mdata)
+        adata, _ = annotate_adt(
+            mdata,
+            marker_panel=self._SIMPLE_PANEL,
+            annotation_map={c: f"CT_{c}" for c in clusters},
+        )
+        assert "adt_celltype_score"  in adata.obs.columns
+        assert "adt_celltype_manual" in adata.obs.columns
+
+    def test_manual_absent_when_only_panel_given(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert "adt_celltype_manual" not in adata.obs.columns
+
+    def test_score_absent_when_only_manual_given(self):
+        mdata = _make_mdata()
+        clusters = _get_clusters(mdata)
+        adata, _ = annotate_adt(mdata, annotation_map={c: "X" for c in clusters})
+        assert "adt_celltype_score" not in adata.obs.columns
+
+
+# ---------------------------------------------------------------------------
+# Scoring — cluster-level correctness
+# ---------------------------------------------------------------------------
+
+class TestScoringClusterLevel:
+    """
+    The fixture strongly expresses:
+      group 0 → protein 0 (CD3)   → should score as T cell
+      group 1 → protein 1 (CD19)  → should score as B cell
+      group 2 → protein 2 (CD14)  → should score as Monocyte
+    """
+    _SIMPLE_PANEL = {
+        "T cell":   ["CD3"],
+        "B cell":   ["CD19"],
+        "Monocyte": ["CD14"],
+    }
+
+    def test_cells_per_cluster_get_consistent_label(self):
+        """All cells in a cluster must share the same score label."""
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        for cluster in adata.obs["leiden"].unique():
+            mask   = adata.obs["leiden"] == cluster
+            labels = adata.obs.loc[mask, "adt_celltype_score"].unique()
+            assert len(labels) == 1, (
+                f"Cluster {cluster} has multiple score labels: {labels}"
+            )
+
+    def test_score_differs_from_manual_when_maps_differ(self):
+        """Score and manual can disagree — they are independent."""
+        mdata = _make_mdata_with_markers()
+        clusters = _get_clusters(mdata)
+        wrong_map = {c: "WrongType" for c in clusters}
+        adata, _ = annotate_adt(
+            mdata,
+            marker_panel=self._SIMPLE_PANEL,
+            annotation_map=wrong_map,
+        )
+        # manual is all "WrongType"; score should have biologically-derived labels
+        assert set(adata.obs["adt_celltype_manual"].unique()) == {"WrongType"}
+        assert "WrongType" not in adata.obs["adt_celltype_score"].unique()
+
+
+# ---------------------------------------------------------------------------
+# Scoring — metrics
+# ---------------------------------------------------------------------------
+
+class TestScoringMetrics:
+    _SIMPLE_PANEL = {
+        "T cell":   ["CD3"],
+        "B cell":   ["CD19"],
+        "Monocyte": ["CD14"],
+    }
+
+    def test_score_key_in_metrics_when_panel_given(self):
+        mdata = _make_mdata_with_markers()
+        _, metrics = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert metrics["score_key"] == "adt_celltype_score"
+
+    def test_score_key_none_when_no_panel(self):
+        mdata = _make_mdata()
+        _, metrics = annotate_adt(mdata)
+        assert metrics["score_key"] is None
+
+    def test_marker_panel_in_metrics(self):
+        mdata = _make_mdata_with_markers()
+        _, metrics = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert metrics["marker_panel"] == self._SIMPLE_PANEL
+
+    def test_marker_panel_none_in_metrics_when_not_given(self):
+        mdata = _make_mdata()
+        _, metrics = annotate_adt(mdata)
+        assert metrics["marker_panel"] is None
+
+    def test_score_key_in_metrics_with_preset(self):
+        mdata = _make_mdata_with_markers()
+        _, metrics = annotate_adt(mdata, preset="bmmc")
+        assert metrics["score_key"] == "adt_celltype_score"
+
+
+# ---------------------------------------------------------------------------
+# Scoring — provenance
+# ---------------------------------------------------------------------------
+
+class TestScoringProvenance:
+    _SIMPLE_PANEL = {
+        "T cell":   ["CD3"],
+        "B cell":   ["CD19"],
+        "Monocyte": ["CD14"],
+    }
+
+    def test_provenance_score_key_correct(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert adata.uns["omicsage_adt_annotate"]["outputs"]["score_key"] \
+               == "adt_celltype_score"
+
+    def test_provenance_score_key_none_when_no_panel(self):
+        mdata = _make_mdata()
+        adata, _ = annotate_adt(mdata)
+        assert adata.uns["omicsage_adt_annotate"]["outputs"]["score_key"] is None
+
+    def test_provenance_marker_panel_provided_true(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert adata.uns["omicsage_adt_annotate"]["params"]["marker_panel_provided"] is True
+
+    def test_provenance_marker_panel_provided_false(self):
+        mdata = _make_mdata()
+        adata, _ = annotate_adt(mdata)
+        assert adata.uns["omicsage_adt_annotate"]["params"]["marker_panel_provided"] is False
+
+    def test_provenance_preset_recorded(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, preset="bmmc")
+        assert adata.uns["omicsage_adt_annotate"]["params"]["preset"] == "bmmc"
+
+    def test_marker_panel_stored_in_uns(self):
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert "omicsage_adt_marker_panel" in adata.uns
+        assert adata.uns["omicsage_adt_marker_panel"] == self._SIMPLE_PANEL
+
+
+# ---------------------------------------------------------------------------
+# Scoring — preset
+# ---------------------------------------------------------------------------
+
+class TestScoringPreset:
+    def test_unknown_preset_emits_warning(self):
+        mdata = _make_mdata()
+        with pytest.warns(UserWarning, match="Unknown preset"):
+            annotate_adt(mdata, preset="nonexistent_panel")
+
+    def test_unknown_preset_does_not_write_score_column(self):
+        mdata = _make_mdata()
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            adata, _ = annotate_adt(mdata, preset="nonexistent_panel")
+        assert "adt_celltype_score" not in adata.obs.columns
+
+    def test_marker_panel_takes_precedence_over_preset(self):
+        """When both marker_panel and preset given, marker_panel wins."""
+        custom_panel = {"MyType": ["CD3"]}
+        mdata = _make_mdata_with_markers()
+        adata, metrics = annotate_adt(
+            mdata, marker_panel=custom_panel, preset="bmmc"
+        )
+        assert metrics["marker_panel"] == custom_panel
+        valid = set(custom_panel.keys()) | {"Unknown"}
+        for val in adata.obs["adt_celltype_score"].unique():
+            assert val in valid
+
+
+# ---------------------------------------------------------------------------
+# Scoring — no collision with RNA / no "adt_celltype" plain column
+# ---------------------------------------------------------------------------
+
+class TestScoringNoCollision:
+    _SIMPLE_PANEL = {
+        "T cell":   ["CD3"],
+        "B cell":   ["CD19"],
+        "Monocyte": ["CD14"],
+    }
+
+    def test_no_plain_adt_celltype_column(self):
+        """obs['adt_celltype'] must never be written."""
+        mdata = _make_mdata_with_markers()
+        clusters = _get_clusters(mdata)
+        adata, _ = annotate_adt(
+            mdata,
+            marker_panel=self._SIMPLE_PANEL,
+            annotation_map={c: f"CT_{c}" for c in clusters},
+        )
+        assert "adt_celltype" not in adata.obs.columns
+
+    def test_no_celltype_column(self):
+        """obs['celltype'] must never be written (RNA collision guard)."""
+        mdata = _make_mdata_with_markers()
+        adata, _ = annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL)
+        assert "celltype" not in adata.obs.columns
+
+    def test_rna_untouched_with_scoring(self):
+        mdata = _make_mdata_with_markers()
+        rna_cols_before = list(mdata["adt"].obs.columns)
+        annotate_adt(mdata, marker_panel=self._SIMPLE_PANEL, inplace=False)
+        assert list(mdata["adt"].obs.columns) == rna_cols_before
