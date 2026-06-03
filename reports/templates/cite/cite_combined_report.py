@@ -52,6 +52,8 @@ TAB_REGISTRY = [
     ("cite_04_harmony_report.html",      "Harmony ADT",   "🎵"),
     ("cite_05_annotate_report.html",     "Annotate ADT",  "🏷️"),
     ("cite_06_integration_report.html",  "Integration",   "🔗"),
+    ("cite_07_deg_report.html",          "DEG / DPE",     "📊"),
+    ("cite_08_gsea_report.html",         "GSEA",          "🧬"),
 ]
 
 

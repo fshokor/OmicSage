@@ -85,6 +85,8 @@ STEP_ORDER = [
     "harmony_adt",
     "annotate_adt",
     "integration",
+    "deg_cite",
+    "gsea_cite",
 ]
 
 # Output filename per step
@@ -95,6 +97,8 @@ STEP_OUTPUT = {
     "harmony_adt":   "cite_04_harmony_adt.h5ad",
     "annotate_adt":  "cite_05_annotated_adt.h5ad",
     "integration":   "cite_06_integration.h5mu",   # MuData
+    "deg_cite":      "cite_07_deg.h5mu",            # MuData (RNA + ADT, DEG results in uns)
+    "gsea_cite":     "cite_08_gsea.h5mu",           # MuData (GSEA results in uns)
 }
 
 # Predecessor for each step (None = reads from adt_input path directly)
@@ -105,6 +109,8 @@ STEP_PREDECESSOR = {
     "harmony_adt":   "reduce_adt",
     "annotate_adt":  "harmony_adt",
     "integration":   "annotate_adt",
+    "deg_cite":      "integration",   # reads cite_06 MuData (RNA + ADT + labels)
+    "gsea_cite":     "deg_cite",      # reads cite_07 MuData (DEG results in uns)
 }
 
 
@@ -161,6 +167,10 @@ def resolve_input(step: str, cfg: dict, processed_dir: Path) -> Path:
     pred_out = processed_dir / STEP_OUTPUT[pred]
     if pred_out.exists():
         return pred_out
+    # Also check .h5mu extension (MuData checkpoints)
+    pred_out_mu = processed_dir / STEP_OUTPUT[pred]
+    if pred_out_mu.exists():
+        return pred_out_mu
     raise FileNotFoundError(
         f"[{step}] requires output of '{pred}' at {pred_out}\n"
         f"  Run '{pred}' first, or use --from-step to include it in this run."
@@ -555,6 +565,179 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
     return out
 
 
+# ── Step 7: deg_cite ──────────────────────────────────────────────────────────
+
+def run_deg_cite(input_path: Path, out: Path, reports_dir: Path,
+                 params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
+        print(f"[deg_cite] cached → {out}")
+        return out
+
+    print("[deg_cite] running …")
+    import mudata as mu
+    from pipeline.modules.cite.cite_deg import cite_deg
+
+    # cite_07 reads the MuData from cite_06 (RNA + ADT + labels)
+    mdata = mu.read(str(input_path))
+
+    groupby          = params.get("groupby", "adt_celltype_manual")
+    groupby_fallback = params.get("groupby_fallback", "adt_celltype_score")
+
+    mdata_deg, deg_dict = cite_deg(
+        mdata,
+        groupby=groupby,
+        groupby_fallback=groupby_fallback,
+        method=params.get("method", "wilcoxon"),
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        n_genes=params.get("n_genes", 200),
+        exclude_protein_prefixes=params.get("exclude_protein_prefixes") or [],
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes") or [],
+        use_raw_rna=params.get("use_raw_rna", False),
+        inplace=False,
+    )
+
+    prov = deg_dict["provenance"]
+    print(
+        f"[deg_cite] DPE: {prov['n_dpe_significant']} significant proteins"
+        f"  RNA cross-modal: {prov['n_rna_crossmodal_significant']} genes"
+        f"  ({prov['n_cell_types']} cell types) → {out}"
+    )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        mdata_deg.write(out)
+
+    try:
+        from reports.templates.cite.cite_deg_report import run_cite_deg_report
+        run_cite_deg_report(
+            deg_dict=deg_dict,
+            report_path=str(reports_dir / "cite_07_deg_report.html"),
+            dataset_name=cfg["dataset"].get("name", cfg["dataset"]["id"]),
+        )
+    except Exception as e:
+        print(f"[deg_cite] WARNING: report failed: {e}")
+    return out
+
+
+# ── Step 8: gsea_cite ─────────────────────────────────────────────────────────
+
+def run_gsea_cite(input_path: Path, out: Path, reports_dir: Path,
+                  params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
+        print(f"[gsea_cite] cached → {out}")
+        return out
+
+    print("[gsea_cite] running …")
+    import mudata as mu
+    from pipeline.modules.cite.cite_gsea import cite_gsea
+
+    # cite_08 reads the MuData from cite_07 (DEG results in uns)
+    mdata = mu.read(str(input_path))
+
+    # Reconstruct cite_deg_dict from uns — the runner only persists the MuData,
+    # so we rebuild the dict from the stored provenance and uns keys.
+    deg_dict = _reconstruct_deg_dict(mdata)
+
+    if not deg_dict["rna_crossmodal"]:
+        print(
+            "[gsea_cite] WARNING: no cross-modal RNA DEG results found in "
+            "cite_07 MuData. GSEA requires MuData from cite_06. Skipping."
+        )
+        # Write input through as output so pipeline can continue
+        import warnings
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore", FutureWarning)
+            mdata.write(out)
+        return out
+
+    mdata_gsea, gsea_dict = cite_gsea(
+        mdata,
+        cite_deg_dict=deg_dict,
+        gene_sets=params.get("gene_sets") or None,
+        min_logfc=params.get("min_logfc", 0.25),
+        max_pval_adj=params.get("max_pval_adj", 0.05),
+        top_n_genes=params.get("top_n_genes") or None,
+        min_genes=params.get("min_genes", 5),
+        organism=params.get("organism", "human"),
+        direction=params.get("direction", "up"),
+        exclude_gene_prefixes=params.get("exclude_gene_prefixes") or [],
+        inplace=False,
+    )
+
+    prov = gsea_dict["provenance"]
+    n_tested  = prov.get("n_groups_tested", 0)
+    n_skipped = prov.get("n_groups_skipped", 0)
+    print(
+        f"[gsea_cite] {n_tested} groups tested  {n_skipped} skipped → {out}"
+    )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        mdata_gsea.write(out)
+
+    try:
+        from reports.templates.cite.cite_gsea_report import run_cite_gsea_report
+        run_cite_gsea_report(
+            gsea_dict=gsea_dict,
+            report_path=str(reports_dir / "cite_08_gsea_report.html"),
+            dataset_name=cfg["dataset"].get("name", cfg["dataset"]["id"]),
+        )
+    except Exception as e:
+        print(f"[gsea_cite] WARNING: report failed: {e}")
+    return out
+
+
+def _reconstruct_deg_dict(mdata) -> dict:
+    """
+    Reconstruct a minimal cite_deg_dict from a persisted MuData (cite_07).
+
+    cite_deg writes DEG results into uns["rank_genes_groups_rna_cm"] on
+    mdata["rna"] and stores provenance in mdata.uns["omicsage_cite_deg"].
+    This function rebuilds the dict that cite_gsea() expects.
+    """
+    import numpy as np
+
+    provenance = mdata.uns.get("omicsage_cite_deg", {})
+    rna = mdata["rna"] if "rna" in mdata.mod else None
+
+    rna_crossmodal: dict = {}
+
+    if rna is not None and "rank_genes_groups_rna_cm" in rna.uns:
+        rgg = rna.uns["rank_genes_groups_rna_cm"]
+        groups = list(rgg["names"].dtype.names)
+        n_genes = rgg["names"].shape[0]
+
+        for group in groups:
+            def _safe(field, g=group):
+                if field not in rgg:
+                    return np.zeros(n_genes)
+                arr = rgg[field]
+                if arr.dtype.names and g in arr.dtype.names:
+                    return arr[g]
+                return np.zeros(n_genes)
+
+            df_data = {
+                "gene":     rgg["names"][group],
+                "score":    _safe("scores"),
+                "pval":     _safe("pvals"),
+                "logfc":    _safe("logfoldchanges"),
+                "pval_adj": _safe("pvals_adj"),
+            }
+            import pandas as pd
+            df = pd.DataFrame(df_data).dropna(subset=["gene"])
+            df = df[df["gene"] != ""]
+            rna_crossmodal[group] = df.reset_index(drop=True)
+
+    return {
+        "rna_crossmodal": rna_crossmodal,
+        "provenance": provenance,
+        "input_type": provenance.get("input_type", "mudata"),
+    }
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP → RUNNER MAP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -565,6 +748,8 @@ STEP_RUNNERS = {
     "reduce_adt":    run_reduce_adt,
     "harmony_adt":   run_harmony_adt,
     "annotate_adt":  run_annotate_adt,
+    "deg_cite":      run_deg_cite,
+    "gsea_cite":     run_gsea_cite,
     # integration handled separately (needs extra args)
 }
 

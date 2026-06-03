@@ -15,7 +15,7 @@ dataset contains both RNA and ADT features.
 **Step order**
 
 ```
-normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → integration
+normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → integration → deg_cite → gsea_cite
 ```
 
 **Checkpoint files produced** (all under `data/processed/<dataset_id>/`)
@@ -28,6 +28,8 @@ normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → i
 | harmony_adt | `cite_04_harmony_adt.h5ad` |
 | annotate_adt | `cite_05_annotated_adt.h5ad` |
 | integration | `cite_06_integration.h5mu` (MuData) |
+| deg_cite | `cite_07_deg.h5mu` (MuData) |
+| gsea_cite | `cite_08_gsea.h5mu` (MuData) |
 
 **Reports produced** (all under `reports/<dataset_id>/`)
 
@@ -39,6 +41,8 @@ normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → i
 | harmony_adt | `cite_04_harmony_report.html` |
 | annotate_adt | `cite_05_annotate_report.html` |
 | integration | `cite_06_integration_report.html` |
+| deg_cite | `cite_07_deg_report.html` |
+| gsea_cite | `cite_08_gsea_report.html` |
 
 ---
 
@@ -772,6 +776,386 @@ integration:
 
 ---
 
+## 7. `cite_deg.py`
+
+**Location**: `pipeline/modules/cite/cite_deg.py`
+
+**What it does**
+
+Runs two complementary differential expression analyses on CITE-seq data in a
+single call:
+
+**A — DPE (Differential Protein Expression)**
+Wilcoxon rank-sum test on the CLR-normalised ADT layer, grouped by
+`obs["adt_celltype_manual"]` (or fallback columns). Returns which proteins are
+statistically enriched per cell type — confirming what the dotplot in Step 5
+shows visually, with p-values and fold-changes.
+
+**B — Cross-modal RNA DEG**
+Uses the same ADT-defined cell type grouping but runs DEG on the RNA layer
+(`mdata["rna"]`). Finds the transcriptional programs that underlie each
+surface-phenotype-pure population. These gene lists are the direct input to
+`cite_gsea.py` (Step 8).
+
+**Why it exists**
+
+Surface protein panels are too small for pathway enrichment (only 134 proteins
+in the GSE194122 panel). But the biological insight of CITE-seq is that
+surface-defined cell types are immunophenotypically precise — T cells defined by
+CD3+CD4+ are cleaner than RNA-cluster T cells because ADT is less noisy for
+lineage markers. Running RNA DEG on ADT-defined groups gives transcriptional
+program discovery on immunophenotypically pure populations, which is the core
+scientific value of CITE-seq beyond annotation.
+
+**Input**
+
+| Source | Object | Preferred |
+|--------|--------|-----------|
+| `cite_06_integration.h5mu` | MuData | ✓ enables both DPE + RNA DEG |
+| `cite_05_annotated_adt.h5ad` | AnnData | DPE only, RNA DEG skipped |
+
+When the AnnData fallback is used, a `UserWarning` is raised and
+`cite_deg_dict["rna_crossmodal"]` is an empty dict. GSEA (Step 8) will raise
+a `ValueError` if you try to run it on the empty dict — this is intentional.
+
+**Groupby fallback chain**
+
+The module resolves the grouping column in this priority order:
+
+```
+obs["adt_celltype_manual"]   ← preferred (from annotate_adt annotation_map)
+    ↓ not found
+obs["adt_celltype_score"]    ← auto-scored labels from marker panel
+    ↓ not found
+obs["leiden"]                ← raw cluster IDs (numeric strings)
+    ↓ not found
+ValueError raised
+```
+
+**Key design decisions**
+
+- DPE result DataFrames use column name `protein` (not `gene`) so DPE and RNA
+  DEG outputs are visually distinct and cannot be accidentally mixed.
+- Isotype control proteins (e.g. `Mouse-IgG1`, `Rat-IgG2b`) are excluded from
+  DPE results via `exclude_protein_prefixes`. They are still used in the
+  `rank_genes_groups` computation — removing them beforehand would bias
+  fold-changes for real proteins.
+- `adt.X` is temporarily set to `layers["adt_clr"]` for the DPE computation,
+  then always restored in a `finally` block even if an exception occurs.
+- Cross-modal RNA DEG operates on a subset AnnData (`rna[shared_barcodes]`)
+  to avoid barcode mismatch errors. The `rank_genes_groups_rna_cm` result key
+  is copied back to `mdata["rna"].uns` so it persists in the MuData checkpoint.
+
+**Outputs written**
+
+| Location | Key | Content |
+|----------|-----|---------|
+| `mdata["adt"].uns` | `rank_genes_groups_dpe` | Raw scanpy DPE result (structured array) |
+| `mdata["rna"].uns` | `rank_genes_groups_rna_cm` | Raw scanpy cross-modal result |
+| `mdata.uns` | `omicsage_cite_deg` | Provenance block |
+
+**API**
+
+```python
+from pipeline.modules.cite.cite_deg import cite_deg
+
+mdata_deg, deg_dict = cite_deg(
+    mdata,                                    # MuData from cite_06 (preferred)
+    groupby="adt_celltype_manual",            # obs column on mdata["adt"]
+    groupby_fallback="adt_celltype_score",    # secondary fallback
+    leiden_fallback="leiden",                 # final fallback
+    method="wilcoxon",
+    min_logfc=0.25,
+    max_pval_adj=0.05,
+    n_genes=200,
+    exclude_protein_prefixes=["Mouse-IgG", "Rat-IgG"],
+    exclude_gene_prefixes=[],                 # e.g. ["RPL", "RPS", "MT-"]
+    use_raw_rna=False,                        # uses layers["logcounts"] when False
+    inplace=False,
+)
+```
+
+**Return value — `deg_dict`**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `dpe` | `dict[str, DataFrame]` | `{cell_type: DataFrame(protein, score, pval, logfc, pval_adj)}` |
+| `rna_crossmodal` | `dict[str, DataFrame]` | `{cell_type: DataFrame(gene, score, pval, logfc, pval_adj)}` — empty when AnnData fallback |
+| `dpe_summary` | `DataFrame` | Top 5 proteins per cell type, long format |
+| `rna_summary` | `DataFrame` | Top 5 genes per cell type, long format |
+| `provenance` | `dict` | Same metadata as `uns["omicsage_cite_deg"]` |
+| `input_type` | `str` | `"mudata"` or `"anndata"` |
+
+**Config block** (`config/runs/<dataset>.yaml`)
+
+```yaml
+deg_cite:
+  enabled: true
+  params:
+    groupby: adt_celltype_manual
+    groupby_fallback: adt_celltype_score
+    method: wilcoxon
+    min_logfc: 0.25
+    max_pval_adj: 0.05
+    n_genes: 200
+    exclude_protein_prefixes:
+      - "Mouse-IgG"
+      - "Rat-IgG"
+    exclude_gene_prefixes: []
+    use_raw_rna: false
+```
+
+**CLI usage**
+
+```bash
+# Run deg_cite only
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --step deg_cite
+
+# Resume from deg_cite (runs deg_cite + gsea_cite)
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --from-step deg_cite
+
+# Force re-run (e.g. after changing min_logfc)
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --step deg_cite --force
+```
+
+**Tests**: `tests/test_cite_deg.py` — 20 tests across DPE, groupby fallback,
+cross-modal DEG, prefix exclusion, inplace behaviour.
+
+---
+
+## 8. `cite_gsea.py`
+
+**Location**: `pipeline/modules/cite/cite_gsea.py`
+
+**What it does**
+
+Runs over-representation analysis (ORA) pathway enrichment on the **cross-modal
+RNA DEG gene lists** produced by `cite_deg` (Step 7). This is a thin wrapper
+around the existing RNA pipeline `gsea.py` — no new statistical logic, just a
+CITE-seq-aware adapter.
+
+**Why cross-modal only — no ADT-layer pathway enrichment**
+
+ADT data contains protein names (`CD3E`, `CD19`, `CD14` ...) not gene symbols.
+GO, KEGG, and Reactome gene sets are built on gene symbols. A direct enrichment
+on 134 protein names would produce near-zero overlap with any gene set database.
+The correct approach is:
+
+```
+ADT-defined cell types (surface phenotype, precise)
+    ↓
+RNA DEG on those same cells (transcriptional programs)
+    ↓
+GSEA on the RNA gene lists  ← this module
+```
+
+This gives pathway results for transcriptionally-defined programs of
+surface-phenotype-pure populations — biologically more meaningful than
+RNA-cluster-based GSEA because ADT cell-type definition is less noisy.
+
+**Why it wraps `gsea.py` instead of duplicating it**
+
+The statistical core (gseapy Enrichr, background gene universe, BH correction,
+`direction` handling) is identical. Duplication would create two maintenance
+surfaces. `cite_gsea.py` handles only the CITE-seq-specific concerns: validating
+that cross-modal gene lists exist, building the `deg_dict` format that `gsea()`
+expects, and retagging provenance with `module: cite_gsea` so the audit log
+distinguishes CITE-seq from RNA pipeline calls.
+
+**Input**
+
+| Argument | Source | Required |
+|----------|--------|----------|
+| `data` | MuData from `cite_deg` (cite_07 checkpoint) | ✓ |
+| `cite_deg_dict` | dict returned by `cite_deg()` | ✓ |
+
+If `cite_deg_dict["rna_crossmodal"]` is empty (AnnData fallback path), a
+`ValueError` is raised immediately with a clear message directing the analyst
+to re-run `cite_deg` with the MuData checkpoint.
+
+**When run via the pipeline runner**
+
+The runner (`run_gsea_cite`) reads the persisted MuData from `cite_07_deg.h5mu`,
+reconstructs the `cite_deg_dict` from `mdata["rna"].uns["rank_genes_groups_rna_cm"]`
+and `mdata.uns["omicsage_cite_deg"]` via `_reconstruct_deg_dict()`, then calls
+`cite_gsea()`. This means the full pipeline can be resumed from Step 8 without
+re-running Step 7, and single-step `--step gsea_cite` works correctly.
+
+**API**
+
+```python
+from pipeline.modules.cite.cite_gsea import cite_gsea
+
+mdata_gsea, gsea_dict = cite_gsea(
+    mdata,                          # MuData from cite_deg (cite_07)
+    cite_deg_dict=deg_dict,         # dict returned by cite_deg()
+    gene_sets=None,                 # None = GO BP 2023, KEGG 2021, Reactome 2022
+    min_logfc=0.25,
+    max_pval_adj=0.05,
+    top_n_genes=None,               # None = all genes passing filters
+    min_genes=5,                    # min query genes to run enrichment per group
+    organism="human",
+    direction="up",                 # "up" | "down" | "both"
+    exclude_gene_prefixes=[],
+    inplace=False,
+)
+```
+
+**Return value — `gsea_dict`**
+
+| Key | Type | Description |
+|-----|------|-------------|
+| `results` | `dict[str, DataFrame]` | Pathway results per cell type — same schema as RNA `gsea_dict["results"]` |
+| `summary_df` | `DataFrame` | Top 3 pathways per cell type |
+| `provenance` | `dict` | Includes `module: "cite_gsea"` and `source_deg_module: "cite_deg"` |
+| `skipped` | `list[tuple]` | Groups skipped due to fewer than `min_genes` DEGs |
+
+**Provenance fields added over base `gsea()`**
+
+| Field | Value |
+|-------|-------|
+| `module` | `"cite_gsea"` (not `"gsea"`) |
+| `source_deg_module` | `"cite_deg"` |
+| `input_type` | `"mudata"` |
+| `note` | Human-readable explanation of the cross-modal approach |
+
+**Config block** (`config/runs/<dataset>.yaml`)
+
+```yaml
+gsea_cite:
+  enabled: true
+  params:
+    gene_sets: null        # null = GO BP 2023, KEGG 2021, Reactome 2022
+    min_logfc: 0.25
+    max_pval_adj: 0.05
+    top_n_genes: null
+    min_genes: 5
+    organism: human
+    direction: up          # "up" | "down" | "both"
+    exclude_gene_prefixes: []
+```
+
+**CLI usage**
+
+```bash
+# Run gsea_cite only (requires cite_07_deg.h5mu to exist)
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --step gsea_cite
+
+# Run both new steps
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --from-step deg_cite
+
+# Change direction and re-run without redoing DEG
+python run_cite_pipeline.py --config config/runs/GSE194122_cite.yaml --step gsea_cite --force
+```
+
+**Tests**: `tests/test_cite_gsea.py` — 11 tests. Uses `unittest.mock.patch` on
+`_rna_gsea` so tests are network-independent and CI-safe. Covers validation,
+return contract, provenance tagging, and inplace behaviour.
+
+---
+
+## 8a. `cite_deg_report.py`
+
+**Location**: `reports/templates/cite/cite_deg_report.py`
+
+**What it does**
+
+Generates `cite_07_deg_report.html` — the HTML report for the DEG/DPE step.
+Contains three sections:
+
+**Run Summary**
+Stat cards showing cells, cell types, significant DPE proteins, and significant
+cross-modal RNA genes. Params table (groupby, method, thresholds, input type).
+Yellow warning note if `input_type == "anndata"` (GSEA will be unavailable).
+
+**DPE Section**
+Horizontal bar charts — one per cell type — showing top 10 differential proteins
+by log2FC. Orange bars = upregulated, blue bars = downregulated. Summary table
+of top 5 proteins per cell type with coloured log2FC values and adj p-values.
+
+**Cross-Modal RNA DEG Section**
+Two figures: (1) ranked dot plot where x = log2FC, dot size = −log10(adj p-value),
+one row per cell type; (2) bar charts per cell type for top 10 DEGs. Summary
+table of top 5 genes per cell type. Replaced entirely with a fallback note when
+`input_type == "anndata"`.
+
+**API**
+
+```python
+from reports.templates.cite.cite_deg_report import run_cite_deg_report
+
+run_cite_deg_report(
+    deg_dict=deg_dict,                              # dict from cite_deg()
+    report_path="reports/GSE194122/cite_07_deg_report.html",
+    dataset_name="BMMC CITE-seq (NeurIPS 2021)",
+)
+```
+
+**Called by**: `run_cite_pipeline.py` → `run_deg_cite()` runner, inside
+`try/except` so a report failure never stops the pipeline.
+
+---
+
+## 8b. `cite_gsea_report.py`
+
+**Location**: `reports/templates/cite/cite_gsea_report.py`
+
+**What it does**
+
+Generates `cite_08_gsea_report.html` — the HTML report for the GSEA step.
+Contains three sections:
+
+**Run Summary**
+Stat cards (groups tested, groups skipped, direction, organism). Database badges
+colour-coded by library: GO BP (blue), KEGG (green), Reactome (pink). Skipped
+groups listed by name with the reason. Note explaining that results come from
+cross-modal RNA DEG gene lists, not ADT proteins.
+
+**Figures**
+Two plots: (1) horizontal bar chart — top 10 pathways per cell type, bars
+coloured by database, dashed red line at adj p = 0.05; (2) pathway enrichment
+heatmap — rows are the union of top 5 pathways per cell type, columns are cell
+types, colour intensity = −log10(adj p-value), grey = not significant in that
+group.
+
+**Pathway Table**
+Top 3 pathways per cell type across all queried libraries, with database badge
+and adj p-value.
+
+**Database colour legend**
+
+| Badge | Library | Colour |
+|-------|---------|--------|
+| GO BP | `GO_Biological_Process_*` | Blue |
+| KEGG | `KEGG_*` | Green |
+| Reactome | `Reactome_*` | Pink |
+| Other | Any other Enrichr library | Grey |
+
+**API**
+
+```python
+from reports.templates.cite.cite_gsea_report import run_cite_gsea_report
+
+run_cite_gsea_report(
+    gsea_dict=gsea_dict,                             # dict from cite_gsea()
+    report_path="reports/GSE194122/cite_08_gsea_report.html",
+    dataset_name="BMMC CITE-seq (NeurIPS 2021)",
+)
+```
+
+**Called by**: `run_cite_pipeline.py` → `run_gsea_cite()` runner, inside
+`try/except`.
+
+**Robustness notes**
+
+The adjusted p-value and term column names vary between gseapy versions
+(`"Adjusted P-value"` vs `"Adjusted P-Value"` vs `"FDR q-val"`). Both report
+functions scan for these column names dynamically rather than hardcoding, so
+they will not break when gseapy is upgraded.
+
+---
+
+
 ## 7. `cite_pipeline.py`
 
 **Location**: `pipeline/modules/cite/cite_pipeline.py`
@@ -1320,6 +1704,8 @@ report uses the `cite_00_` prefix to distinguish it.
 | `cite_04_harmony_report.html` | Harmony ADT | 🎵 |
 | `cite_05_annotate_report.html` | Annotate ADT | 🏷️ |
 | `cite_06_integration_report.html` | Integration | 🔗 |
+| `cite_07_deg_report.html` | DEG / DPE | 📊 |
+| `cite_08_gsea_report.html` | GSEA | 🧬 |
 
 **Parameters**
 

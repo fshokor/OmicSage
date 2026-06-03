@@ -29,7 +29,7 @@
 #
 # Step order
 # ----------
-#   normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → integration
+#   normalize_adt → doublets → reduce_adt → harmony_adt → annotate_adt → integration → deg_cite → gsea_cite
 #
 # Checkpointed outputs (data/processed/GSE194122/)
 # -------------------------------------------------
@@ -39,6 +39,8 @@
 #   cite_04_harmony_adt.h5ad
 #   cite_05_annotated_adt.h5ad
 #   cite_06_integration.h5mu   ← MuData (RNA + ADT joint embedding)
+#   cite_07_deg.h5mu           ← MuData (DPE + cross-modal RNA DEG in uns)
+#   cite_08_gsea.h5mu          ← MuData (GSEA pathway results in uns)
 
 dataset:
   id: GSE194122
@@ -214,3 +216,63 @@ steps:
         - cell_type_vote
         # - donor
         # - adt_celltype
+
+  deg_cite:
+    enabled: true
+    params:
+      # obs column on mdata["adt"] used to group cells.
+      # Priority: groupby → groupby_fallback → leiden (raw cluster IDs)
+      groupby: adt_celltype_manual
+      groupby_fallback: adt_celltype_score
+
+      method: wilcoxon
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+
+      # Top N features to compute per group.
+      # 200 effectively means all proteins (panel has 134) and top 200 genes.
+      n_genes: 200
+
+      # Protein name prefixes to exclude from DPE results after thresholding.
+      # Isotype controls carry no biological signal — always exclude them.
+      exclude_protein_prefixes:
+        - "Mouse-IgG"
+        - "Rat-IgG"
+
+      # Gene name prefixes to exclude from cross-modal RNA DEG results.
+      # Uncomment to filter ribosomal / mitochondrial genes from GSEA input.
+      exclude_gene_prefixes: []
+      # exclude_gene_prefixes:
+      #   - "RPL"
+      #   - "RPS"
+      #   - "MT-"
+
+      # If true, uses mdata["rna"].X directly instead of layers["logcounts"].
+      use_raw_rna: false
+
+  gsea_cite:
+    enabled: true
+    params:
+      # Enrichr gene set libraries to query.
+      # Leave null to use OmicSage defaults:
+      #   GO_Biological_Process_2023, KEGG_2021_Human, Reactome_2022
+      gene_sets: null
+      # gene_sets:
+      #   - "GO_Biological_Process_2023"
+      #   - "KEGG_2021_Human"
+      #   - "Reactome_2022"
+
+      min_logfc: 0.25
+      max_pval_adj: 0.05
+      top_n_genes: null   # null = all genes passing filters
+      min_genes: 5        # minimum query genes required to run enrichment
+      organism: human
+
+      # "up"   — upregulated genes only (recommended for cell-type markers)
+      # "down" — downregulated genes only
+      # "both" — separate ORA for up and down per group
+      direction: up
+
+      # Additional gene prefix exclusions applied before ORA query.
+      # These are applied on top of any filtering done in deg_cite.
+      exclude_gene_prefixes: []
