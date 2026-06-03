@@ -276,3 +276,19 @@ steps:
       # Additional gene prefix exclusions applied before ORA query.
       # These are applied on top of any filtering done in deg_cite.
       exclude_gene_prefixes: []
+
+  protein_rna_corr:
+    enabled: true
+    params:
+      # Correlation method — only "spearman" currently supported.
+      # Pearson is not implemented: CLR values are not normally distributed.
+      method: spearman
+
+      # Minimum number of cells expressing both protein (CLR > 0) AND
+      # the corresponding gene (RNA > 0) for a pair to be tested.
+      # Pairs below this threshold are skipped and listed in the report.
+      min_cells: 30
+
+      # If true (default), uses mdata["rna"].layers["logcounts"] for RNA.
+      # Set false to use mdata["rna"].X directly.
+      use_logcounts: true

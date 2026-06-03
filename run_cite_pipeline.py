@@ -87,6 +87,7 @@ STEP_ORDER = [
     "integration",
     "deg_cite",
     "gsea_cite",
+    "protein_rna_corr",
 ]
 
 # Output filename per step
@@ -96,9 +97,10 @@ STEP_OUTPUT = {
     "reduce_adt":    "cite_03_reduced_adt.h5ad",
     "harmony_adt":   "cite_04_harmony_adt.h5ad",
     "annotate_adt":  "cite_05_annotated_adt.h5ad",
-    "integration":   "cite_06_integration.h5mu",   # MuData
-    "deg_cite":      "cite_07_deg.h5mu",            # MuData (RNA + ADT, DEG results in uns)
-    "gsea_cite":     "cite_08_gsea.h5mu",           # MuData (GSEA results in uns)
+    "integration":   "cite_06_integration.h5mu",
+    "deg_cite":      "cite_07_deg.h5mu",
+    "gsea_cite":     "cite_08_gsea.h5mu",
+    "protein_rna_corr": "cite_09_corr.h5mu",
 }
 
 # Predecessor for each step (None = reads from adt_input path directly)
@@ -109,8 +111,9 @@ STEP_PREDECESSOR = {
     "harmony_adt":   "reduce_adt",
     "annotate_adt":  "harmony_adt",
     "integration":   "annotate_adt",
-    "deg_cite":      "integration",   # reads cite_06 MuData (RNA + ADT + labels)
-    "gsea_cite":     "deg_cite",      # reads cite_07 MuData (DEG results in uns)
+    "deg_cite":      "integration",
+    "gsea_cite":     "deg_cite",
+    "protein_rna_corr": "integration",  # reads cite_06 directly — independent of DEG/GSEA
 }
 
 
@@ -738,18 +741,66 @@ def _reconstruct_deg_dict(mdata) -> dict:
     }
 
 
+# ── Step 9: protein_rna_corr ──────────────────────────────────────────────────
+
+def run_protein_rna_corr(input_path: Path, out: Path, reports_dir: Path,
+                          params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
+        print(f"[protein_rna_corr] cached → {out}")
+        return out
+
+    print("[protein_rna_corr] running …")
+    import mudata as mu
+    from pipeline.modules.cite.cite_corr import cite_corr
+
+    # cite_09 reads directly from cite_06 (integration MuData — both layers)
+    mdata = mu.read(str(input_path))
+
+    mdata_corr, corr_dict = cite_corr(
+        mdata,
+        method=params.get("method", "spearman"),
+        min_cells=params.get("min_cells", 30),
+        use_logcounts=params.get("use_logcounts", True),
+        inplace=False,
+    )
+
+    prov = corr_dict["provenance"]
+    print(
+        f"[protein_rna_corr] {prov['n_matched']} matched pairs"
+        f"  {prov['n_tested']} tested"
+        f"  {prov['n_unmatched']} unmatched → {out}"
+    )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        mdata_corr.write(out)
+
+    try:
+        from reports.templates.cite.cite_corr_report import run_cite_corr_report
+        run_cite_corr_report(
+            corr_dict=corr_dict,
+            report_path=str(reports_dir / "cite_09_corr_report.html"),
+            dataset_name=cfg["dataset"].get("name", cfg["dataset"]["id"]),
+        )
+    except Exception as e:
+        print(f"[protein_rna_corr] WARNING: report failed: {e}")
+    return out
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP → RUNNER MAP
 # ══════════════════════════════════════════════════════════════════════════════
 
 STEP_RUNNERS = {
-    "normalize_adt": run_normalize_adt,
-    "doublets":      run_doublets,
-    "reduce_adt":    run_reduce_adt,
-    "harmony_adt":   run_harmony_adt,
-    "annotate_adt":  run_annotate_adt,
-    "deg_cite":      run_deg_cite,
-    "gsea_cite":     run_gsea_cite,
+    "normalize_adt":    run_normalize_adt,
+    "doublets":         run_doublets,
+    "reduce_adt":       run_reduce_adt,
+    "harmony_adt":      run_harmony_adt,
+    "annotate_adt":     run_annotate_adt,
+    "deg_cite":         run_deg_cite,
+    "gsea_cite":        run_gsea_cite,
+    "protein_rna_corr": run_protein_rna_corr,
     # integration handled separately (needs extra args)
 }
 
