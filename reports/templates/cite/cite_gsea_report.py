@@ -127,6 +127,109 @@ def _db_tag(gene_set: str) -> str:
     return f'<span class="db-tag db-other">{gene_set[:12]}</span>'
 
 
+# Translation / ribosome pathway keywords — these dominate when RPL*/RPS*
+# genes are not excluded from DEG input before GSEA
+_TRANSLATION_KEYWORDS = {
+    "translation elongation", "translation initiation", "peptide chain elongation",
+    "cytoplasmic translation", "ribosom", "cotranslational",
+    "srp-dependent", "cap-dependent translation",
+}
+
+# KEGG disease pathways that frequently appear as false positives in immune cells
+# because they contain MHC / cytokine genes shared with normal immune function
+_KEGG_DISEASE_KEYWORDS = {
+    "asthma", "lupus", "rheumatoid arthritis", "type i diabetes",
+    "graft-versus-host", "allograft rejection", "inflammatory bowel",
+    "malaria",  # appears due to haemoglobin / RBC metabolism genes
+}
+
+
+def _check_gsea_flags(
+    results: dict[str, pd.DataFrame],
+    summary_df: pd.DataFrame,
+) -> str:
+    """
+    Detect two common GSEA artifact classes and return an HTML warning block.
+
+    1. Translation pathway dominance: top pathway is ribosomal/translation for
+       ≥ 2 cell types — indicates RPL*/RPS* genes were not excluded from DEG input.
+    2. KEGG disease pathway for immune cell types: spurious hits due to shared
+       MHC/cytokine gene content between disease and normal immune pathways.
+    """
+    if not results:
+        return ""
+
+    _P_COL = next(
+        (c for c in ["Adjusted P-value", "Adjusted P-Value", "FDR q-val", "adj_pval"]
+         if any(c in df.columns for df in results.values() if not df.empty)),
+        None,
+    )
+    _T_COL = next(
+        (c for c in ["Term", "term", "pathway", "Description"]
+         if any(c in df.columns for df in results.values() if not df.empty)),
+        None,
+    )
+
+    if _P_COL is None or _T_COL is None:
+        return ""
+
+    translation_cts: list[str] = []
+    disease_flags:   list[tuple[str, str]] = []
+
+    for ct, df in results.items():
+        if df.empty:
+            continue
+        top1 = df.nsmallest(1, _P_COL)
+        if top1.empty:
+            continue
+        top_term = str(top1.iloc[0][_T_COL]).lower()
+
+        # Translation dominance check
+        if any(kw in top_term for kw in _TRANSLATION_KEYWORDS):
+            translation_cts.append(ct)
+
+        # KEGG disease pathway check — scan top 5
+        top5_terms = df.nsmallest(5, _P_COL)[_T_COL].astype(str).str.lower().tolist()
+        for term in top5_terms:
+            if any(kw in term for kw in _KEGG_DISEASE_KEYWORDS):
+                disease_flags.append((ct, term))
+
+    flags_html = ""
+
+    if len(translation_cts) >= 2:
+        cts = ", ".join(f"<strong>{c}</strong>" for c in translation_cts)
+        flags_html += (
+            f"<div class='note'>"
+            f"<strong>⚠ Translation pathway dominance detected</strong> in: {cts}. "
+            f"When ribosomal protein genes (<code>RPL*</code> / <code>RPS*</code>) "
+            f"are the top DEGs, translation pathways dominate GSEA results and mask "
+            f"genuine biology. This is a compositional artefact — these genes are "
+            f"highly expressed in most cells and top the one-vs-rest DEG list by "
+            f"default. <strong>Recommended fix:</strong> add "
+            f"<code>exclude_gene_prefixes: [RPL, RPS]</code> to the cite_deg config "
+            f"and re-run cite_07 and cite_08."
+            f"</div>"
+        )
+
+    if disease_flags:
+        items = "".join(
+            f"<li><strong>{ct}</strong>: <em>{term}</em></li>"
+            for ct, term in disease_flags
+        )
+        flags_html += (
+            f"<div class='note'>"
+            f"<strong>⚠ KEGG disease pathway(s) in top 5 for immune cell types:</strong>"
+            f"<ul style='margin:6px 0 0 16px;'>{items}</ul>"
+            f"These KEGG disease pathways contain MHC, cytokine, or metabolic genes "
+            f"shared with normal immune cell biology. The enrichment reflects gene "
+            f"content overlap, not disease association. Cross-check with GO BP or "
+            f"Reactome results to identify the genuine underlying biology."
+            f"</div>"
+        )
+
+    return flags_html
+
+
 # ---------------------------------------------------------------------------
 # Figures
 # ---------------------------------------------------------------------------
@@ -447,7 +550,9 @@ def _section_pathway_table(
     results: dict[str, pd.DataFrame],
     summary_df: pd.DataFrame,
 ) -> str:
-    """Top 3 pathways per cell type in a compact summary table."""
+    """Top 3 pathways per cell type in a compact summary table + artifact flags."""
+    gsea_flags_html = _check_gsea_flags(results, summary_df)
+
     if not results or summary_df.empty:
         # Try to build summary from raw results
         rows_html = "<p>No significant pathways found.</p>"
@@ -503,6 +608,7 @@ def _section_pathway_table(
         gene set libraries. Full results are stored in
         <code>uns["omicsage_cite_gsea"]</code>.
       </p>
+      {gsea_flags_html}
       {rows_html}
     </section>"""
 

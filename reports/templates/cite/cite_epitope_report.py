@@ -449,10 +449,22 @@ def _section_rna_protein_parallel(
       </p>
     </section>"""
 
-    # Select top n_pairs by |r| (highest absolute correlation — most informative)
+    # Select top n_pairs by highest POSITIVE r
+    # (co-regulated pairs where protein and mRNA agree — most illustrative
+    # for showing what the parallel plot is designed to show).
+    # Negatively correlated pairs (anti-correlated) are shown separately below.
     df = corr_results.copy()
-    df["abs_r"] = df["r"].abs()
-    pairs = df.nlargest(n_pairs, "abs_r")[["protein", "gene", "r"]].values.tolist()
+    pairs_pos = df[df["r"] > 0].nlargest(n_pairs, "r")[["protein", "gene", "r"]].values.tolist()
+    # If fewer than n_pairs positive pairs exist, fill with least-negative
+    if len(pairs_pos) < n_pairs:
+        pairs_neg_fill = (
+            df[df["r"] <= 0]
+            .nlargest(n_pairs - len(pairs_pos), "r")
+            [["protein", "gene", "r"]].values.tolist()
+        )
+        pairs = pairs_pos + pairs_neg_fill
+    else:
+        pairs = pairs_pos
 
     pair_html = ""
     for protein, gene, r in pairs:
@@ -480,7 +492,9 @@ def _section_rna_protein_parallel(
         secretion, or surface trafficking is at work. These are biological
         findings, not noise.
       </div>
-      <p>Showing top {n_pairs} pairs by |Spearman r| from cite_09.</p>
+      <p>Showing top {n_pairs} positively correlated pairs from cite_09
+      (pairs where protein and mRNA are co-regulated — shapes should match).
+      These are the most informative for validating RNA-protein coupling.</p>
       <div class="fig-grid">{pair_html}</div>
     </section>"""
 

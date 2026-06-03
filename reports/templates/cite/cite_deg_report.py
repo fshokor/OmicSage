@@ -99,6 +99,66 @@ def _fig_to_b64(fig) -> str:
     return base64.b64encode(buf.read()).decode("utf-8")
 
 
+# Platelet / megakaryocyte markers that should not be top DPE hits
+# for non-platelet cell types in BMMC / PBMC data
+_PLATELET_MARKERS = {"CD41", "CD42b", "CD62P", "CD42a", "CD61", "CD9"}
+# Cell types where platelet markers are expected
+_PLATELET_CELLTYPES = {"Platelet", "Megakaryocyte", "MK", "Thrombocyte"}
+
+
+def _check_dpe_flags(dpe_results: dict[str, pd.DataFrame]) -> str:
+    """
+    Scan DPE results for two artifact classes and return an HTML warning block.
+
+    1. Platelet marker contamination: CD41/CD42b/CD62P in top 5 for non-platelet
+       cell types (platelet-monocyte adhesion artifact in BMMC preparations).
+    2. All-negative top 5: cell type whose top 5 DPE hits are all log2FC < 0
+       (cell type defined by what it lacks, not what it expresses).
+    """
+    flags: list[str] = []
+
+    for ct, df in dpe_results.items():
+        if df.empty:
+            continue
+        top5 = df.head(5)
+
+        # --- Platelet contamination check ---
+        is_platelet_ct = any(p.lower() in ct.lower() for p in _PLATELET_CELLTYPES)
+        if not is_platelet_ct:
+            prot_col = "protein" if "protein" in top5.columns else top5.columns[0]
+            hits = set(top5[prot_col].astype(str))
+            platelet_hits = hits & _PLATELET_MARKERS
+            if platelet_hits:
+                flags.append(
+                    f"<li><strong>{ct}</strong>: platelet marker(s) "
+                    f"<code>{'</code>, <code>'.join(sorted(platelet_hits))}</code> "
+                    f"in top 5 DPE hits. In BMMC/PBMC data this indicates "
+                    f"platelet-cell adhesion artefact — these proteins reflect "
+                    f"platelet contamination, not genuine {ct} surface expression. "
+                    f"Treat with caution.</li>"
+                )
+
+        # --- All-negative top 5 check ---
+        if "logfc" in top5.columns:
+            if (top5["logfc"].values < 0).all():
+                flags.append(
+                    f"<li><strong>{ct}</strong>: all top 5 DPE hits are "
+                    f"downregulated (log2FC &lt; 0). This cell type is defined "
+                    f"by low surface protein expression relative to the rest — "
+                    f"check whether positive markers exist further down the ranked "
+                    f"list, or whether this cluster may be under-annotated.</li>"
+                )
+
+    if not flags:
+        return ""
+
+    items = "\n".join(flags)
+    return (
+        f"<div class='note'><strong>⚠ DPE flags detected:</strong>"
+        f"<ul style='margin:6px 0 0 16px;'>{items}</ul></div>"
+    )
+
+
 def _render_page(sections: list[str], timestamp: str, dataset_name: str) -> str:
     body = "\n".join(sections)
     return f"""<!DOCTYPE html>
@@ -263,14 +323,19 @@ def _section_run_summary(
         if input_type == "anndata" else ""
     )
 
+    try:
+        cells_display = f"{int(n_cells):,}"
+    except (TypeError, ValueError):
+        cells_display = str(n_cells) if n_cells not in (None, "?", "") else "?"
+
     cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
         for k, v in [
-            ("Cells",            f"{n_cells:,}" if isinstance(n_cells, int) else n_cells),
-            ("Cell types",       n_cts),
+            ("Cells",             cells_display),
+            ("Cell types",        n_cts),
             ("DPE sig. proteins", n_dpe),
-            ("RNA sig. genes",   n_rna),
+            ("RNA sig. genes",    n_rna),
         ]
     )
     rows = "".join(
@@ -309,6 +374,7 @@ def _section_dpe(
     </section>"""
 
     n_sig = sum(len(df) for df in dpe_results.values())
+    dpe_flags_html = _check_dpe_flags(dpe_results)
     fig_bars = _plot_top_features_bar(
         dpe_results, feature_col="protein",
         n_top=10,
@@ -354,6 +420,7 @@ def _section_dpe(
         by log2FC &ge; threshold and BH-adjusted p-value &le; threshold.
         Isotype controls are excluded from results.
       </p>
+      {dpe_flags_html}
       <h3>Top Differential Proteins per Cell Type</h3>
       <div class="fig-grid">
         <div class="fig-wrap wide">
@@ -391,6 +458,24 @@ def _section_rna_crossmodal(
     </section>"""
 
     n_sig = sum(len(df) for df in rna_results.values())
+
+    # Flag cell types whose top 5 RNA DEGs are all downregulated
+    rna_neg_flags = []
+    for ct, df in rna_results.items():
+        if not df.empty and "logfc" in df.columns:
+            if (df.head(5)["logfc"].values < 0).all():
+                rna_neg_flags.append(ct)
+    rna_neg_html = ""
+    if rna_neg_flags:
+        cts = ", ".join(f"<strong>{c}</strong>" for c in rna_neg_flags)
+        rna_neg_html = (
+            f"<div class='note'>⚠ All top 5 RNA DEGs are downregulated for: "
+            f"{cts}. These cell types are transcriptionally defined by what they "
+            f"lack relative to other populations. This is biologically meaningful "
+            f"(e.g. erythroid cells downregulate most transcription at maturity) "
+            f"but check that upregulated markers exist further down the ranked list."
+            f"</div>"
+        )
 
     fig_ranked = _plot_ranked_genes(
         rna_results,
@@ -443,6 +528,7 @@ def _section_rna_crossmodal(
         underlying each immunophenotypically pure population. These gene lists
         are the input to the GSEA step (cite_08).
       </p>
+      {rna_neg_html}
       <h3>Ranked DEG Dot Plot</h3>
       <div class="fig-grid">
         <div class="fig-wrap wide">

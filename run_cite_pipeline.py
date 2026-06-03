@@ -66,6 +66,8 @@ import yaml
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
 
+warnings.filterwarnings("ignore", category=FutureWarning, module="mudata")
+
 logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 # ── repo root ──────────────────────────────────────────────────────────────────

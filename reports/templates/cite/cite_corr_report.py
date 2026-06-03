@@ -5,17 +5,19 @@ reports/templates/cite/cite_corr_report.py
 Generated after cite_corr step (Step 9).
 Output: cite_09_corr_report.html
 
-Three sections
---------------
-1. Run Summary — matched/unmatched/tested/skipped counts, params table
-2. Figures     — correlation distribution histogram + ranked bar chart
-3. Results     — top 15 highest + bottom 15 lowest correlated pairs as tables
+Four sections
+-------------
+1. Run Summary  — matched/unmatched/tested/skipped counts, celltype_key used
+2. Figures      — correlation distribution histogram + ranked bar chart
+3. Results      — top 15 highest + bottom 15 lowest aggregate-r pairs
+4. Per-Cell-Type Heatmap — proteins × cell types coloured by within-CT r
 """
 
 from __future__ import annotations
 
 import base64
 import io
+import json
 from datetime import datetime
 from pathlib import Path
 
@@ -114,7 +116,6 @@ def _render_page(sections: list[str], timestamp: str, dataset_name: str) -> str:
 
 
 def _r_class(r: float) -> str:
-    """Return CSS class for a correlation value."""
     if r >= 0.4:
         return "r-high"
     if r < 0:
@@ -128,8 +129,8 @@ def _r_class(r: float) -> str:
 
 def _plot_correlation_histogram(results_df: pd.DataFrame) -> str:
     """
-    Distribution of Spearman r values across all matched protein-gene pairs.
-    Coloured by zone: high (green), low (yellow), negative (red).
+    Distribution of aggregate Spearman r values across all matched pairs.
+    Coloured by zone: high (green), moderate (yellow), low (orange), negative (red).
     """
     if results_df.empty:
         fig, ax = plt.subplots(figsize=(6, 3))
@@ -142,7 +143,6 @@ def _plot_correlation_histogram(results_df: pd.DataFrame) -> str:
     r_vals = results_df["r"].values
     fig, ax = plt.subplots(figsize=(7, 4))
 
-    # Zone shading
     ax.axvspan(-1,  0.0, alpha=0.06, color="#c0392b", label="Negative")
     ax.axvspan( 0.0, 0.2, alpha=0.06, color="#e67e22", label="Low (0–0.2)")
     ax.axvspan( 0.2, 0.4, alpha=0.06, color="#f1c40f", label="Moderate (0.2–0.4)")
@@ -154,10 +154,10 @@ def _plot_correlation_histogram(results_df: pd.DataFrame) -> str:
                linestyle="--", label=f"Median r = {np.median(r_vals):.3f}")
     ax.axvline(0, color="#555", linewidth=0.8, linestyle=":")
 
-    ax.set_xlabel("Spearman r", fontsize=10)
+    ax.set_xlabel("Aggregate Spearman r (Fisher-z weighted)", fontsize=10)
     ax.set_ylabel("Number of protein-gene pairs", fontsize=10)
     ax.set_title(
-        "Distribution of Protein-RNA Spearman Correlations\n"
+        "Distribution of Within-Cell-Type Protein-RNA Correlations\n"
         f"({len(r_vals)} matched pairs tested)",
         fontsize=11, fontweight="bold",
     )
@@ -168,10 +168,7 @@ def _plot_correlation_histogram(results_df: pd.DataFrame) -> str:
 
 
 def _plot_ranked_correlations(results_df: pd.DataFrame) -> str:
-    """
-    Horizontal bar chart of all tested protein-gene pairs ranked by r.
-    Bars coloured green (high) → yellow (low) → red (negative).
-    """
+    """Horizontal bar chart of all tested pairs ranked by aggregate r."""
     if results_df.empty:
         fig, ax = plt.subplots(figsize=(5, 2))
         ax.text(0.5, 0.5, "No correlation results to display.",
@@ -204,9 +201,9 @@ def _plot_ranked_correlations(results_df: pd.DataFrame) -> str:
     ax.axvline(0.2, color="#f39c12", linewidth=0.8, linestyle="--",
                alpha=0.6, label="r = 0.2")
 
-    ax.set_xlabel("Spearman r", fontsize=10)
+    ax.set_xlabel("Aggregate Spearman r", fontsize=10)
     ax.set_title(
-        "All Protein-Gene Pairs Ranked by Spearman r\n"
+        "All Protein-Gene Pairs Ranked by Aggregate r\n"
         "(protein / gene, sorted ascending)",
         fontsize=11, fontweight="bold",
     )
@@ -214,6 +211,73 @@ def _plot_ranked_correlations(results_df: pd.DataFrame) -> str:
     ax.legend(fontsize=8, frameon=False, loc="lower right")
     ax.spines[["top", "right"]].set_visible(False)
     ax.set_xlim(-1, 1)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _plot_per_celltype_heatmap(per_ct_df: pd.DataFrame) -> str:
+    """
+    Heatmap of within-cell-type Spearman r: proteins (rows) × cell types (cols).
+
+    Each cell shows the r value for that protein-gene pair within that cell type.
+    White = not tested (< min_cells_per_ct). Diverging colormap centred at 0.
+    Positive r (green) = co-regulated within cell type.
+    Negative r (red) = anti-correlated within cell type (true biology, not artifact).
+    """
+    if per_ct_df.empty:
+        fig, ax = plt.subplots(figsize=(6, 3))
+        ax.text(0.5, 0.5, "No per-cell-type results to display.",
+                ha="center", va="center", transform=ax.transAxes,
+                fontsize=10, color="#888")
+        ax.axis("off")
+        return _fig_to_b64(fig)
+
+    # Pivot: protein as row index, cell_type as columns
+    pivot = per_ct_df.pivot_table(
+        index="protein", columns="cell_type", values="r", aggfunc="first"
+    )
+
+    # Sort rows by mean r descending so most-correlated proteins are at top
+    pivot = pivot.loc[pivot.mean(axis=1).sort_values(ascending=False).index]
+
+    n_proteins = len(pivot)
+    n_celltypes = len(pivot.columns)
+    fig_h = max(4, n_proteins * 0.35)
+    fig_w = max(6, n_celltypes * 1.2)
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h))
+
+    im = ax.imshow(
+        pivot.values,
+        cmap="RdYlGn",
+        vmin=-1, vmax=1,
+        aspect="auto",
+        interpolation="nearest",
+    )
+
+    # Annotate cells with r values
+    for i in range(n_proteins):
+        for j in range(n_celltypes):
+            val = pivot.values[i, j]
+            if not np.isnan(val):
+                text_color = "white" if abs(val) > 0.6 else "black"
+                ax.text(j, i, f"{val:.2f}", ha="center", va="center",
+                        fontsize=7, color=text_color)
+
+    ax.set_xticks(range(n_celltypes))
+    ax.set_xticklabels(pivot.columns, rotation=35, ha="right", fontsize=8)
+    ax.set_yticks(range(n_proteins))
+    ax.set_yticklabels(pivot.index, fontsize=8)
+    ax.set_title(
+        "Within-Cell-Type Protein-RNA Spearman r\n"
+        "(white = not tested; green = co-regulated; red = anti-correlated)",
+        fontsize=10, fontweight="bold",
+    )
+
+    cbar = fig.colorbar(im, ax=ax, fraction=0.03, pad=0.04)
+    cbar.set_label("Spearman r", fontsize=9)
+    cbar.ax.tick_params(labelsize=8)
+
     fig.tight_layout()
     return _fig_to_b64(fig)
 
@@ -227,15 +291,19 @@ def _section_run_summary(
     dataset_name: str,
     timestamp: str,
 ) -> str:
-    n_panel    = provenance.get("n_proteins_panel", "?")
-    n_matched  = provenance.get("n_matched", "?")
-    n_unmatched= provenance.get("n_unmatched", "?")
-    n_tested   = provenance.get("n_tested", "?")
-    n_skipped  = provenance.get("n_skipped", "?")
-    method     = provenance.get("method", "spearman")
-    min_cells  = provenance.get("min_cells", "?")
-    bh_corr    = provenance.get("bh_correction", False)
-    unmatched  = provenance.get("unmatched_proteins", [])
+    n_panel        = provenance.get("n_proteins_panel", "?")
+    n_matched      = provenance.get("n_matched", "?")
+    n_unmatched    = provenance.get("n_unmatched", "?")
+    n_tested       = provenance.get("n_tested", "?")
+    n_skipped      = provenance.get("n_skipped", "?")
+    method         = provenance.get("method", "spearman")
+    min_cells      = provenance.get("min_cells", "?")
+    min_cells_ct   = provenance.get("min_cells_per_ct", "?")
+    bh_corr        = provenance.get("bh_correction", False)
+    celltype_key   = provenance.get("celltype_key", "not reported")
+    use_per_ct     = provenance.get("use_per_celltype", False)
+    n_celltypes    = provenance.get("n_celltypes", 0)
+    unmatched      = provenance.get("unmatched_proteins", [])
 
     unmatched_html = ""
     if unmatched:
@@ -247,6 +315,19 @@ def _section_run_summary(
             f"These are typically isotype controls or proteins whose antibody "
             f"name does not match the gene symbol convention.</p>"
         )
+
+    mode_note = (
+        f"Within-cell-type mode — r computed per cell type "
+        f"(<code>{celltype_key}</code>, {n_celltypes} groups) "
+        f"and aggregated using Fisher z-transform weighting. "
+        f"This removes cross-population compositional artifacts from CLR normalization."
+        if use_per_ct
+        else
+        "Global mode — r computed across all cells (no cell type column found). "
+        "Results may reflect compositional artifacts. Run adt_annotate first for "
+        "within-cell-type correlation."
+    )
+    mode_class = "interp" if use_per_ct else "note"
 
     cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
@@ -262,9 +343,12 @@ def _section_run_summary(
     rows = "".join(
         f"<tr><td>{k}</td><td><code>{v}</code></td></tr>"
         for k, v in [
-            ("Method",          method),
-            ("Min cells",       min_cells),
-            ("BH FDR applied",  "yes" if bh_corr else "no (statsmodels not available)"),
+            ("Method",              method),
+            ("Min cells (global)",  min_cells),
+            ("Min cells (per CT)",  min_cells_ct),
+            ("Cell type key",       celltype_key),
+            ("N cell types",        n_celltypes),
+            ("BH FDR applied",      "yes" if bh_corr else "no (statsmodels not available)"),
         ]
     )
     return f"""
@@ -274,15 +358,15 @@ def _section_run_summary(
          &middot; {timestamp}</p>
       <div class="interp">
         <strong>How to read this report:</strong>
-        High correlation (r &gt; 0.4) = protein and mRNA are co-regulated —
-        expected for canonical lineage markers.
-        Low or zero correlation (|r| &lt; 0.2) = post-transcriptional regulation
-        — protein level is controlled at translation, secretion, or membrane
-        trafficking rather than transcription. These pairs are often the most
-        biologically interesting.
-        Negative correlation = rare; may indicate feedback inhibition or
-        technical cross-reactivity.
+        r values are computed <em>within each cell type</em> and aggregated
+        using Fisher z-transform weighting. This removes the cross-cell-type
+        compositional artifact that CLR normalization introduces in panels
+        dominated by one lineage.
+        High r (&gt; 0.4) = protein and mRNA co-regulated within cell type.
+        Low or zero r (|r| &lt; 0.2) = post-transcriptional regulation.
+        Negative r = true within-cell-type anti-correlation (rare; biologically meaningful).
       </div>
+      <div class="{mode_class}">{mode_note}</div>
       {unmatched_html}
       <div class="stat-grid">{cards}</div>
       <table>
@@ -302,7 +386,7 @@ def _section_figures(results_df: pd.DataFrame) -> str:
     </section>"""
 
     print("  Rendering correlation histogram ...", flush=True)
-    fig_hist = _plot_correlation_histogram(results_df)
+    fig_hist   = _plot_correlation_histogram(results_df)
     print("  Rendering ranked correlation bar chart ...", flush=True)
     fig_ranked = _plot_ranked_correlations(results_df)
 
@@ -324,6 +408,37 @@ def _section_figures(results_df: pd.DataFrame) -> str:
     </section>"""
 
 
+def _section_per_celltype_heatmap(per_ct_df: pd.DataFrame) -> str:
+    """New section: within-cell-type r heatmap (proteins × cell types)."""
+    if per_ct_df.empty:
+        return ""  # Section omitted entirely if no per-CT data
+
+    print("  Rendering per-cell-type correlation heatmap ...", flush=True)
+    fig_heatmap = _plot_per_celltype_heatmap(per_ct_df)
+
+    return f"""
+    <section>
+      <h2>Within-Cell-Type Correlation Heatmap</h2>
+      <p>
+        Each cell shows the Spearman r between protein (ADT CLR) and mRNA
+        expression computed within that cell type. White cells were not tested
+        (too few cells expressing both modalities in that group).
+        Green = protein and mRNA co-regulated within cell type.
+        Red = anti-correlated within cell type.
+      </p>
+      <div class="interp">
+        Proteins with consistently low or negative r across all cell types
+        are post-transcriptionally regulated — the surface protein is a better
+        cell-type marker than the mRNA. Proteins with high r only in specific
+        cell types indicate context-dependent co-regulation.
+      </div>
+      <div class="fig-wrap wide">
+        <img src="data:image/png;base64,{fig_heatmap}"
+             alt="Per-cell-type protein-RNA correlation heatmap">
+      </div>
+    </section>"""
+
+
 def _section_results_tables(results_df: pd.DataFrame) -> str:
     if results_df.empty:
         return """
@@ -339,7 +454,9 @@ def _section_results_tables(results_df: pd.DataFrame) -> str:
         for _, row in df.iterrows():
             r_val = float(row["r"])
             css   = _r_class(r_val)
-            sig   = "✓" if float(row.get("pval_adj", 1.0)) < 0.05 else ""
+            sig = "✓" if float(row.get("pval_adj", 1.0)) < 0.05 and abs(r_val) >= 0.1 else ""
+            n_ct  = int(row.get("n_celltypes", 0))
+            n_ct_str = str(n_ct) if n_ct > 0 else "—"
             rows += (
                 f"<tr>"
                 f"<td><strong>{row['protein']}</strong></td>"
@@ -348,6 +465,7 @@ def _section_results_tables(results_df: pd.DataFrame) -> str:
                 f"<td>{float(row['pval']):.2e}</td>"
                 f"<td>{float(row.get('pval_adj', float('nan'))):.2e}</td>"
                 f"<td>{int(row['n_cells'])}</td>"
+                f"<td style='text-align:center'>{n_ct_str}</td>"
                 f"<td style='text-align:center'>{sig}</td>"
                 f"<td><code>{row['matched_by']}</code></td>"
                 f"</tr>"
@@ -357,7 +475,8 @@ def _section_results_tables(results_df: pd.DataFrame) -> str:
             "<thead><tr>"
             "<th>Protein</th><th>Gene</th><th>r</th>"
             "<th>p-value</th><th>adj p-value</th>"
-            "<th>N cells</th><th>FDR &lt; 0.05</th><th>Match type</th>"
+            "<th>N cells</th><th>N cell types</th>"
+            "<th>FDR &lt; 0.05</th><th>Match type</th>"
             "</tr></thead>"
             f"<tbody>{rows}</tbody></table>"
         )
@@ -366,24 +485,23 @@ def _section_results_tables(results_df: pd.DataFrame) -> str:
     top_df = results_df.nlargest(15, "r")
     bot_df = results_df.nsmallest(15, "r")
 
-    # Summary stats
-    r_vals  = results_df["r"].values
-    n_high  = int((r_vals >= 0.4).sum())
-    n_mod   = int(((r_vals >= 0.2) & (r_vals < 0.4)).sum())
-    n_low   = int(((r_vals >= 0) & (r_vals < 0.2)).sum())
-    n_neg   = int((r_vals < 0).sum())
-    n_sig   = int((results_df.get("pval_adj", results_df["pval"]) < 0.05).sum())
+    r_vals = results_df["r"].values
+    n_high = int((r_vals >= 0.4).sum())
+    n_mod  = int(((r_vals >= 0.2) & (r_vals < 0.4)).sum())
+    n_low  = int(((r_vals >= 0) & (r_vals < 0.2)).sum())
+    n_neg  = int((r_vals < 0).sum())
+    n_sig  = int((results_df.get("pval_adj", results_df["pval"]) < 0.05).sum())
 
     summary_cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
         for k, v in [
-            ("High r ≥ 0.4",      n_high),
-            ("Moderate 0.2–0.4",  n_mod),
-            ("Low 0–0.2",         n_low),
-            ("Negative r",        n_neg),
-            ("FDR < 0.05",        n_sig),
-            ("Median r",          f"{float(np.median(r_vals)):.3f}"),
+            ("High r ≥ 0.4",     n_high),
+            ("Moderate 0.2–0.4", n_mod),
+            ("Low 0–0.2",        n_low),
+            ("Negative r",       n_neg),
+            ("FDR < 0.05",       n_sig),
+            ("Median r",         f"{float(np.median(r_vals)):.3f}"),
         ]
     )
 
@@ -418,8 +536,8 @@ def run_cite_corr_report(
     Parameters
     ----------
     corr_dict : dict
-        Dict returned by cite_corr(). Keys: results, matched, unmatched,
-        skipped, provenance.
+        Dict returned by cite_corr(). Keys: results, results_per_celltype,
+        matched, unmatched, skipped, provenance.
     report_path : str
         Where to write the HTML file.
     dataset_name : str
@@ -435,6 +553,7 @@ def run_cite_corr_report(
     timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
 
     results_df = corr_dict.get("results", pd.DataFrame())
+    per_ct_df  = corr_dict.get("results_per_celltype", pd.DataFrame())
     provenance = corr_dict.get("provenance", {})
 
     print(f"Building CITE correlation report for '{dataset_name}' ...", flush=True)
@@ -442,6 +561,7 @@ def run_cite_corr_report(
     sections = [
         _section_run_summary(provenance, dataset_name, timestamp),
         _section_figures(results_df),
+        _section_per_celltype_heatmap(per_ct_df),
         _section_results_tables(results_df),
     ]
 

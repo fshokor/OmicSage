@@ -461,18 +461,59 @@ def _section_cluster_table(adt: AnnData, metrics: dict) -> str:
     has_ct = "adt_celltype" in adt.obs.columns
     header = "<tr><th>Cluster</th><th>Cells</th>"
     header += "<th>Cell Type</th>" if has_ct else ""
-    header += "<th>% of total</th></tr>"
+    has_score = "adt_celltype_score" in adt.obs.columns
+    header += "<th>Mean score</th>" if has_score else ""
+    header += "<th>% of total</th><th></th></tr>"
     total  = sum(cluster_sizes.values()) or 1
     rows   = ""
+    large_clusters = []
     for cid in sorted(cluster_sizes.keys(), key=lambda x: int(x) if x.isdigit() else x):
         cnt = cluster_sizes[cid]
+        pct = 100.0 * cnt / total
         ct_cell = ""
         if has_ct:
             ct_vals = adt.obs.loc[adt.obs["leiden"] == str(cid), "adt_celltype"].unique()
             ct = ct_vals[0] if len(ct_vals) == 1 else ", ".join(ct_vals[:3])
             ct_cell = f"<td>{ct}</td>"
-        pct = 100.0 * cnt / total
-        rows += f"<tr><td>{cid}</td><td>{cnt:,}</td>{ct_cell}<td>{pct:.1f}%</td></tr>"
+
+        score_cell = ""
+        if has_score:
+            scores = adt.obs.loc[
+                adt.obs["leiden"] == str(cid), "adt_celltype_score"
+            ]
+            # score column may be categorical (label) — try numeric first
+            try:
+                mean_score = float(scores.astype(float).mean())
+                score_cell = f"<td>{mean_score:.2f}</td>"
+            except (ValueError, TypeError):
+                # categorical: show mode label
+                mode_val = scores.mode()
+                score_cell = f"<td>{mode_val.iloc[0] if len(mode_val) else '—'}</td>"
+
+        flag_cell = ""
+        if pct > 20:
+            large_clusters.append((cid, pct))
+            flag_cell = (
+                "<td style='color:#856404;font-size:0.8rem;'>⚠ large — "
+                "sub-clustering candidate</td>"
+            )
+
+        rows += (
+            f"<tr><td>{cid}</td><td>{cnt:,}</td>{ct_cell}"
+            f"{score_cell}<td>{pct:.1f}%</td>{flag_cell}</tr>"
+        )
+
+    large_warn = ""
+    if large_clusters:
+        items = ", ".join(
+            f"<strong>{cid}</strong> ({pct:.1f}%)" for cid, pct in large_clusters
+        )
+        large_warn = (
+            f"<p class='note'>⚠ Clusters exceeding 20% of total cells: {items}. "
+            f"Large clusters may represent heterogeneous populations that benefit "
+            f"from sub-clustering. Consider increasing resolution or running a "
+            f"focused sub-clustering on these clusters.</p>"
+        )
 
     note = ""
     if not metrics.get("annotated"):
@@ -485,6 +526,7 @@ def _section_cluster_table(adt: AnnData, metrics: dict) -> str:
     <section>
       <h2>Cluster Table</h2>
       {note}
+      {large_warn}
       <table><thead>{header}</thead><tbody>{rows}</tbody></table>
     </section>"""
 

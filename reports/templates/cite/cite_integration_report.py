@@ -468,14 +468,25 @@ def _section_summary(metrics: dict, method: str, dataset_name: str,
         dim_label = "Methods"
         dim_value = "MOFA+ + totalVI"
 
+    # Resolve n_batches — may live under top-level or nested under method key
+    n_batches_raw = (
+        metrics.get("n_batches")
+        or metrics.get("mofa", {}).get("n_batches")
+        or metrics.get("totalvi", {}).get("n_batches")
+    )
+    try:
+        n_batches_display = str(int(n_batches_raw))
+    except (TypeError, ValueError):
+        n_batches_display = "?"
+
     cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
         for k, v in [
-            ("Cells",     f"{metrics.get('n_cells', '?'):,}"),
+            ("Cells",     f"{metrics.get('n_cells', '?'):,}" if isinstance(metrics.get('n_cells'), int) else str(metrics.get('n_cells', '?'))),
             ("Method",    method.upper()),
             (dim_label,   dim_value),
-            ("Batches",   str(metrics.get("n_batches", "?"))),
+            ("Batches",   n_batches_display),
             ("Batch key", metrics.get("batch_key", "?")),
         ]
     )
@@ -533,17 +544,123 @@ def _section_before_after(panels: list[tuple[str, str, str]], method: str) -> st
     </section>"""
 
 
+def _interpret_scib_metric(key: str, value: float) -> str:
+    """Return a short verdict string for a single scib metric value."""
+    k = key.lower()
+    if "ilisi" in k:
+        if value >= 0.5:
+            return "✓ Good batch mixing"
+        if value >= 0.2:
+            return "⚠ Partial batch mixing"
+        return "✗ Poor batch mixing"
+    if "graph_conn" in k:
+        if value >= 0.5:
+            return "✓ Good connectivity"
+        return "⚠ Below threshold (< 0.5)"
+    if "clisi" in k:
+        if value >= 0.95:
+            return "✓ Biology preserved"
+        if value >= 0.85:
+            return "⚠ Partial biology preserved"
+        return "✗ Biology may be scrambled"
+    if "asw" in k:
+        if value >= 0.4:
+            return "✓ Cell types separable"
+        if value >= 0.2:
+            return "⚠ Adequate separation"
+        return "✗ Poor cell type separation"
+    return ""
+
+
+def _preferred_embedding(comparison: dict) -> str:
+    """
+    Given a scib_comparison dict with mofa_* and totalvi_* keys,
+    recommend which embedding is better for downstream analysis
+    and explain why based on the four key metrics.
+    """
+    mofa    = {k[5:]: v  for k, v in comparison.items()
+               if k.startswith("mofa_") and isinstance(v, float)}
+    totalvi = {k[8:]: v  for k, v in comparison.items()
+               if k.startswith("totalvi_") and isinstance(v, float)}
+
+    if not mofa or not totalvi:
+        return ""
+
+    # Score each method: batch mixing (iLISI + graph_conn) vs bio (cLISI + ASW)
+    def _score(d):
+        batch = (d.get("ilisi", 0) + d.get("graph_conn", 0)) / 2
+        bio   = (d.get("clisi", 0) + d.get("asw_label", 0)) / 2
+        return batch, bio
+
+    m_batch, m_bio = _score(mofa)
+    t_batch, t_bio = _score(totalvi)
+
+    if t_batch > m_batch and t_bio >= m_bio:
+        winner = "totalVI"
+        reason = (
+            f"totalVI shows better batch mixing "
+            f"(iLISI {totalvi.get('ilisi', 0):.3f} vs {mofa.get('ilisi', 0):.3f}) "
+            f"while preserving equivalent biological structure "
+            f"(ASW {totalvi.get('asw_label', 0):.3f} vs {mofa.get('asw_label', 0):.3f})."
+        )
+    elif m_batch > t_batch and m_bio >= t_bio:
+        winner = "MOFA+"
+        reason = (
+            f"MOFA+ shows better batch mixing "
+            f"(iLISI {mofa.get('ilisi', 0):.3f} vs {totalvi.get('ilisi', 0):.3f}) "
+            f"while preserving equivalent biological structure "
+            f"(ASW {mofa.get('asw_label', 0):.3f} vs {totalvi.get('asw_label', 0):.3f})."
+        )
+    elif t_bio > m_bio:
+        winner = "totalVI"
+        reason = (
+            f"totalVI preserves better biological structure "
+            f"(ASW {totalvi.get('asw_label', 0):.3f} vs {mofa.get('asw_label', 0):.3f}). "
+            f"Batch mixing is limited for both methods."
+        )
+    else:
+        winner = "MOFA+"
+        reason = (
+            f"MOFA+ preserves better biological structure "
+            f"(ASW {mofa.get('asw_label', 0):.3f} vs {totalvi.get('asw_label', 0):.3f}). "
+            f"Consider re-running totalVI with more training epochs if batch "
+            f"mixing is a priority."
+        )
+
+    return (
+        f"<div style='background:#d4edda;border-left:3px solid #28a745;"
+        f"padding:10px 14px;border-radius:4px;margin-top:14px;"
+        f"font-size:0.88rem;color:#155724;'>"
+        f"<strong>Recommended embedding for downstream analysis: {winner}.</strong> "
+        f"{reason} Use the {winner} UMAP and latent embedding for trajectory, "
+        f"ligand-receptor, and sub-clustering analyses."
+        f"</div>"
+    )
+
+
 def _section_scib(scib_dict: dict, fig_bar: str,
                   is_comparison: bool = False) -> str:
-    # Build metrics table
+    # Build metrics table with interpretation column
     rows = ""
     for k, v in scib_dict.items():
         if k.endswith("_error"):
-            rows += f"<tr><td><code>{k}</code></td><td style='color:#c0392b'>{v}</td></tr>"
+            rows += (
+                f"<tr><td><code>{k}</code></td>"
+                f"<td style='color:#c0392b'>{v}</td><td>—</td></tr>"
+            )
         elif isinstance(v, float):
-            rows += f"<tr><td><code>{k}</code></td><td>{v:.4f}</td></tr>"
+            interp = _interpret_scib_metric(k, v)
+            rows += (
+                f"<tr><td><code>{k}</code></td>"
+                f"<td>{v:.4f}</td><td>{interp}</td></tr>"
+            )
         else:
-            rows += f"<tr><td><code>{k}</code></td><td>{v}</td></tr>"
+            rows += (
+                f"<tr><td><code>{k}</code></td>"
+                f"<td>{v}</td><td></td></tr>"
+            )
+
+    preferred_html = _preferred_embedding(scib_dict) if is_comparison else ""
 
     title = "scib Benchmark Comparison (MOFA+ vs totalVI)" if is_comparison \
             else "scib Integration Benchmark Metrics"
@@ -567,9 +684,10 @@ def _section_scib(scib_dict: dict, fig_bar: str,
         </div>
       </div>
       <table style="margin-top:16px;">
-        <thead><tr><th>Metric</th><th>Value</th></tr></thead>
+        <thead><tr><th>Metric</th><th>Value</th><th>Interpretation</th></tr></thead>
         <tbody>{rows}</tbody>
       </table>
+      {preferred_html}
     </section>"""
 
 
