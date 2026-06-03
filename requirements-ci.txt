@@ -1,11 +1,12 @@
 # requirements-ci.txt
 # Lightweight dependencies for CI test runner.
-# Does NOT include heavy packages (scvi-tools, pytorch, streamlit, etc.)
+# Does NOT include heavy packages (pytorch, streamlit, plotly, etc.)
 # Full environment: use environment.yml with conda
 
 numpy>=1.26
 scipy>=1.12
 pandas>=2.2
+matplotlib>=3.8
 anndata>=0.10
 mudata>=0.2
 scanpy>=1.10
@@ -21,14 +22,14 @@ click>=8.1
 scikit-misc>=0.3
 kneed>=0.8.5
 celltypist>=1.6
-gseapy>=1.1.0
+gseapy==1.1.3
 pydeseq2>=0.4
-
 singler>=0.5.0
 celldex>=0.3.0
-
 mofapy2>=0.7
-scvi-tools>=1.0
+scvi-tools>=1.1
 harmonypy>=0.0.9
-muon>=0.1.5
+muon>=0.1.6
 scib>=1.1.0
+python-pptx==1.0.2
+beautifulsoup4>=4.12

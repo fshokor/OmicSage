@@ -226,6 +226,7 @@ def cite_deg(
         "n_genes": n_genes,
         "exclude_protein_prefixes": exclude_protein_prefixes,
         "exclude_gene_prefixes": exclude_gene_prefixes,
+        "n_cells": data.n_obs,
         "n_cell_types": len(dpe_results),
         "n_dpe_significant": n_dpe_sig,
         "n_rna_crossmodal_significant": n_rna_sig,
