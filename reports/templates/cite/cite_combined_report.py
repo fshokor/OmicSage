@@ -55,6 +55,7 @@ TAB_REGISTRY = [
     ("cite_07_deg_report.html",          "DEG / DPE",     "📊"),
     ("cite_08_gsea_report.html",         "GSEA",          "🧬"),
     ("cite_09_corr_report.html",         "Protein-RNA",   "🔬"),
+    ("cite_10_epitope_report.html",      "Epitope",       "🧫"),
 ]
 
 

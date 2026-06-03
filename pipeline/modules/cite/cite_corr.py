@@ -299,6 +299,16 @@ def cite_corr(
     }
     data.uns["omicsage_cite_corr"] = provenance
 
+    # Persist results DataFrame in uns as a JSON string so it survives
+    # the h5mu round-trip. A plain records list fails because h5py cannot
+    # serialise mixed-type Python objects (float, int, str, NaN) when
+    # anndata writes the list as a vlen string array. A single JSON string
+    # is always safe — anndata writes it as a scalar string dataset.
+    if not results_df.empty:
+        data.uns["omicsage_cite_corr_results"] = results_df.to_json(orient="records")
+    else:
+        data.uns["omicsage_cite_corr_results"] = "[]"
+
     # ------------------------------------------------------------------
     # 6. Assemble return dict
     # ------------------------------------------------------------------

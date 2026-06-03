@@ -88,32 +88,35 @@ STEP_ORDER = [
     "deg_cite",
     "gsea_cite",
     "protein_rna_corr",
+    "epitope_characterisation",
 ]
 
 # Output filename per step
 STEP_OUTPUT = {
-    "normalize_adt": "cite_01_normalized_adt.h5ad",
-    "doublets":      "cite_02_doublets_adt.h5ad",
-    "reduce_adt":    "cite_03_reduced_adt.h5ad",
-    "harmony_adt":   "cite_04_harmony_adt.h5ad",
-    "annotate_adt":  "cite_05_annotated_adt.h5ad",
-    "integration":   "cite_06_integration.h5mu",
-    "deg_cite":      "cite_07_deg.h5mu",
-    "gsea_cite":     "cite_08_gsea.h5mu",
-    "protein_rna_corr": "cite_09_corr.h5mu",
+    "normalize_adt":          "cite_01_normalized_adt.h5ad",
+    "doublets":               "cite_02_doublets_adt.h5ad",
+    "reduce_adt":             "cite_03_reduced_adt.h5ad",
+    "harmony_adt":            "cite_04_harmony_adt.h5ad",
+    "annotate_adt":           "cite_05_annotated_adt.h5ad",
+    "integration":            "cite_06_integration.h5mu",
+    "deg_cite":               "cite_07_deg.h5mu",
+    "gsea_cite":              "cite_08_gsea.h5mu",
+    "protein_rna_corr":       "cite_09_corr.h5mu",
+    "epitope_characterisation": "cite_10_epitope.h5mu",
 }
 
-# Predecessor for each step (None = reads from adt_input path directly)
+# Predecessor for each step
 STEP_PREDECESSOR = {
-    "normalize_adt": None,
-    "doublets":      "normalize_adt",
-    "reduce_adt":    "doublets",
-    "harmony_adt":   "reduce_adt",
-    "annotate_adt":  "harmony_adt",
-    "integration":   "annotate_adt",
-    "deg_cite":      "integration",
-    "gsea_cite":     "deg_cite",
-    "protein_rna_corr": "integration",  # reads cite_06 directly — independent of DEG/GSEA
+    "normalize_adt":          None,
+    "doublets":               "normalize_adt",
+    "reduce_adt":             "doublets",
+    "harmony_adt":            "reduce_adt",
+    "annotate_adt":           "harmony_adt",
+    "integration":            "annotate_adt",
+    "deg_cite":               "integration",
+    "gsea_cite":              "deg_cite",
+    "protein_rna_corr":       "integration",
+    "epitope_characterisation": "integration",  # reads cite_06 + optionally cite_07 + cite_09
 }
 
 
@@ -788,20 +791,159 @@ def run_protein_rna_corr(input_path: Path, out: Path, reports_dir: Path,
     return out
 
 
+# ── Step 10: epitope_characterisation ────────────────────────────────────────
+
+def run_epitope_characterisation(input_path: Path, out: Path, reports_dir: Path,
+                                  params: dict, cfg: dict,
+                                  processed_dir: Path,
+                                  force: bool = False) -> Path:
+    if out.exists() and not force:
+        print(f"[epitope_characterisation] cached → {out}")
+        return out
+
+    print("[epitope_characterisation] running …")
+    import mudata as mu
+    import pandas as pd
+    from pipeline.modules.cite.cite_epitope import cite_epitope
+
+    # Primary input: cite_06 MuData (RNA + ADT + labels)
+    mdata = mu.read(str(input_path))
+
+    # Optional: load cite_07 DEG/DPE results
+    dpe_results = None
+    deg_path = processed_dir / STEP_OUTPUT["deg_cite"]
+    if deg_path.exists():
+        try:
+            mdata_deg = mu.read(str(deg_path))
+            dpe_results = _reconstruct_dpe_results(mdata_deg)
+            print(f"[epitope_characterisation] loaded DPE from {deg_path}")
+        except Exception as e:
+            print(f"[epitope_characterisation] WARNING: could not load DEG: {e}")
+
+    # Optional: load cite_09 correlation results
+    corr_results = None
+    corr_path = processed_dir / STEP_OUTPUT["protein_rna_corr"]
+    if corr_path.exists():
+        try:
+            mdata_corr = mu.read(str(corr_path))
+            corr_results = _reconstruct_corr_results(mdata_corr)
+            print(f"[epitope_characterisation] loaded corr from {corr_path}")
+        except Exception as e:
+            print(f"[epitope_characterisation] WARNING: could not load corr: {e}")
+
+    # Resolve panels: custom > preset
+    epitope_panels = params.get("epitope_panels") or None
+    preset         = params.get("preset") or None
+
+    mdata_ep, epitope_dict = cite_epitope(
+        mdata,
+        corr_results=corr_results,
+        dpe_results=dpe_results,
+        preset=preset,
+        epitope_panels=epitope_panels,
+        groupby=params.get("groupby", "adt_celltype_manual"),
+        groupby_fallback=params.get("groupby_fallback", "adt_celltype_score"),
+        n_top_markers=params.get("n_top_markers", 5),
+        inplace=False,
+    )
+
+    prov = epitope_dict["provenance"]
+    print(
+        f"[epitope_characterisation] {prov['n_panels']} panels"
+        f"  {len(prov['score_obs_keys'])} score columns written → {out}"
+    )
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        mdata_ep.write(out)
+
+    try:
+        from reports.templates.cite.cite_epitope_report import run_cite_epitope_report
+        run_cite_epitope_report(
+            mdata=mdata_ep,
+            epitope_dict=epitope_dict,
+            report_path=str(reports_dir / "cite_10_epitope_report.html"),
+            dataset_name=cfg["dataset"].get("name", cfg["dataset"]["id"]),
+            corr_results=corr_results,
+        )
+    except Exception as e:
+        print(f"[epitope_characterisation] WARNING: report failed: {e}")
+    return out
+
+
+def _reconstruct_dpe_results(mdata_deg) -> dict:
+    """
+    Rebuild dpe_results dict from persisted cite_07 MuData.
+    Reads mdata["adt"].uns["rank_genes_groups_dpe"] and returns
+    {cell_type: DataFrame(protein, logfc, pval, pval_adj, score)}.
+    """
+    import numpy as np
+    import pandas as pd
+
+    adt = mdata_deg["adt"] if "adt" in mdata_deg.mod else None
+    if adt is None or "rank_genes_groups_dpe" not in adt.uns:
+        return {}
+
+    rgg = adt.uns["rank_genes_groups_dpe"]
+    groups = list(rgg["names"].dtype.names)
+    n_genes = rgg["names"].shape[0]
+    results = {}
+
+    for group in groups:
+        def _s(field, g=group):
+            if field not in rgg:
+                return np.zeros(n_genes)
+            arr = rgg[field]
+            if arr.dtype.names and g in arr.dtype.names:
+                return arr[g]
+            return np.zeros(n_genes)
+
+        df = pd.DataFrame({
+            "protein":  rgg["names"][group],
+            "score":    _s("scores"),
+            "pval":     _s("pvals"),
+            "logfc":    _s("logfoldchanges"),
+            "pval_adj": _s("pvals_adj"),
+        }).dropna(subset=["protein"])
+        df = df[df["protein"] != ""].reset_index(drop=True)
+        results[group] = df
+
+    return results
+
+
+def _reconstruct_corr_results(mdata_corr):
+    """
+    Rebuild corr_results DataFrame from persisted cite_09 MuData.
+    cite_corr stores the full results as a records list in
+    mdata.uns["omicsage_cite_corr_results"] so it survives the h5mu
+    round-trip. Returns a DataFrame, or None if the key is absent.
+    """
+    import pandas as pd
+    import json
+    json_str = mdata_corr.uns.get("omicsage_cite_corr_results")
+    if not json_str:
+        return None
+    records = json.loads(json_str)
+    if not records:
+        return None
+    return pd.DataFrame(records)
+
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP → RUNNER MAP
 # ══════════════════════════════════════════════════════════════════════════════
 
 STEP_RUNNERS = {
-    "normalize_adt":    run_normalize_adt,
-    "doublets":         run_doublets,
-    "reduce_adt":       run_reduce_adt,
-    "harmony_adt":      run_harmony_adt,
-    "annotate_adt":     run_annotate_adt,
-    "deg_cite":         run_deg_cite,
-    "gsea_cite":        run_gsea_cite,
-    "protein_rna_corr": run_protein_rna_corr,
-    # integration handled separately (needs extra args)
+    "normalize_adt":          run_normalize_adt,
+    "doublets":               run_doublets,
+    "reduce_adt":             run_reduce_adt,
+    "harmony_adt":            run_harmony_adt,
+    "annotate_adt":           run_annotate_adt,
+    "deg_cite":               run_deg_cite,
+    "gsea_cite":              run_gsea_cite,
+    "protein_rna_corr":       run_protein_rna_corr,
+    # integration and epitope_characterisation handled separately
 }
 
 
@@ -908,6 +1050,12 @@ def main():
 
         if step == "integration":
             run_integration(
+                input_path, out, reports_dir, params, cfg,
+                processed_dir=processed_dir,
+                force=args.force,
+            )
+        elif step == "epitope_characterisation":
+            run_epitope_characterisation(
                 input_path, out, reports_dir, params, cfg,
                 processed_dir=processed_dir,
                 force=args.force,

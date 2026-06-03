@@ -292,3 +292,29 @@ steps:
       # If true (default), uses mdata["rna"].layers["logcounts"] for RNA.
       # Set false to use mdata["rna"].X directly.
       use_logcounts: true
+
+  epitope_characterisation:
+    enabled: true
+    params:
+      # Cell type grouping column on mdata["adt"].obs
+      groupby: adt_celltype_manual
+      groupby_fallback: adt_celltype_score
+
+      # Panel source: preset or custom (custom takes precedence if both set)
+      # Built-in presets: "bmmc", "pbmc"
+      preset: bmmc
+
+      # Custom panels override preset when provided.
+      # Keys = panel name, values = list of protein name prefixes.
+      # Prefix matching is case-insensitive: "CD3" matches CD3E, CD3D, CD3G.
+      # epitope_panels: null
+      # epitope_panels:
+      #   T_cell:    [CD3, CD5, CD2]
+      #   B_cell:    [CD19, CD20, CD22]
+      #   Myeloid:   [CD14, CD11c, CD172a]
+      #   NK:        [CD56, CD16]
+      #   Erythroid: [CD71, CD36]
+      epitope_panels: null
+
+      # Number of top DPE markers per cell type in the cross-modal table
+      n_top_markers: 5

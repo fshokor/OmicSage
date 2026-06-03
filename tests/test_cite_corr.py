@@ -152,6 +152,52 @@ class TestReturnContract:
         assert "timestamp" in prov
         assert "n_matched" in prov
 
+    def test_results_persisted_in_uns(self, mdata_fixture):
+        """Results DataFrame stored as JSON string for h5mu round-trip."""
+        import json
+        result, corr_dict = cite_corr(mdata_fixture, min_cells=1, inplace=False)
+        assert "omicsage_cite_corr_results" in result.uns
+        json_str = result.uns["omicsage_cite_corr_results"]
+        assert isinstance(json_str, str)
+        # Parses back to correct number of records
+        records = json.loads(json_str)
+        assert len(records) == len(corr_dict["results"])
+
+    def test_results_records_have_expected_keys(self, mdata_fixture):
+        """Parsed records have the same columns as the results DataFrame."""
+        import json
+        result, _ = cite_corr(mdata_fixture, min_cells=1, inplace=False)
+        json_str = result.uns["omicsage_cite_corr_results"]
+        records = json.loads(json_str)
+        if records:
+            expected = {"protein", "gene", "r", "pval", "pval_adj",
+                        "n_cells", "matched_by"}
+            assert expected.issubset(set(records[0].keys()))
+
+    def test_empty_uns_results_when_no_pairs(self):
+        """Empty results → JSON string '[]' in uns, not missing key."""
+        import json
+        import numpy as np
+        import scipy.sparse as sp
+        rng = np.random.default_rng(42)
+        rna = AnnData(X=sp.csr_matrix(
+            rng.poisson(1, size=(50, 5)).astype(np.float32)
+        ))
+        rna.obs_names = [f"cell_{i}" for i in range(50)]
+        rna.var_names = [f"RNAGene{i}" for i in range(5)]
+        adt = AnnData(X=sp.csr_matrix(
+            np.abs(rng.normal(0, 1, size=(50, 2))).astype(np.float32)
+        ))
+        adt.obs_names = [f"cell_{i}" for i in range(50)]
+        adt.var_names = ["Mouse-IgG1", "Rat-IgG2b"]
+        adt.layers["adt_clr"] = adt.X.toarray().copy()
+        mdata = MuData({"rna": rna, "adt": adt})
+        with warnings.catch_warnings(record=True):
+            warnings.simplefilter("always")
+            result, _ = cite_corr(mdata, inplace=False)
+        assert "omicsage_cite_corr_results" in result.uns
+        assert json.loads(result.uns["omicsage_cite_corr_results"]) == []
+
     def test_inplace_false_does_not_modify_original(self, mdata_fixture):
         original_uns = set(mdata_fixture.uns.keys())
         cite_corr(mdata_fixture, inplace=False)
