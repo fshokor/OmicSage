@@ -60,8 +60,8 @@ steps:
       # max_genes is looser than CITE-seq to avoid over-filtering.
       # INSPECT the QC report after first run and adjust if needed.
       min_genes: 200
-      max_genes: 4000       # multiome RNA tends to be shallower — adjust up if too many cells lost
-      max_mt_pct: 10.0      # BMMC immune cells — stricter than tumour tissue
+      max_genes: 2500       # multiome RNA tends to be shallower — adjust up if too many cells lost
+      max_mt_pct: 8.0      # BMMC immune cells — stricter than tumour tissue
       remove_doublets: true
 
   normalize:

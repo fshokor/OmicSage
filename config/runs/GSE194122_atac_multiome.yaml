@@ -1,0 +1,70 @@
+# OmicSage — Multiome Pipeline Config
+# Dataset: GSE194122 NeurIPS 2021 BMMC Multiome (RNA + ATAC)
+# Run: python run_multiome_pipeline.py --config config/runs/GSE194122_multiome.yaml
+
+dataset:
+  id:   GSE194122_multiome
+  name: "BMMC Multiome (NeurIPS 2021)"
+
+paths:
+  # Raw ATAC AnnData extracted from the multiome h5 file (output of atac_qc)
+  atac_input:    data/processed/GSE194122_multiome/01_qc_atac.h5ad
+  # Annotated RNA AnnData from the scRNA pipeline (needed for label transfer + integration)
+  rna_input:     data/processed/GSE194122_multiome/05_annotated.h5ad
+  processed_dir: data/processed/GSE194122_multiome
+  reports_dir:   reports/GSE194122_multiome
+
+multiome:
+  batch_key: batch
+
+steps:
+  atac_qc:
+    enabled: true
+    params:
+      min_peaks:             750
+      max_peaks:             500000
+      min_peak_counts:       1500
+      max_peak_counts:       100000
+      max_nucleosome_signal: 2.0
+      min_cells:             15
+      run_scrublet:          false
+      filter_cells:          false
+
+  atac_reduce:
+    enabled: true
+    params:
+      n_components:      50
+      n_neighbors:       15
+      leiden_resolution: 0.5
+      use_raw_counts:    true
+      random_state:      0
+
+  atac_annotate:
+    enabled: true
+    params:
+      promoter_upstream_bp: 2000
+      min_peaks_per_gene:   1
+      leiden_key:           atac_leiden
+      rna_label_key:        cell_type_vote
+
+  multiome_integration:
+    enabled: true
+    params:
+      method:       mofa       # mofa | multivi
+      batch_key:    batch
+      n_factors:    15         # MOFA+ only
+      n_latent:     20         # MultiVI only
+      max_epochs:   500        # MultiVI only
+      random_state: 0
+
+  multiome_deg:
+    enabled: true
+    params:
+      groupby:              atac_celltype
+      leiden_fallback:      atac_leiden
+      method:               wilcoxon
+      min_logfc:            0.25
+      max_pval_adj:         0.05
+      n_genes:              200
+      exclude_gene_prefixes: [MT-, RPL, RPS]
+      exclude_peak_prefixes: [chrM]
