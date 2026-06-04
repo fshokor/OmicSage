@@ -41,22 +41,6 @@ paths:
   processed_dir: data/processed/GSE166635
   reports_dir: reports/GSE166635
 
-# ── AI layer ──────────────────────────────────────────────────────────────────
-# Activated by passing --ai on the CLI.
-# Set features: false to hard-disable AI regardless of --ai flag.
-# Set individual modules to false to disable specific AI modules.
-ai:
-  features: true
-  provider: ollama        # ollama | claude | openai
-  model: llama3           # model name as recognised by the provider
-  modules:
-    pipeline_advisor:    true
-    clustering_advisor:  true
-    cluster_annotator:   true
-    deg_validator:       true
-    coherence_reviewer:  true
-    downstream_suggester: true
-    narrative_generator: true
 
 steps:
 

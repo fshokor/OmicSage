@@ -304,6 +304,9 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
     if "adt" in mdata.mod:
         mdata["adt"].write_h5ad(out.parent / "01_qc_adt.h5ad")
 
+    if "atac" in mdata.mod:
+        mdata["atac"].write_h5ad(out.parent / "01_qc_atac.h5ad")
+
     pass_rate = 100 * metrics["n_cells_output"] / metrics["n_cells_input"]
     print(f"[qc] {metrics['n_cells_output']:,} cells kept ({pass_rate:.1f}%) → {out}")
     return out

@@ -7,38 +7,42 @@
 # Key differences from GSE194122 CITE-seq
 # -----------------------------------------
 # - Multiome input: qc.py auto-detects and splits RNA vs ATAC features
-#   RNA QC proceeds normally; ATAC stored in mdata["atac"] but not analyzed (Phase 4)
+#   RNA QC proceeds normally; ATAC stored in mdata["atac"] but not analyzed until Phase 5
 # - Same donor/batch structure as CITE-seq (same NeurIPS 2021 study)
 # - Pseudobulk enabled — same 10+ donors as CITE-seq
-# - Slightly tighter max_genes — multiome RNA libraries tend to be shallower
+# - Slightly looser max_genes — multiome RNA libraries tend to be shallower
 #   than dedicated scRNA-seq; adjust after inspecting QC report
 #
 # Phase status
 # ------------
 # RNA pipeline : fully supported (Phase 1)
-# ATAC pipeline: deferred to Phase 4
-#   mdata["atac"] is created by qc.py and saved as 01_qc_atac.h5ad
-#   but no downstream ATAC analysis runs until Phase 4 modules are built
+# ATAC pipeline: Phase 5
+#   mdata["atac"] is created by qc.py and saved alongside RNA checkpoints
+#   but no downstream ATAC analysis runs until Phase 5 modules are built
 #
-# First run workflow
-# ------------------
-# 1. Run QC only and inspect the report:
-#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --step qc
-#    → open reports/GSE194122_multiome/01_qc_report.html
-#    → adjust thresholds if needed, then continue
+# Common usage patterns
+# ---------------------
+# Full pipeline:
+#   python run_pipeline.py --config config/runs/GSE194122_multiome.yaml
 #
-# 2. Run through clustering:
-#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --from-step normalize --to-step cluster
-#    → open reports/GSE194122_multiome/04_cluster_report.html
-#    → set resolution_override, then continue
+# Stop at clustering to inspect:
+#   python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --to-step cluster
 #
-# 3. Continue from annotation:
-#    python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --from-step annotate
+# Resume after choosing a resolution:
+#   1. Set cluster.params.best_resolution_override below
+#   2. python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --step cluster
+#   3. python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --from-step annotate
+#
+# Re-run a single step:
+#   python run_pipeline.py --config config/runs/GSE194122_multiome.yaml --step normalize
+#
+# Skip harmony (no batch effects):
+#   Set harmony.enabled: false and cluster_harmony.enabled: false below
 
 dataset:
-  id: GSE194122_multiome
+  id: GSE194122
   name: "BMMC Multiome RNA (NeurIPS 2021)"
-  modality: multiome
+  modality: multiome        # cite | scrna | atac | multiome
   organism: human
 
 paths:
@@ -50,9 +54,10 @@ steps:
 
   qc:
     enabled: true
+    # input_override: data/external/my_qc_output.h5ad   # uncomment to bypass
     params:
       # Multiome RNA libraries are shallower than dedicated scRNA-seq.
-      # max_genes is tighter than HCC but looser than CITE-seq.
+      # max_genes is looser than CITE-seq to avoid over-filtering.
       # INSPECT the QC report after first run and adjust if needed.
       min_genes: 200
       max_genes: 4000       # multiome RNA tends to be shallower — adjust up if too many cells lost
@@ -65,30 +70,48 @@ steps:
       batch_key: batch      # same donor/batch structure as CITE-seq
       target_sum: 10000
       n_top_genes: 2000
-      hvg_flavor: seurat
+      hvg_flavor: seurat    # seurat | seurat_v3 | cell_ranger
 
   reduce:
     enabled: true
     params:
       n_comps: 50
-      n_pcs_method: elbow
-      n_pcs: null
+      n_pcs_method: elbow   # elbow | cumvar | fixed
+      n_pcs: null           # set a number to override n_pcs_method
       n_neighbors: 15
+      batch_key: batch
 
   cluster:
     enabled: true
     params:
       resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
-      # resolution_override: 0.8   # uncomment after inspecting cluster report
+      # best_resolution_override: 0.8   # uncomment after inspecting clusters
 
   annotate:
     enabled: true
     params:
-      methods: [celltypist, markers, vote]
+      methods: ["celltypist", "markers", "sctype", "singler", "vote"]
       leiden_col: leiden
+      tissue: "Immune system"
+      scanvi_model: null   # set to path when model is ready
+
+      # CellTypist — added Healthy_COVID19_PBMC for PBMC/blood cross-check
       celltypist_models:
         - Immune_All_High.pkl
         - Immune_All_Low.pkl
+        # - Healthy_COVID19_PBMC.pkl
+
+      # ScType — pin DB locally after first download to avoid network call each run
+      # To download once: see run_pipeline.py comments or docs
+      sctype_db_path: null   # null → fetch fresh from GitHub each run
+                             # "data/references/ScTypeDB_full.xlsx" → use local file
+
+      # SingleR — novershtern is bone-marrow specific (38 hematopoietic types)
+      # Options: hpca | blueprint_encode | dice | monaco_immune |
+      #          novershtern_hematopoietic | mouse_rnaseq |
+      #          hca | path/to/ref.h5ad
+      singler_ref: novershtern_hematopoietic
+      singler_ref_label_col: cell_type   # only used when singler_ref is a file path
 
   deg:
     enabled: true
@@ -101,6 +124,16 @@ steps:
       top_n_volcano: 10
       top_n_dotplot: 5
       max_volcano_groups: 9
+      # Genes excluded from the REPORTED top-N DEG lists (still used in
+      # the rank_genes_groups computation so fold-changes remain unbiased).
+      # Ribosomal genes (RPL/RPS) dominate lymphoid/progenitor comparisons
+      # against an erythroid-heavy background and obscure true markers.
+      # Mitochondrial genes (MT-) are typically QC artefacts.
+      # Set to [] to disable filtering and see the raw ranked list.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
 
   gsea:
     enabled: true
@@ -113,11 +146,22 @@ steps:
       max_pval_adj: 0.05
       min_genes: 5
       organism: human
+      direction: both
       top_n_table: 5
       top_n_bar: 10
+      # Genes excluded from the ORA query list before enrichment.
+      # Removing ribosomal genes here prevents Translation/Ribosome pathways
+      # from dominating the GSEA results for lymphoid and progenitor clusters.
+      # The gene universe (background) is NOT filtered — statistically correct.
+      # Must match the prefixes used in deg above for consistent results.
+      # Set to [] to disable.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
 
   harmony:
-    enabled: true
+    enabled: true           # set false if no batch effects
     params:
       batch_key: batch      # same 10+ donors as CITE-seq
       n_pcs: 50
@@ -126,7 +170,7 @@ steps:
       random_state: 0
 
   cluster_harmony:
-    enabled: true
+    enabled: true           # set false if harmony is false
     params:
       resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0]
 
@@ -143,3 +187,20 @@ steps:
       top_n_volcano: 10
       top_n_dotplot: 5
       max_volcano_groups: 11
+      # Genes excluded from the REPORTED pseudobulk DEG lists.
+      # Without this, erythroid markers (HBB, HBA1, HBD, AHSP) appear as
+      # strongly downregulated in every non-erythroid cell type, dominating
+      # the pseudobulk results and obscuring biologically relevant DEGs.
+      # Ribosomal genes (RPL/RPS) have the same compositional artefact.
+      # These genes are excluded from displayed results only — DESeq2
+      # still uses them in normalisation and dispersion estimation.
+      # Set to [] to see the unfiltered ranking.
+      exclude_gene_prefixes:
+        - "RPL"
+        - "RPS"
+        - "MT-"
+        - "HBB"
+        - "HBA1"
+        - "HBA2"
+        - "HBD"
+        - "AHSP"
