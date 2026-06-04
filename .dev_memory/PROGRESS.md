@@ -68,21 +68,21 @@
 - [x] Session 9 — D1: Report reviewer (18 tests)
 - [x] Session 10 — Milestone validation complete
 
-## Phase 1 — Annotation Module 
+## Phase 1 — Annotation Module ✅
 - [x] Annotated h5ad output with cell_type column (SingleR-based)
 - [x] Annotation section in 00_combined_report.html
 - [x] MILESTONE: Full Phase 1 pipeline with annotation on GSE166635
 
-## Phase 4 — CITE-seq Module 🔄
-- [ ] ADT normalisation (CLR + optional DSB) — `pipeline/modules/cite/adt_normalize.py`
-- [ ] ADT dimensionality reduction (PCA on CLR-normalised ADT)
-- [ ] WNN joint embedding (RNA + ADT)
-- [ ] WNN UMAP + cluster report
-- [ ] Protein-level annotation validation (CD303, CD138, CD34, CD14/CD16)
-- [ ] CITE-seq report tab
-- [ ] **MILESTONE**: WNN UMAP showing RNA + protein integrated embedding
+## Phase 4 — CITE-seq Module ✅
+- [x] ADT normalisation (CLR + optional DSB) — `pipeline/modules/cite/adt_normalize.py`
+- [x] ADT dimensionality reduction (PCA on CLR-normalised ADT)
+- [x] WNN joint embedding (RNA + ADT)
+- [x] WNN UMAP + cluster report
+- [x] Protein-level annotation validation (CD303, CD138, CD34, CD14/CD16)
+- [x] CITE-seq report tab
+- [x] **MILESTONE**: WNN UMAP showing RNA + protein integrated embedding
 
-## Phase 5 — Multiome Integration (RNA + ATAC)
+## Phase 5 — Multiome Integration (RNA + ATAC) 🔄
 - [ ] scVI / MultiVI batch correction
 - [ ] RNA + ATAC joint ingestion and QC
 - [ ] LSI dimensionality reduction for ATAC

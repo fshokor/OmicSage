@@ -1,307 +1,407 @@
+# NEXT_SESSION.md — Phase 5 Session 1
+# Multiome: RNA pipeline run + ATAC QC module
+> Updated: June 2026
+> Previous phase: Phase 4 (CITE-seq) — COMPLETE
+
+---
+
 ## Session Context
-Date: 2026-06-01
-Phase: 4 — CITE-seq pipeline
-Last thing we completed: Full audit of cite pipeline against sc-best-practices tutorial.
-  Identified systematic issues in normalization, doublet detection, and annotation
-  that need to be fixed to align with the tutorial results.
-Last files modified:
-  - pipeline/modules/cite/adt_annotate.py
-  - reports/templates/cite/cite_annotate_report.py
 
-## Today's Goal
-Align every step of the CITE-seq pipeline and its reports with the
-sc-best-practices tutorial (chapters: QC, normalization, doublet detection,
-dimensionality reduction, batch correction, annotation).
+**Phase:** 5 — Multiome (RNA + ATAC jointly)
+**Session number:** 1 of ~6
+**Last thing completed:** Phase 4 closed — cite_corr within-cell-type fix,
+five report modules updated, environment.yml and requirements-ci.txt synced,
+cite_deg.py n_cells provenance fix. 855+ tests passing.
 
-Reference URLs (fetch and read before implementing each section):
-  https://www.sc-best-practices.org/surface_protein/quality_control.html
-  https://www.sc-best-practices.org/surface_protein/normalization.html
-  https://www.sc-best-practices.org/surface_protein/doublet_detection.html
-  https://www.sc-best-practices.org/surface_protein/dimensionality_reduction.html
-  https://www.sc-best-practices.org/surface_protein/batch_correction.html
-  https://www.sc-best-practices.org/surface_protein/annotation.html
-
-One deliverable per step — do not implement multiple steps in one session.
-Agree on the step order with Fatima before writing any code.
-
-## What Needs To Change — Per Step
+**File last worked on:** `requirements-ci.txt` / `environment.yml`
 
 ---
 
-### STEP 1 — Normalization (HIGHEST PRIORITY — unblocks everything else)
-File: pipeline/modules/cite/adt_normalize.py
-Report: reports/templates/cite/cite_normalize_report.py
-Checkpoint: data/processed/GSE194122/cite_01_normalized.h5ad
+## Baseline Verification
 
-PROBLEM:
-  Currently only CLR normalization is applied (DSB applied: No in report).
-  CLR does not remove ambient protein background. All proteins show a
-  floor near 0 with long right tails — no bimodal distributions.
-  The tutorial explicitly recommends DSB as the primary normalization
-  because it uses empty droplets to model and subtract ambient signal,
-  producing interpretable background-corrected values where
-  negative = background, positive = truly expressed.
-  This affects every downstream step: doublet detection, PCA, annotation scoring.
+Run this before writing any new code:
 
-WHAT TO CHANGE:
-  1. Implement DSB normalization in adt_normalize.py:
-     - Use the `dsb` Python package (pip install dsb) or implement via
-       the DSB algorithm: background estimation from empty droplets +
-       protein-specific denoising
-     - Empty droplet barcodes for GSE194122 are available — the NeurIPS
-       2021 dataset was specifically designed with empty droplets included.
-       They are typically stored alongside the raw count matrix.
-     - Store DSB-normalized values in adata.layers["adt_dsb"]
-     - Keep CLR in adata.layers["adt_clr"] as a fallback
-     - Set adata.X to the DSB layer after normalization (pipeline default)
-  2. Add `dsb` to requirements-ci.txt and environment.yml
-  3. Update the report:
-     - Change stat card "DSB applied: No" → "DSB applied: Yes"
-     - Add before/after DSB violin plots showing bimodal distributions
-       (the key quality check from the tutorial)
-     - Add ambient background level per protein (from DSB model params)
-  4. Update config schema to add dsb_empty_droplets_path parameter
-
-TUTORIAL REFERENCE RESULT:
-  After DSB, each protein shows a clear bimodal distribution:
-  left peak = background-expressing cells, right peak = truly expressing cells.
-  This is Figure 1 in the normalization chapter.
-
----
-
-### STEP 2 — Doublet Detection
-File: pipeline/modules/cite/adt_doublets.py
-Report: reports/templates/cite/cite_doublets_report.py
-Checkpoint: data/processed/GSE194122/cite_02_doublets.h5ad
-
-PROBLEM:
-  Currently only 1 doublet flagged across 21,778 cells (0.0%).
-  The tutorial expects ~4-5% doublets. The histogram shows all cells
-  piled at score ≈ 0 — the doublet scoring is not producing a real
-  distribution. Root cause: doublet scoring is running on CLR-normalized
-  data where the background floor makes lineage marker co-expression
-  invisible. With DSB normalization the bimodal distributions make it
-  clear when a cell co-expresses two exclusive lineage markers.
-
-WHAT TO CHANGE:
-  1. Re-run doublet detection after DSB normalization is in place
-     (implement Step 1 first — this step depends on it)
-  2. The tutorial uses co-expression of lineage-exclusive marker pairs
-     to score doublets: CD3/CD19 (T+B), CD3/CD14 (T+Mono), CD19/CD14 (B+Mono)
-     A cell expressing both markers of a pair above the positive peak
-     (as defined by DSB bimodal threshold) is a doublet candidate.
-  3. The threshold should be set on the DSB-normalized values, not CLR.
-     DSB values have a natural threshold near 0 (negative = background).
-     Cells with DSB > 0 for both markers in a pair are doublets.
-  4. Expected output: histogram with a real right tail, ~4-5% flagged.
-  5. Update the report to show:
-     - Real doublet score distribution (not a spike at 0)
-     - Per-donor doublet rate (some donors may have higher rates)
-     - Scatter plots of exclusive marker pairs with doublets highlighted
-       (CD3 vs CD19, CD3 vs CD14) — this is the key figure in the tutorial
-
-TUTORIAL REFERENCE RESULT:
-  Doublet score histogram shows a clear bimodal or right-skewed distribution.
-  Scatter of CD3 vs CD19 shows a main diagonal cluster of doublets
-  co-expressing both markers above background.
-
----
-
-### STEP 3 — Dimensionality Reduction
-File: pipeline/modules/cite/adt_reduce.py
-Report: reports/templates/cite/cite_reduce_report.py
-Checkpoint: data/processed/GSE194122/cite_03_reduced.h5ad
-
-PROBLEM:
-  Minor — currently 20 PCs used, tutorial uses 18. Not critical.
-  Main issue: PCA is running on CLR values — should run on DSB after Step 1.
-  No PCA loadings figure showing which proteins drive each PC.
-
-WHAT TO CHANGE:
-  1. After DSB is in place, confirm PCA runs on layers["adt_dsb"] not CLR.
-  2. Add PCA loadings heatmap to the report:
-     - Top 10 proteins contributing to PC1–PC4
-     - Confirms PCs are biologically meaningful
-     - (PC1 should separate T vs B, PC2 myeloid, etc.)
-  3. Add elbow plot with a vertical line at the selected n_components
-     so the threshold decision is visible.
-  4. Tutorial uses 18 PCs — consider changing default from 20 to 18,
-     or making this data-driven (e.g. 80% variance explained).
-
-TUTORIAL REFERENCE RESULT:
-  PC1 separates lymphoid from myeloid. Loadings show CD3/CD4/CD8 on one
-  side, CD14/CD16/HLA-DR on the other. Elbow at ~18 PCs.
-
----
-
-### STEP 4 — Batch Correction
-File: pipeline/modules/cite/adt_harmony.py
-Report: reports/templates/cite/cite_harmony_report.py
-Checkpoint: data/processed/GSE194122/cite_04_harmony.h5ad
-
-PROBLEM:
-  Harmony is working correctly — pre/post UMAP shows good batch mixing
-  with biological structure preserved. This step aligns with the tutorial.
-  Minor issues only.
-
-WHAT TO CHANGE:
-  1. Add quantitative batch mixing metrics to the report:
-     - iLISI (integration LISI): measures batch mixing — higher is better.
-       Computable from the post-Harmony UMAP embedding.
-     - cLISI (cell-type LISI): measures cell type separation — higher is better.
-       Requires adt_celltype to be present (run after annotation).
-     - Show as a summary table: iLISI before / iLISI after / improvement %
-  2. Add per-batch ADT library size violin plot:
-     - Shows whether batches differ in library size before correction
-     - Justifies why Harmony was needed
-  These are nice-to-have additions — implement only if time allows after
-  higher priority steps are done.
-
-TUTORIAL REFERENCE RESULT:
-  Post-Harmony UMAP shows all 12 donors intermixed within each cell type
-  cluster. Quantitative LISI scores confirm mixing.
-
----
-
-### STEP 5 — Annotation (SECOND PRIORITY)
-File: pipeline/modules/cite/adt_annotate.py
-Report: reports/templates/cite/cite_annotate_report.py
-Checkpoint: data/processed/GSE194122/cite_05_annotated.h5ad
-
-PROBLEM (three separate issues):
-
-  A. BMMC_MARKER_PANEL is missing erythroid markers.
-     Clusters 0 and 1 (largest clusters, ~36% of cells combined) show
-     CD71, CD36, CD88 as top markers in the dotplot — these are erythroid
-     markers. The panel has no "Erythroid" entry so these clusters get
-     mislabelled. This is the biggest annotation error.
-
-  B. Scoring assigns wrong labels to T cell clusters.
-     Cluster 4 (4841 cells, 22%) is labelled "Treg" but shows CD3, CD4,
-     CD5, CD45RA, CD45RO — this is clearly CD4 T. Treg and CD4 T share
-     most markers; the fold-change scoring cannot discriminate them because
-     the key discriminating markers (CD25-high, CD127-low for Treg) are not
-     weighted differently from shared markers.
-     Cluster 3 (3120 cells, 14%) is labelled "Platelet" but the dotplot
-     shows CD11c, CD172a, CD41 — this is more consistent with monocytes
-     or a mixed population.
-
-  C. CD4 T is completely absent from the annotation output despite being
-     the expected dominant population in BMMC.
-
-WHAT TO CHANGE:
-
-  1. Add Erythroid to BMMC_MARKER_PANEL immediately:
-     "Erythroid": ["CD71", "CD36", "CD235a", "CD88"]
-     Also add "HSPC" (haematopoietic stem/progenitor):
-     "HSPC": ["CD34", "CD38", "CD90", "CD117", "CD133", "CD135"]
-     Note: CD235a (Glycophorin A) may appear as "CD235a" or "GYPA"
-     depending on the panel — check var_names.
-
-  2. Use manual annotation_map for this run (bypass scoring):
-     Based on the dotplot (rank_genes_groups on leiden clusters):
-       "0": "Erythroid"      # CD71, CD36, CD88 — largest cluster 29%
-       "1": "Erythroid"      # CD71, CD36, CD33 — second erythroid cluster
-       "2": "B"              # CD19, CD72, CD9
-       "3": "CD14 Mono"      # CD11c, CD172a — review after DSB
-       "4": "CD4 T"          # CD5, CD4, CD45RA
-       "5": "CD8 T"          # CD2, CD8, CD3
-       "6": "Plasma"         # CD38, CD63, CD54
-       "7": "NK"             # CD16, CD45RA, CD56
-       "8": "DC"             # CD123, CD162, CD304
-     Add this as the default annotation_map in the config YAML.
-     NOTE: Verify cluster 3 (CD14 Mono vs Platelet) by checking
-     CD41 expression — if CD41-high it is Platelet, CD14-high = Mono.
-
-  3. After DSB is in place, re-run scoring with updated panel.
-     DSB values will make the bimodal thresholds clearer and the
-     fold-change scoring more accurate.
-
-  4. No changes needed to report structure — the dotplot, marker UMAP
-     grid, and cell type UMAP are all correct. Just fix the data.
-
-TUTORIAL REFERENCE RESULT:
-  Tutorial annotation for GSE194122 BMMC shows:
-  CD4 T, CD8 T, NK, B, Plasma, CD14 Mono, CD16 Mono, DC, pDC,
-  Erythroid progenitor, HSPC — 11 broad populations.
-  Erythroid progenitors are the largest cluster in BMMC (~30%).
-
----
-
-### STEP 6 — Integration (MOFA+ / totalVI)
-File: pipeline/modules/cite/cite_integration.py
-Report: reports/templates/cite/cite_integration_report.py
-Checkpoint: data/processed/GSE194122/cite_06_integrated.h5ad
-
-PROBLEM:
-  Integration appears to run but the report does not show biological
-  validation figures. MOFA+ variance decomposition is not reported.
-
-WHAT TO CHANGE:
-  1. Add MOFA+ variance decomposition bar chart to the report:
-     - Per-factor variance explained broken down by modality (RNA % vs ADT %)
-     - Shows which factors are driven by which modality
-     - Key biological interpretation figure from the tutorial
-  2. Add MOFA+ top weights heatmap:
-     - Top 5 RNA genes + top 5 ADT proteins per factor (top 4 factors)
-     - Two-panel heatmap (RNA genes | ADT proteins)
-  3. Add totalVI latent space UMAP (if totalVI was run):
-     - Coloured by cell type and by batch
-     - Separate from the Harmony ADT UMAP
-  These are deferred until Steps 1–5 are correct, since the integration
-  quality depends on clean normalization and annotation.
-
-TUTORIAL REFERENCE RESULT:
-  MOFA+ Factor 1 is driven by ADT (lymphoid vs myeloid surface markers).
-  Factor 2 separates by RNA (transcriptional programs within T cells).
-  Integration UMAP shows cleaner separation than ADT-only UMAP.
-
----
-
-## Known Issues From Last Session
-
-1. BMMC_MARKER_PANEL missing Erythroid — clusters 0+1 mislabelled
-2. DSB not implemented — CLR only, affects doublet detection and annotation
-3. Only 1 doublet flagged — doublet detection broken without DSB
-4. run_cite_pipeline.py was not forwarding `preset` param to annotate_adt()
-   — fixed by adding params.get("preset") to the annotate_adt() call
-5. adt_annotate.py rank_genes_groups runs on "leiden" (correct — diagnostic)
-   and annotation scoring uses fold-change mean_in - mean_out (correct logic,
-   but still misannotates without DSB and without Erythroid in panel)
-
-## Files Modified Last Session
-- pipeline/modules/cite/adt_annotate.py
-  (preset system, BMMC_MARKER_PANEL, fold-change scoring, step ordering)
-- reports/templates/cite/cite_annotate_report.py
-  (scanpy import fix, removed concordance plot, added cell type UMAP,
-   dotplot always uses leiden groupby)
-
-## Verify Last Session Works
 ```bash
 conda activate omicsage
-python -m pytest tests/test_adt_annotate.py -v --tb=short
+cd ~/OmicSage
+python -m pytest tests/ -q --tb=short 2>&1 | tail -5
 ```
-Expected: all tests passing (check count matches last known baseline).
 
-## Recommended Session Order
-Session A (today): Step 1 — DSB normalization (highest impact, unblocks all)
-Session B (next):  Step 5 — Fix annotation map + Erythroid in panel
-Session C:         Step 2 — Re-run doublets on DSB-normalized data
-Session D:         Steps 3+4 — Minor additions (loadings heatmap, LISI)
-Session E:         Step 6 — MOFA+ variance decomposition in report
+Expected: 855+ passed, 0 errors. Do not proceed if this fails.
 
-## Relevant Context
-- Dataset: GSE194122 NeurIPS 2021 BMMC CITE-seq
-  134 proteins, BioLegend TotalSeq-A Human Universal Cocktail V1.0
-  12 batches (s1d1 through s4d9), 21,778 cells after RNA QC
-- Empty droplet barcodes needed for DSB — check how the data was ingested.
-  In the NeurIPS dataset the raw (unfiltered) matrix contains empty droplets.
-  Path likely: data/raw/GSE194122/ — look for barcodes_unfiltered.tsv or
-  the unfiltered_feature_bc_matrix folder from cellranger.
-- ADT data path: data/processed/GSE194122/01_qc_adt.h5ad
-- RNA annotated path: data/processed/GSE194122/05_annotated.h5ad
-- Batch key: "batch" throughout
-- Pipeline convention: inplace=False, return (AnnData, dict),
-  provenance in uns["omicsage_<module>"]
-- Always run python -m pytest (not pytest) to use conda env
-- Always verify baseline test count before writing new code
+---
+
+## Today's Goals (two tightly scoped deliverables)
+
+### Goal 1 — Run the RNA pipeline on the multiome dataset
+
+The config file `config/runs/GSE194122_multiome.yaml` already exists but
+may need updating before running. Verify it, fix any issues, then run
+the full RNA pipeline to produce `data/processed/GSE194122_multiome/05_annotated.h5ad`.
+This RNA output is the input to all downstream multiome steps.
+
+### Goal 2 — Build `atac_qc.py`
+
+First ATAC-specific module. Takes the raw multiome h5ad, splits out ATAC
+peaks, computes per-cell QC metrics, and returns a MuData with `mdata["atac"]`
+populated and QC'd.
+
+---
+
+## Step 0 — Before any code: update the config file
+
+The existing `config/runs/GSE194122_multiome.yaml` was written early in Phase 1
+for a basic RNA run. It needs to be reviewed and updated to:
+
+1. Point to the correct raw multiome h5ad path
+2. Set modality to `multiome` so `qc.py` splits GEX and ATAC correctly
+3. Confirm batch key is `batch` (same as CITE — NeurIPS 2021 BMMC uses `batch`)
+4. Confirm annotation settings match what Phase 4 used (same donors, same cell types)
+
+**Verify the raw file location first:**
+```bash
+ls -lh data/benchmark/GSE194122/*multiome* 2>/dev/null || \
+ls -lh data/benchmark/GSE194122/ | grep -i multiome
+```
+
+**Check what cell types are in the ground truth:**
+```python
+import scanpy as sc
+adata = sc.read_h5ad("data/benchmark/GSE194122/<multiome_file>.h5ad", backed='r')
+print(adata.obs['cell_type'].value_counts())
+print(adata.var['feature_types'].value_counts())
+adata.file.close()
+```
+
+Expected output:
+- `feature_types`: `Gene Expression` (or `GEX`) + `Peaks` — two modalities in one matrix
+- `cell_type`: same 13 NeurIPS cell type labels as the CITE dataset
+  (CD4 T, CD8 T, B cell, NK, Monocyte CD14, Monocyte CD16, DC, etc.)
+
+---
+
+## Step 1 — Update `config/runs/GSE194122_multiome.yaml`
+
+Replace the existing file with the template below, adjusting paths as needed.
+
+```yaml
+# config/runs/GSE194122_multiome.yaml
+# RNA pipeline config for the multiome arm of GSE194122 (NeurIPS 2021 BMMC)
+# Run with: python run_pipeline.py --config config/runs/GSE194122_multiome.yaml
+
+dataset_id: GSE194122_multiome
+modality: multiome                        # tells qc.py to split GEX + ATAC
+
+input:
+  path: data/benchmark/GSE194122/<multiome_filename>.h5ad
+  format: h5ad
+
+output:
+  processed_dir: data/processed/GSE194122_multiome
+  reports_dir: reports/GSE194122_multiome
+
+batch_key: batch
+species: human
+
+steps:
+  ingest:
+    enabled: true
+
+  qc:
+    enabled: true
+    params:
+      min_genes: 200
+      max_genes: 7000
+      max_mt_pct: 20.0
+      min_cells: 3
+      run_scrublet: true
+      filter_doublets: false            # flag only, same as CITE convention
+      exclude_gene_prefixes: []
+
+  normalize:
+    enabled: true
+    params:
+      target_sum: 10000
+      n_hvg: 2000
+      use_logcounts_layer: true
+
+  reduce:
+    enabled: true
+    params:
+      n_pcs: 50
+      n_neighbors: 15
+      use_harmony: false                # harmony runs in its own step
+
+  cluster:
+    enabled: true
+    params:
+      resolution: 0.5
+      n_iterations: -1
+
+  annotate:
+    enabled: true
+    params:
+      methods: [celltypist, sctype, singler, scanvi]
+      vote_weights:
+        celltypist: 1
+        sctype: 1
+        singler: 2
+        scanvi: 2
+      # Cell type map — same labels as CITE pipeline for cross-modal consistency
+      # Fill after inspecting cluster report
+      cell_type_map: {}
+
+  harmony:
+    enabled: true
+    params:
+      batch_key: batch
+      max_iter_harmony: 20
+
+  deg:
+    enabled: true
+    params:
+      method: wilcoxon
+      n_genes: 200
+      min_logfc: 0.5
+      max_pval_adj: 0.05
+      exclude_gene_prefixes: [MT-, RPL, RPS]
+
+  gsea:
+    enabled: true
+    params:
+      gene_sets: [GO_Biological_Process_2023, KEGG_2021_Human, Reactome_2022]
+      max_pval: 0.05
+
+  pseudobulk:
+    enabled: true
+    params:
+      min_samples: 3
+      group_key: cell_type_vote
+```
+
+---
+
+## Step 2 — Run the RNA pipeline
+
+```bash
+conda activate omicsage
+python run_pipeline.py --config config/runs/GSE194122_multiome.yaml \
+    2>&1 | tee logs/GSE194122_multiome_rna.log
+```
+
+**Expected outputs** in `data/processed/GSE194122_multiome/`:
+```
+00_ingested.h5ad
+01_qc.h5mu          ← MuData (mdata["rna"] + mdata["atac"] both present)
+02_normalized.h5ad
+03_reduced.h5ad
+04_clustered.h5ad
+05_annotated.h5ad   ← primary input for multiome steps
+06_harmony.h5ad
+07_deg.h5ad
+08_gsea.h5ad
+```
+
+**Key difference from CITE:** `qc.py` already handles multiome — it detects
+`feature_types` = GEX + Peaks and returns a MuData with both modalities split.
+The RNA pipeline steps (normalize onward) operate on `mdata["rna"]` just as
+they do for CITE. The `mdata["atac"]` modality is carried through but untouched
+until the multiome phase modules.
+
+**If the pipeline fails at QC with a modality error:**
+Check that `modality: multiome` is set in the config. The `qc.py` `_detect_modality()`
+function reads `adata.var['feature_types']` — if the column name differs
+(e.g. `feature_type` singular, or `ATAC` instead of `Peaks`), print the column
+and fix the detection logic before proceeding.
+
+**Disk space warning:** The multiome h5ad is ~2.9 GB. The pipeline produces
+~8 checkpoint files. Ensure at least 30 GB free before running:
+```bash
+df -h ~/OmicSage/data/
+```
+
+---
+
+## Step 3 — Build `pipeline/modules/multiome/atac_qc.py`
+
+### Reference to read first (mandatory)
+https://www.sc-best-practices.org/chromatin_accessibility/introduction.html
+https://www.sc-best-practices.org/chromatin_accessibility/quality_control.html
+
+Key facts to extract from the reference before writing code:
+- What are the recommended TSS enrichment score thresholds?
+- What does the nucleosome signal distribution look like for good vs bad cells?
+- What is the recommended minimum fragment count per cell?
+- Does sc-best-practices recommend episcanpy or snapatac2 for peak QC?
+
+### What `atac_qc.py` does
+
+Takes `mdata["atac"]` from the QC output MuData and computes ATAC-specific
+per-cell metrics. Returns updated MuData with metrics in `mdata["atac"].obs`.
+
+**ATAC QC metrics to compute:**
+
+| Metric | Description | Typical threshold |
+|---|---|---|
+| `n_peaks_by_counts` | Number of peaks with > 0 counts per cell | min 500 |
+| `total_peak_counts` | Total ATAC counts per cell | min 1000 |
+| `pct_counts_in_top_peaks` | % counts in top 500 peaks | < 80% (not too concentrated) |
+| `nucleosome_signal` | Ratio of mono-nucleosomal to sub-nucleosomal fragments | < 4 |
+| `tss_enrichment` | TSS enrichment score | > 1.0 (loose) / > 2.0 (strict) |
+| `atac_predicted_doublet` | From scrublet on peak matrix | flagged only |
+
+**Note on TSS enrichment and nucleosome signal:**
+These require the fragment file (`.tsv.gz`), not just the peak count matrix.
+For GSE194122 multiome, check whether fragment files are available:
+```bash
+ls data/benchmark/GSE194122/*fragment* 2>/dev/null
+```
+
+If fragment files are NOT available (common for GEO-deposited processed data):
+- Skip TSS enrichment and nucleosome signal computation
+- Note in provenance: `"fragment_file_available": false`
+- Compute only peak-count-based metrics (n_peaks, total_counts, pct_in_top)
+- Document this as a known limitation — the multiome report will display a warning
+
+If fragment files ARE available: use `episcanpy` or implement directly via
+pysam/tabix. Check sc-best-practices recommendation.
+
+### Function signature
+
+```python
+def atac_qc(
+    data: MuData,
+    min_peaks: int = 500,
+    max_peaks: int = 50000,
+    min_counts: int = 1000,
+    max_nucleosome_signal: float = 4.0,
+    min_tss_enrichment: float = 1.0,
+    fragment_file: Optional[str] = None,
+    run_scrublet: bool = True,
+    filter_cells: bool = False,        # flag only by default
+    inplace: bool = False,
+) -> tuple[MuData, dict]:
+```
+
+### Returns `(MuData, atac_qc_dict)`
+
+```python
+atac_qc_dict = {
+    "metrics": pd.DataFrame,           # per-cell metrics
+    "n_cells_before": int,
+    "n_cells_after": int,
+    "n_peaks": int,
+    "fragment_file_available": bool,
+    "provenance": dict,                # written to mdata.uns["omicsage_atac_qc"]
+}
+```
+
+### File location
+`pipeline/modules/multiome/atac_qc.py`
+
+Create `pipeline/modules/multiome/__init__.py` as an empty file.
+
+### Tests
+`tests/test_atac_qc.py`
+
+Minimum test classes:
+- `TestAtacQcInput` — rejects AnnData, requires atac modality in MuData
+- `TestAtacQcMetrics` — metrics computed correctly on fixture
+- `TestAtacQcFilter` — filter_cells=True removes low-quality cells
+- `TestAtacQcProvenance` — uns["omicsage_atac_qc"] written with correct keys
+- `TestAtacQcFragmentFallback` — no fragment file → TSS/nucleosome skipped gracefully
+
+Fixture: build a minimal MuData with a synthetic peak count matrix
+(n_cells=200, n_peaks=1000) in `mdata["atac"]`. Do NOT use the real 2.9 GB
+multiome file in unit tests — it is too slow for CI.
+
+---
+
+## Known issues entering this session
+
+- Stale `__pycache__` from Zone.Identifier files can cause import failures in WSL2.
+  If you see unexpected import errors: `find . -name __pycache__ -exec rm -rf {} + 2>/dev/null`
+- System pytest at `~/.local/bin/pytest` can shadow the conda env version.
+  Always use `python -m pytest`.
+- mudata FutureWarnings on `.update()` are harmless — suppress in pipeline entry
+  points with `warnings.filterwarnings("ignore", category=FutureWarning, module="mudata")`
+- `requirements-ci.txt` and `environment.yml` are now in sync — do not add new
+  dependencies to one without updating the other.
+
+---
+
+## Files to create this session
+
+```
+pipeline/modules/multiome/__init__.py       (empty)
+pipeline/modules/multiome/atac_qc.py        (new module)
+tests/test_atac_qc.py                       (new tests)
+config/runs/GSE194122_multiome.yaml         (update existing)
+logs/GSE194122_multiome_rna.log             (generated by pipeline run)
+```
+
+## Files that may need updating
+
+```
+pipeline/modules/qc/qc.py     — only if modality detection fails on multiome file
+reports/GSE194122_multiome/   — generated by RNA pipeline run
+```
+
+---
+
+## End-of-session checklist
+
+- [ ] RNA pipeline ran to completion for GSE194122_multiome
+- [ ] `data/processed/GSE194122_multiome/05_annotated.h5ad` exists
+- [ ] `atac_qc.py` written and returns `(MuData, dict)`
+- [ ] `uns["omicsage_atac_qc"]` written with provenance
+- [ ] All new tests pass: `python -m pytest tests/test_atac_qc.py -v`
+- [ ] Full test suite still passes: `python -m pytest tests/ -q | tail -5`
+- [ ] `NEXT_SESSION.md` updated for Session 2 (ATAC reduce + LSI)
+- [ ] `PROGRESS.md` updated: Phase 5 Session 1 ticked
+
+---
+
+## Phase 5 roadmap (all sessions)
+
+| Session | Primary deliverable | Secondary |
+|---|---|---|
+| **1 (this)** | RNA pipeline run on multiome data + `atac_qc.py` | Config file update |
+| 2 | `atac_reduce.py` — TF-IDF → LSI → UMAP | `atac_qc_report.py` |
+| 3 | `atac_annotate.py` — gene activity scores + cluster annotation | `atac_reduce_report.py` |
+| 4 | `multiome_integration.py` — MultiVI (scvi-tools) joint embedding | `atac_annotate_report.py` |
+| 5 | `multiome_deg.py` — joint RNA DEG + differential accessibility peaks | `multiome_integration_report.py` |
+| 6 | `run_multiome_pipeline.py` + combined report | All remaining report modules |
+
+---
+
+## Reference URLs for this session
+
+- sc-best-practices ATAC QC: https://www.sc-best-practices.org/chromatin_accessibility/quality_control.html
+- sc-best-practices ATAC intro: https://www.sc-best-practices.org/chromatin_accessibility/introduction.html
+- episcanpy docs: https://episcanpy.readthedocs.io
+- snapatac2 docs: https://kzhang.org/SnapATAC2
+- MultiVI paper (scvi-tools): https://www.nature.com/articles/s41592-023-01945-9
+- NeurIPS 2021 BMMC dataset: https://www.ncbi.nlm.nih.gov/geo/query/acc.cgi?acc=GSE194122
+
+---
+
+## Key architectural decisions for Phase 5
+
+**Why MultiVI for integration (not WNN)?**
+WNN via `muon.pp.neighbors` hangs on small fixtures (known pynndescent issue,
+flagged in Phase 4 Session 6). MultiVI is pure Python, handles RNA + ATAC
+jointly in a single VAE, and is the sc-best-practices recommended method for
+multiome integration. WNN will be revisited in Phase 6 (Multiome extended) if
+needed.
+
+**Namespace conventions (do not change):**
+- `mdata["rna"]` — RNA modality throughout (matches CITE convention)
+- `mdata["atac"]` — ATAC modality
+- `mdata["rna"].obsm["X_pca"]` — RNA PCA
+- `mdata["atac"].obsm["X_lsi"]` — ATAC LSI (not PCA — LSI is the correct
+  dimensionality reduction for sparse binary peak matrices)
+- `mdata.obsm["X_multivi"]` — joint MultiVI embedding
+- `mdata["atac"].obs["atac_celltype"]` — ATAC-derived annotation
+- `mdata["rna"].obs["cell_type_vote"]` — RNA consensus annotation (from Phase 1)
+- Batch key: `batch` throughout (same as CITE, same donors)
