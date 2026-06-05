@@ -53,3 +53,6 @@ dependencies:
     - singler>=0.5.0
     - celldex>=0.3.0
     - beautifulsoup4>=4.12
+    - pyscenic>=0.12.1
+    - ctxcore>=0.2.0
+    - decoupler>=2.0.0

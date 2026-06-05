@@ -46,7 +46,7 @@ dataset:
   organism: human
 
 paths:
-  raw_input: data/benchmark/GSE194122_multiome_raw_only.h5ad
+  raw_input: data/benchmark/GSE194122_multiome_raw_only_1batch.h5ad
   processed_dir: data/processed/GSE194122_multiome
   reports_dir: reports/GSE194122_multiome
 

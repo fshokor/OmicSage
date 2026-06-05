@@ -85,6 +85,7 @@ STEP_ORDER = [
     "atac_annotate",
     "multiome_integration",
     "multiome_deg",
+    "multiome_grn",
 ]
 
 # Output filename per step
@@ -94,6 +95,7 @@ STEP_OUTPUT = {
     "atac_annotate":        "multiome_03_annotate_atac.h5ad",
     "multiome_integration": "multiome_04_integration.h5mu",
     "multiome_deg":         "multiome_05_deg.h5mu",
+    "multiome_grn":         "multiome_06_grn.h5mu",
 }
 
 # Predecessor for each step (None = reads from paths.atac_input)
@@ -103,6 +105,7 @@ STEP_PREDECESSOR = {
     "atac_annotate":        "atac_reduce",          # also needs rna_input
     "multiome_integration": "atac_annotate",         # also needs rna_input
     "multiome_deg":         "multiome_integration",
+    "multiome_grn":         "multiome_deg",
 }
 
 # Steps that require rna_input in addition to their predecessor
@@ -317,7 +320,7 @@ def run_atac_reduce(input_path: Path, out: Path, reports_dir: Path,
     try:
         from reports.templates.multiome.atac_reduce_report import run_atac_reduce_report
         run_atac_reduce_report(
-            adata=atac_reduced,
+            atac=atac_reduced,
             metrics=metrics,
             report_path=str(reports_dir / "multiome_02_reduce_report.html"),
             dataset_name=_dataset_name(cfg),
@@ -351,14 +354,9 @@ def run_atac_annotate(input_path: Path, out: Path, reports_dir: Path,
         min_peaks_per_gene=params.get("min_peaks_per_gene", 1),
         leiden_key=params.get("leiden_key", "atac_leiden"),
         rna_label_key=params.get("rna_label_key", "cell_type_vote"),
-        inplace=False,
+        inplace=True,
     )
 
-    atac_annotated.write_h5ad(out)
-    print(
-        f"[atac_annotate] {metrics['n_genes_activity']:,} gene activity genes"
-        f"  {metrics['n_rna_barcodes_matched']:,} barcodes matched → {out}"
-    )
     try:
         from reports.templates.multiome.atac_annotate_report import run_atac_annotate_report
         run_atac_annotate_report(
@@ -369,6 +367,24 @@ def run_atac_annotate(input_path: Path, out: Path, reports_dir: Path,
         )
     except Exception as e:
         print(f"[atac_annotate] WARNING: report failed: {e}")
+    
+    # Strip heavy matrices — report already done, not needed downstream
+    if "tf_idf" in atac_annotated.layers:
+        del atac_annotated.layers["tf_idf"]
+    if "gene_activity" in atac_annotated.obsm:
+        del atac_annotated.obsm["gene_activity"]
+    if "gene_activity_var_names" in atac_annotated.uns:
+        del atac_annotated.uns["gene_activity_var_names"]
+    if "counts" in atac_annotated.layers:
+        atac_annotated.X = atac_annotated.layers["counts"]
+
+    # Write lean checkpoint
+    atac_annotated.write_h5ad(out)
+    print(
+        f"[atac_annotate] {metrics['n_genes_activity']:,} gene activity genes"
+        f"  {metrics['n_rna_barcodes_matched']:,} barcodes matched → {out}"
+    )
+    
     return out
 
 
@@ -382,6 +398,7 @@ def run_multiome_integration(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[multiome_integration] running …")
+    import scanpy as sc
     import mudata as mu
     from pipeline.modules.multiome.multiome_integration import run_mofa, run_multivi
 
@@ -394,13 +411,7 @@ def run_multiome_integration(input_path: Path, out: Path, reports_dir: Path,
     common = atac.obs_names.intersection(rna.obs_names)
     if len(common) == 0:
         raise ValueError(
-            "[multiome_integration] RNA and ATAC share no cell barcodes. "
-            "Check that both files come from the same dataset and QC run."
-        )
-    if len(common) < len(atac.obs_names):
-        print(
-            f"[multiome_integration] WARNING: {len(atac.obs_names) - len(common):,}"
-            f" ATAC cells not found in RNA — keeping {len(common):,} shared cells."
+            "[multiome_integration] RNA and ATAC share no cell barcodes."
         )
     atac = atac[common].copy()
     rna  = rna[common].copy()
@@ -409,6 +420,27 @@ def run_multiome_integration(input_path: Path, out: Path, reports_dir: Path,
     method    = params.get("method", "mofa").lower()
     batch_key = params.get("batch_key",
                 cfg.get("multiome", {}).get("batch_key", "batch"))
+
+    # ── Subset to variable features before building MuData ─────────────
+    # RNA — use HVGs already computed by the RNA pipeline
+    if "highly_variable" in rna.var.columns:
+        rna = rna[:, rna.var["highly_variable"]].copy()
+        print(f"[multiome_integration] RNA after HVG subset: {rna.shape}")
+
+    # ATAC — compute and subset to top variable peaks
+    n_top_peaks = params.get("n_top_peaks", 20_000)
+    sc.pp.highly_variable_genes(
+        atac,
+        n_top_genes=n_top_peaks,
+        flavor="cell_ranger",
+        inplace=True,
+    )
+    atac = atac[:, atac.var["highly_variable"]].copy()
+    print(f"[multiome_integration] ATAC after HVP subset: {atac.shape}")
+    # ───────────────────────────────────────────────────────────────────
+
+    mdata = mu.MuData({"rna": rna, "atac": atac})
+    # ───────────────────────────────────────────────────────────────────
 
     if method == "mofa":
         print(f"[multiome_integration] MOFA+  batch_key={batch_key}"
@@ -500,6 +532,53 @@ def run_multiome_deg(input_path: Path, out: Path, reports_dir: Path,
     return out
 
 
+# ── Step 6: multiome_grn ──────────────────────────────────────────────────────
+ 
+def run_multiome_grn(input_path: Path, out: Path, reports_dir: Path,
+                     params: dict, cfg: dict, force: bool = False) -> Path:
+    if out.exists() and not force:
+        print(f"[multiome_grn] cached → {out}")
+        return out
+ 
+    print("[multiome_grn] running …")
+    from pipeline.modules.multiome.multiome_grn import multiome_grn
+    from pipeline.modules.multiome.multiome_deg  import multiome_deg as _deg   # noqa: F401
+ 
+    mdata = _load_mdata(input_path)
+ 
+    # deg_dict is not cached separately; reconstruct a minimal version
+    # from the checkpoint (provenance is in mdata.uns["omicsage_deg"])
+    deg_dict = {"provenance": mdata.uns.get("omicsage_deg", {})}
+ 
+    mdata, grn_dict = multiome_grn(
+        mdata,
+        deg_dict=deg_dict,
+        motif_db=params.get("motif_db", "jaspar"),
+        groupby=params.get("groupby", "atac_celltype"),
+        n_top_peaks=params.get("n_top_peaks", 500),
+        min_cells=params.get("min_cells", 10),
+        random_state=params.get("random_state", 0),
+        inplace=True,
+    )
+ 
+    _save_mdata(mdata, out)
+    prov = grn_dict["provenance"]["outputs"]
+    print(
+        f"[multiome_grn] {prov['n_tfs_rna']} RNA TFs"
+        f"  {prov['n_tfs_atac']} ATAC TFs"
+        f"  {prov['n_grn_edges']} edges → {out}"
+    )
+    try:
+        from reports.templates.multiome.multiome_grn_report import run_multiome_grn_report
+        run_multiome_grn_report(
+            result=grn_dict,
+            report_path=str(reports_dir / "multiome_06_grn_report.html"),
+            dataset_name=_dataset_name(cfg),
+        )
+    except Exception as e:
+        print(f"[multiome_grn] WARNING: report failed: {e}")
+    return out
+
 # ══════════════════════════════════════════════════════════════════════════════
 # STEP → RUNNER MAP
 # ══════════════════════════════════════════════════════════════════════════════
@@ -508,6 +587,7 @@ STEP_RUNNERS = {
     "atac_qc":     run_atac_qc,
     "atac_reduce": run_atac_reduce,
     "multiome_deg": run_multiome_deg,
+    "multiome_grn": run_multiome_grn,
 }
 
 # Steps that need special handling (extra inputs beyond predecessor)

@@ -50,12 +50,13 @@ steps:
   multiome_integration:
     enabled: true
     params:
-      method:       mofa       # mofa | multivi
+      method:       multivi       # mofa | multivi
       batch_key:    batch
       n_factors:    15         # MOFA+ only
       n_latent:     20         # MultiVI only
-      max_epochs:   500        # MultiVI only
+      max_epochs:   10        # MultiVI only
       random_state: 0
+      n_top_peaks: 20000       # n_top_genes:  2000
 
   multiome_deg:
     enabled: true
@@ -68,3 +69,12 @@ steps:
       n_genes:              200
       exclude_gene_prefixes: [MT-, RPL, RPS]
       exclude_peak_prefixes: [chrM]
+
+  multiome_grn:
+      enabled: true
+      params:
+        motif_db:     jaspar     # "jaspar" fetches CollecTRI via decoupler
+        groupby:      atac_celltype
+        n_top_peaks:  500
+        min_cells:    10
+        random_state: 0

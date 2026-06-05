@@ -131,3 +131,35 @@ single "Single batch" card is shown rather than rendering a broken card.
 **Rationale:** In many datasets `sample` and `batch` are different things (e.g.
 12 donors but 4 processing sites). Conflating them into one card lost information.
 The no-batch case previously rendered `N/A` and `Batches (none)` which was unclear.
+
+ 
+## D019 — pyscenic + decoupler instead of full SCENIC+
+ 
+**Why not full SCENIC+:**
+- `pycistarget` and `scenicplus` are not on PyPI (GitHub-only install)
+- Require a 3–10 GB cisTarget database in a specific feather format
+- Complex dependency tree with high conflict risk against the omicsage env
+- Not suitable for a portfolio/demo pipeline
+**What we use instead:**
+- `pyscenic>=0.12.1` — RNA regulon inference + AUCell scoring
+- `decoupler>=2.0.0` — ATAC motif enrichment via AUCell (`dc.mt.aucell`)
+- CollecTRI network fetched at runtime from OmniPath REST API (no local DB needed):
+  `https://omnipathdb.org/interactions?datasets=collectri&genesymbols=1`
+**Known limitations of current implementation:**
+- ATAC scores are flat (all 1.0) — `_build_peak_tf_matrix` assigns every TF
+  to every DCA peak because we have no coordinate-level motif scan.
+  Real differential scores require either:
+  (a) a pre-built cisTarget feather DB (~3 GB), or
+  (b) `pybedtools` intersection of peak BED files with JASPAR motif scan BEDs
+- RNA TFs = 0 — pyscenic correlation fallback produces regulons but the
+  AUCell scoring step is not returning scores; deferred to future session
+- decoupler 2.x API differences from 1.x required multiple fixes:
+  - `dc.run_aucell` → `dc.mt.aucell`
+  - Returns None, writes to `obsm["score_aucell"]` instead of returning DataFrame
+  - `source`/`target` columns conflict with OmniPath UniProt ID columns;
+    must use `source_genesymbol`/`target_genesymbol` directly
+**Upgrade path (future):**
+- Download cisTarget JASPAR feather and pass as `motif_db` param
+- Use `pybedtools` to do coordinate-level peak × motif overlap
+- Full SCENIC+ in a separate `omicsage_grn` conda env if needed
+**Decision: acceptable for portfolio/demo. Document as known limitation.**

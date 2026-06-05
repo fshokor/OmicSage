@@ -257,12 +257,17 @@ def _sum_peaks_to_genes(
 
     Returns (matrix float32 shape n_cells × n_genes, sorted gene_names).
     """
+    import scipy.sparse as sp
+
     peak_index: dict[str, int] = {p: i for i, p in enumerate(atac.var_names)}
 
+    # Keep sparse — never densify the full n_cells × n_peaks matrix.
+    # Slice individual peak columns and sum; each slice is a tiny dense vector.
     X = atac.X
-    if hasattr(X, "toarray"):
-        X = X.toarray()
-    X = np.asarray(X, dtype=np.float32)
+    if not sp.issparse(X):
+        X = sp.csc_matrix(X)
+    else:
+        X = X.tocsc()   # CSC for fast column slicing
 
     gene_names = sorted(gene_to_peaks.keys())
     out = np.zeros((atac.n_obs, len(gene_names)), dtype=np.float32)
@@ -270,7 +275,8 @@ def _sum_peaks_to_genes(
     for col_idx, gene in enumerate(gene_names):
         peak_idxs = [peak_index[p] for p in gene_to_peaks[gene] if p in peak_index]
         if peak_idxs:
-            out[:, col_idx] = X[:, peak_idxs].sum(axis=1)
+            col_sum = np.asarray(X[:, peak_idxs].sum(axis=1), dtype=np.float32).ravel()
+            out[:, col_idx] = col_sum
 
     return out, gene_names
 
@@ -353,7 +359,7 @@ def annotate_atac(
     min_peaks_per_gene: int = 1,
     leiden_key: str = "atac_leiden",
     rna_label_key: str = "cell_type_vote",
-    inplace: bool = False,
+    inplace: bool = True,
 ) -> tuple[AnnData, dict]:
     """
     Compute gene activity scores and transfer RNA cell type labels to ATAC cells.
@@ -408,7 +414,8 @@ def annotate_atac(
     # ------------------------------------------------------------------
     # 0. Copy or in-place
     # ------------------------------------------------------------------
-    adata = atac if inplace else atac.copy()
+    # adata = atac if inplace else atac.copy()
+    adata = atac  # reference — no copy yet
 
     # ------------------------------------------------------------------
     # A. Resolve peak annotation source
@@ -502,6 +509,14 @@ def annotate_atac(
             "n_rna_barcodes_matched": n_rna_barcodes_matched,
         },
     }
+
+    # # Now copy if needed — single copy at the very end
+    # if not inplace:
+    #     adata = adata.copy()
+    #     # Strip the heavy peak matrix from the copy to save memory
+    #     # .X (TF-IDF) is no longer needed after annotation
+    #     if "counts" in adata.layers:
+    #         adata.X = adata.layers["counts"]
 
     # ------------------------------------------------------------------
     # Metrics
