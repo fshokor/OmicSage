@@ -1,0 +1,58 @@
+# kuppe_heart.yaml — OmicSage Phase 7
+# Kuppe et al. 2022 human myocardial infarction — control samples
+# Visium spatial + matched snRNA-seq reference
+# DOI: 10.1038/s41586-022-05060-x
+#
+# Data sources (downloaded from Figshare):
+#   Visium:  https://figshare.com/ndownloader/files/39347357
+#   snRNA:   https://figshare.com/ndownloader/files/39347573
+
+dataset_id: kuppe_heart
+output_dir: outputs/kuppe_heart
+
+spatial:
+  source: data/benchmark/kuppe_visium_human_heart_2022_control.h5ad
+  spatial_type: h5ad
+  load_images: true
+
+  qc:
+    min_counts: 500
+    max_counts: 100000
+    min_genes: 200
+    max_genes: 10000
+    max_mt_pct: 20.0
+    mt_prefix: "MT-"
+    filter_spots: true
+
+  reduce:
+    n_top_genes: 3000
+    n_comps: 50
+    n_neighbors: 6
+    coord_type: null          # auto-detect (grid for Visium)
+    normalize_total: true
+    target_sum: 10000
+    log1p: true
+    flavor: seurat
+
+  cluster:
+    resolution: 0.5
+    n_neighbors: 15
+    n_pcs: 30
+    random_state: 0
+    run_svg: true
+    svg_n_genes: 3000         # test all HVGs for spatial autocorrelation
+    annotation_map: null      # no manual annotation — use cluster IDs
+
+  deconvolve:
+    ref_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
+    cell_type_key: cell_type_original
+    batch_key_ref: donor_id
+    batch_key_st: patient
+    covariate_keys:
+      - assay
+    N_cells_per_location: 8
+    detection_alpha: 20
+    max_epochs_ref: 250
+    max_epochs_st: 30000
+    batch_size_ref: 2500
+    layer_ref: counts         # raw counts layer in reference AnnData

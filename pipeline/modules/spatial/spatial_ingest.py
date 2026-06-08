@@ -69,7 +69,7 @@ _TECHNOLOGY_NOTES = {
     "xenium":    "10x Xenium — imaging-based, single-cell resolution, targeted panel",
     "merfish":   "Vizgen MERSCOPE/MERFISH — imaging-based, single-cell resolution, targeted panel",
     "codex":     "Akoya CODEX / IMC — imaging-based, single-cell resolution, protein markers",
-    "h5ad":      "Pre-built AnnData loaded from disk",
+    "h5ad":      "Pre-built AnnData loaded from disk (raw counts preserved; ENSEMBL IDs swapped if var['gene_ids'] present; MT genes stripped)",
     "benchmark": "squidpy built-in mouse brain H&E Visium dataset",
 }
 
@@ -282,6 +282,44 @@ def _load_h5ad(
     if not os.path.isfile(path):
         raise FileNotFoundError(f"h5ad file not found: {path!r}")
     adata = sc.read_h5ad(path)
+
+    # ------------------------------------------------------------------ #
+    # Normalise to the standard spatial AnnData contract
+    # ------------------------------------------------------------------ #
+
+    # 1. Preserve raw counts in layers["counts"].
+    #    For Kuppe-style Visium h5ad files, X contains raw counts and
+    #    layers is empty — save X before any downstream normalization.
+    if "counts" not in adata.layers:
+        adata.layers["counts"] = adata.X.copy()
+
+    # 2. Swap var_names to ENSEMBL gene IDs when var["gene_ids"] is present.
+    #    cell2location requires ENSEMBL IDs to map between spatial and
+    #    reference data.  Space Ranger h5ad files store gene symbols as
+    #    var_names and ENSEMBL IDs in var["gene_ids"].
+    if "gene_ids" in adata.var.columns:
+        adata.var["feature_name"] = adata.var_names.copy()
+        adata.var_names = adata.var["gene_ids"].astype(str)
+        adata.var_names_make_unique()
+
+    # 3. Strip mitochondrial genes into obsm["MT"].
+    #    cell2location recommends removing MT genes before deconvolution
+    #    as they represent technical artefacts rather than cell abundance.
+    #    MT genes are identified by the "MT-" prefix on the feature_name
+    #    column (populated in step 2) or var_names as a fallback.
+    if "feature_name" in adata.var.columns:
+        mt_mask = adata.var["feature_name"].str.startswith("MT-").values
+    else:
+        mt_mask = adata.var_names.str.startswith("MT-").values
+
+    if mt_mask.sum() > 0:
+        import scipy.sparse as sp
+        mt_matrix = adata[:, mt_mask].X
+        if sp.issparse(mt_matrix):
+            mt_matrix = mt_matrix.toarray()
+        adata.obsm["MT"] = mt_matrix
+        adata = adata[:, ~mt_mask].copy()
+
     return adata, library_id or "custom", path
 
 
