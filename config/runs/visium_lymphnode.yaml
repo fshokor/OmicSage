@@ -1,0 +1,40 @@
+# config/runs/visium_lymphnode.yaml
+# OmicSage Phase 7 — Spatial Transcriptomics
+# Dataset: 10x Visium Human Lymph Node (or squidpy benchmark for dev/testing)
+#
+# To use the benchmark dataset (no download required):
+#   spatial.source: "benchmark"
+#
+# To use a real Space Ranger output directory:
+#   spatial.source: "/path/to/spaceranger_output/"
+#   spatial.spatial_type: "visium"
+#
+# To use a pre-built h5ad:
+#   spatial.source: "/path/to/data.h5ad"
+#   spatial.spatial_type: "h5ad"
+
+dataset_id: visium_lymphnode
+output_dir: outputs/visium_lymphnode
+
+spatial:
+  # --- Data source ---
+  source: "benchmark"           # Change to your Space Ranger path for real data
+  spatial_type: "auto"           # auto | visium | h5ad | benchmark
+  counts_file: "filtered_feature_bc_matrix.h5"
+  library_id: null              # null = auto-infer from directory name
+  load_images: true
+
+  # --- QC thresholds ---
+  # Adjust based on your tissue type and sequencing depth
+  # Defaults are reasonable starting points for standard Visium
+  qc:
+    min_counts: 500             # Remove spots with very low total UMI
+    max_counts: 100000          # Remove outlier spots (ink, folds)
+    min_genes: 200              # Remove sparse spots
+    max_genes: 10000            # Remove potential doublet spots
+    max_mt_pct: 20.0            # Remove spots with high MT% (necrosis)
+    mt_prefix: "MT-"            # "MT-" for human, "mt-" for mouse
+    filter_spots: true          # Set false to compute metrics only
+
+# --- AI layer (optional) ---
+ai_features: false              # Set true to enable LLM interpretation
