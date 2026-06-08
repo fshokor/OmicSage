@@ -8,7 +8,7 @@ Usage:
 Steps added per session:
     Session 1 (done): ingest + QC
     Session 2 (done): reduce (HVG, PCA, spatial neighbours)
-    Session 3:        cluster + spatially variable genes
+    Session 3 (done): cluster + spatially variable genes (Moran's I)
     Session 4:        deconvolution + combined report
 """
 
@@ -30,11 +30,15 @@ def run_spatial_pipeline(config: dict) -> None:
     from pipeline.modules.spatial.spatial_ingest import spatial_ingest
     from pipeline.modules.spatial.spatial_qc import spatial_qc
     from pipeline.modules.spatial.spatial_reduce import spatial_reduce
+    from pipeline.modules.spatial.spatial_cluster import spatial_cluster
     from reports.templates.spatial.spatial_qc_report import (
         generate_spatial_qc_report,
     )
     from reports.templates.spatial.spatial_reduce_report import (
         generate_spatial_reduce_report,
+    )
+    from reports.templates.spatial.spatial_cluster_report import (
+        generate_spatial_cluster_report,
     )
 
     spatial_cfg = config.get("spatial", {})
@@ -47,7 +51,7 @@ def run_spatial_pipeline(config: dict) -> None:
     # ------------------------------------------------------------------ #
     # Step 1 — Ingest
     # ------------------------------------------------------------------ #
-    print(f"[1/4] Ingesting spatial data from: {source!r}")
+    print(f"[1/5] Ingesting spatial data from: {source!r}")
     adata, ingest_params = spatial_ingest(
         source=source,
         spatial_type=spatial_cfg.get("spatial_type", "auto"),
@@ -61,7 +65,7 @@ def run_spatial_pipeline(config: dict) -> None:
     # Step 2 — QC
     # ------------------------------------------------------------------ #
     qc_cfg = spatial_cfg.get("qc", {})
-    print("[2/4] Running spatial QC ...")
+    print("[2/5] Running spatial QC ...")
     adata, qc_params = spatial_qc(
         adata,
         min_counts=qc_cfg.get("min_counts", 500),
@@ -78,7 +82,6 @@ def run_spatial_pipeline(config: dict) -> None:
         f"      {outputs['n_spots_before']:,} → {outputs['n_spots_after']:,} spots "
         f"({outputs['n_spots_removed']:,} removed)"
     )
-
     qc_report_path = str(Path(output_dir) / f"{dataset_id}_spatial_qc_report.html")
     print(f"      Writing QC report → {qc_report_path}")
     generate_spatial_qc_report(adata, qc_report_path, dataset_id=dataset_id)
@@ -87,7 +90,7 @@ def run_spatial_pipeline(config: dict) -> None:
     # Step 3 — Reduce (normalize, HVG, PCA, spatial neighbours)
     # ------------------------------------------------------------------ #
     reduce_cfg = spatial_cfg.get("reduce", {})
-    print("[3/4] Running spatial reduction (HVG, PCA, spatial neighbours) ...")
+    print("[3/5] Running spatial reduction (HVG, PCA, spatial neighbours) ...")
     adata, reduce_params = spatial_reduce(
         adata,
         n_top_genes=reduce_cfg.get("n_top_genes", 3000),
@@ -102,25 +105,52 @@ def run_spatial_pipeline(config: dict) -> None:
     )
     reduce_outputs = reduce_params["outputs"]
     print(
-        f"      {reduce_outputs['n_hvgs']:,} HVGs selected, "
-        f"{reduce_outputs['n_comps_computed']} PCs computed, "
-        f"{reduce_outputs['spatial_graph_n_edges']:,} spatial graph edges "
-        f"(mean {reduce_outputs['spatial_graph_mean_neighbors']} neighbours/spot)"
+        f"      {reduce_outputs['n_hvgs']:,} HVGs, "
+        f"{reduce_outputs['n_comps_computed']} PCs, "
+        f"{reduce_outputs['spatial_graph_n_edges']:,} spatial edges"
     )
-    if reduce_params["params"].get("skipped_normalization"):
-        print("      ⚠ Normalization skipped — benchmark dataset detected.")
-
     reduce_report_path = str(
         Path(output_dir) / f"{dataset_id}_spatial_reduce_report.html"
     )
     print(f"      Writing reduce report → {reduce_report_path}")
     generate_spatial_reduce_report(adata, reduce_report_path, dataset_id=dataset_id)
 
-    print("\n✓ Spatial QC + Reduction complete.")
-    print(f"  QC report:    {qc_report_path}")
-    print(f"  Reduce report: {reduce_report_path}")
+    # ------------------------------------------------------------------ #
+    # Step 4 — Cluster + SVGs
+    # ------------------------------------------------------------------ #
+    cluster_cfg = spatial_cfg.get("cluster", {})
+    print("[4/5] Running Leiden clustering + Moran's I SVGs ...")
+    adata, cluster_params = spatial_cluster(
+        adata,
+        resolution=cluster_cfg.get("resolution", 0.5),
+        n_neighbors=cluster_cfg.get("n_neighbors", 15),
+        n_pcs=cluster_cfg.get("n_pcs", 30),
+        random_state=cluster_cfg.get("random_state", 0),
+        run_svg=cluster_cfg.get("run_svg", True),
+        svg_n_genes=cluster_cfg.get("svg_n_genes", None),
+        annotation_map=cluster_cfg.get("annotation_map", None),
+        inplace=True,
+    )
+    cluster_outputs = cluster_params["outputs"]
+    print(
+        f"      {cluster_outputs['n_clusters']} clusters found"
+    )
+    if "n_significant_fdr05" in cluster_outputs:
+        print(
+            f"      {cluster_outputs['n_significant_fdr05']} SVGs (FDR<0.05) "
+            f"from {cluster_outputs['n_genes_tested']} tested"
+        )
+    cluster_report_path = str(
+        Path(output_dir) / f"{dataset_id}_spatial_cluster_report.html"
+    )
+    print(f"      Writing cluster report → {cluster_report_path}")
+    generate_spatial_cluster_report(adata, cluster_report_path, dataset_id=dataset_id)
 
-    # TODO Session 3: spatial_cluster + spatially_variable_genes
+    print("\n✓ Spatial QC + Reduction + Clustering complete.")
+    print(f"  QC report:      {qc_report_path}")
+    print(f"  Reduce report:  {reduce_report_path}")
+    print(f"  Cluster report: {cluster_report_path}")
+
     # TODO Session 4: spatial_deconvolve + combined report
 
 
@@ -145,7 +175,6 @@ def main() -> None:
     else:
         config = {}
 
-    # CLI overrides
     if args.source:
         config.setdefault("spatial", {})["source"] = args.source
         config.setdefault("spatial", {})["spatial_type"] = args.spatial_type
