@@ -158,7 +158,7 @@ def atac_reduce(
     logger.info("Computing TF-IDF normalisation")
     X_tfidf = _tfidf(X_raw)
 
-    # adata_out.layers["tf_idf"] = X_tfidf
+    adata_out.layers["tf_idf"] = X_tfidf
     # Set .X to TF-IDF for neighbor graph / UMAP steps
     adata_out.X = X_tfidf
     logger.info("TF-IDF stored in .layers['tf_idf'] and .X")

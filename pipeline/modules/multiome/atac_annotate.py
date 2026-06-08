@@ -414,8 +414,7 @@ def annotate_atac(
     # ------------------------------------------------------------------
     # 0. Copy or in-place
     # ------------------------------------------------------------------
-    # adata = atac if inplace else atac.copy()
-    adata = atac  # reference — no copy yet
+    adata = atac if inplace else atac.copy()
 
     # ------------------------------------------------------------------
     # A. Resolve peak annotation source
@@ -509,14 +508,6 @@ def annotate_atac(
             "n_rna_barcodes_matched": n_rna_barcodes_matched,
         },
     }
-
-    # # Now copy if needed — single copy at the very end
-    # if not inplace:
-    #     adata = adata.copy()
-    #     # Strip the heavy peak matrix from the copy to save memory
-    #     # .X (TF-IDF) is no longer needed after annotation
-    #     if "counts" in adata.layers:
-    #         adata.X = adata.layers["counts"]
 
     # ------------------------------------------------------------------
     # Metrics
