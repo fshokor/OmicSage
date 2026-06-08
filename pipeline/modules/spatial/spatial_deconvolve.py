@@ -10,7 +10,7 @@ Output: AnnData with obsm["q05_cell_abundance_w_sf"] (cell type abundances),
 
 Two modes:
   ref_adata provided → run full cell2location pipeline
-  ref_adata is None  → skip gracefully, write skipped=True in provenance
+  ref_adata is None  → skip, write skipped=True in provenance
 
 Pipeline (when ref_adata provided):
   1. Prepare reference: reset X to raw counts, gene selection

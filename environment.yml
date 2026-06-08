@@ -56,3 +56,4 @@ dependencies:
     - pyscenic>=0.12.1
     - ctxcore>=0.2.0
     - decoupler>=2.0.0
+    - cell2location==0.1.5

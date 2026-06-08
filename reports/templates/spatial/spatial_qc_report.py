@@ -1,20 +1,15 @@
 """
-spatial_qc_report.py — OmicSage Phase 7, Session 1
+spatial_qc_report.py — OmicSage Phase 7
 HTML report for spatial QC results.
-
-Generates a self-contained HTML report with:
-  - QC summary table
-  - Violin plots: total_counts, n_genes_by_counts, pct_counts_mt
-  - Spatial scatter plots: total_counts and pct_counts_mt overlaid on tissue
-  - Before/after spot count comparison
+Matches the _render_page / section structure of the RNA pipeline reports.
 """
 
 from __future__ import annotations
 
 import base64
-import io
-import os
+import logging
 from datetime import datetime
+from io import BytesIO
 from pathlib import Path
 from typing import Optional
 
@@ -24,18 +19,280 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 matplotlib.use("Agg")
+logger = logging.getLogger(__name__)
 
 try:
     import squidpy as sq
-
     _SQUIDPY_AVAILABLE = True
 except ImportError:
     _SQUIDPY_AVAILABLE = False
 
 
-# ---------------------------------------------------------------------------
-# Public API
-# ---------------------------------------------------------------------------
+def _fig_to_b64(fig):
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    plt.close(fig)
+    return b64
+
+
+def _violin_plots(adata, params):
+    metrics = [
+        ("total_counts",      "Total UMI counts / spot",
+         params.get("min_counts"), params.get("max_counts")),
+        ("n_genes_by_counts", "Genes detected / spot",
+         params.get("min_genes"),  params.get("max_genes")),
+        ("pct_counts_mt",     "MT gene % / spot",
+         None,                     params.get("max_mt_pct")),
+    ]
+    available = [m for m in metrics if m[0] in adata.obs.columns]
+    if not available:
+        return None
+    fig, axes = plt.subplots(1, len(available), figsize=(5 * len(available), 4))
+    if len(available) == 1:
+        axes = [axes]
+    for ax, (col, label, lo, hi) in zip(axes, available):
+        vals = adata.obs[col].values
+        parts = ax.violinplot(vals, positions=[0], showmedians=True)
+        for pc in parts["bodies"]:
+            pc.set_facecolor("#4C78A8"); pc.set_alpha(0.7)
+        if lo is not None:
+            ax.axhline(lo, color="#e07b3a", linestyle="--", linewidth=1.2,
+                       label=f"min={lo}")
+        if hi is not None:
+            ax.axhline(hi, color="#e05252", linestyle="--", linewidth=1.2,
+                       label=f"max={hi}")
+        ax.set_xticks([])
+        ax.set_ylabel(label)
+        ax.set_title(label, fontsize=10, fontweight="bold")
+        if lo is not None or hi is not None:
+            ax.legend(fontsize=8, frameon=False)
+        ax.spines[["top", "right"]].set_visible(False)
+    fig.suptitle("QC metrics per spot", fontsize=11, fontweight="bold")
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _spatial_scatter(adata, color_key):
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+        return None
+    try:
+        fig, ax = plt.subplots(figsize=(5, 5))
+        sq.pl.spatial_scatter(adata, color=color_key, ax=ax, show=False, frameon=False)
+        ax.set_title(color_key.replace("_", " ").title(), fontsize=10, fontweight="bold")
+        fig.tight_layout()
+        return _fig_to_b64(fig)
+    except Exception:
+        return None
+
+
+def _threshold_bar(outputs):
+    categories = [
+        ("Low counts",  outputs.get("removed_low_counts",  0)),
+        ("High counts", outputs.get("removed_high_counts", 0)),
+        ("Low genes",   outputs.get("removed_low_genes",   0)),
+        ("High genes",  outputs.get("removed_high_genes",  0)),
+        ("High MT%",    outputs.get("removed_high_mt",     0)),
+    ]
+    labels, values = zip(*categories)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    colors = ["#e05252" if v > 0 else "#95a5a6" for v in values]
+    bars = ax.bar(labels, values, color=colors, edgecolor="white")
+    ax.set_ylabel("Spots removed")
+    ax.set_title("Spots removed per filter criterion", fontsize=10, fontweight="bold")
+    for bar, val in zip(bars, values):
+        if val > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.5, str(val),
+                    ha="center", va="bottom", fontsize=9)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _section_summary(adata, qc_info, dataset_id, timestamp):
+    outputs = qc_info.get("outputs", {})
+    params  = qc_info.get("params",  {})
+    stats   = qc_info.get("summary_stats", {})
+    n_before  = outputs.get("n_spots_before", 0)
+    n_after   = outputs.get("n_spots_after",  0)
+    n_removed = outputs.get("n_spots_removed", 0)
+    pct_kept  = f"{100 * n_after / n_before:.1f}%" if n_before > 0 else "?"
+
+    stat_cards = "".join(
+        f'<div class="stat-card"><div class="stat-value">{v}</div>'
+        f'<div class="stat-label">{k}</div></div>'
+        for k, v in [
+            ("Spots input",   f"{n_before:,}"),
+            ("Spots kept",    f"{n_after:,}"),
+            ("Spots removed", f"{n_removed:,}"),
+            ("Pass rate",     pct_kept),
+            ("Genes",         f"{adata.n_vars:,}"),
+        ]
+    )
+    threshold_rows = "".join(
+        f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in params.items()
+    )
+    stat_rows = ""
+    for col, label in [
+        ("total_counts", "Total UMI counts"),
+        ("n_genes_by_counts", "Genes detected"),
+        ("pct_counts_mt", "MT gene %"),
+    ]:
+        s = stats.get(col, {})
+        if s:
+            stat_rows += (
+                f"<tr><td>{label}</td>"
+                f"<td>{s['mean']:.1f}</td><td>{s['median']:.1f}</td>"
+                f"<td>{s['std']:.1f}</td><td>{s['min']:.1f}</td>"
+                f"<td>{s['max']:.1f}</td></tr>"
+            )
+    return f"""
+    <section>
+      <h2>Run Summary</h2>
+      <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
+      <div class="stat-grid">{stat_cards}</div>
+      <h3>QC Metric Summary (retained spots)</h3>
+      <table>
+        <thead>
+          <tr><th>Metric</th><th>Mean</th><th>Median</th><th>Std</th><th>Min</th><th>Max</th></tr>
+        </thead>
+        <tbody>{stat_rows}</tbody>
+      </table>
+      <h3>Filter Thresholds Applied</h3>
+      <table>
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+        <tbody>{threshold_rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _section_distributions(adata, params):
+    b64 = _violin_plots(adata, params)
+    if not b64:
+        return ""
+    return f"""
+    <section>
+      <h2>QC Metric Distributions</h2>
+      <div class="fig-grid">
+        <div class="fig-wrap">
+          <h3>Violin plots per spot</h3>
+          <img src="data:image/png;base64,{b64}" alt="violin plots">
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _section_spatial(adata):
+    b64_counts = _spatial_scatter(adata, "total_counts")
+    b64_mt     = _spatial_scatter(adata, "pct_counts_mt")
+    if not b64_counts and not b64_mt:
+        return ""
+    figs = ""
+    if b64_counts:
+        figs += (
+            '<div class="fig-wrap"><h3>Total UMI counts</h3>'
+            f'<img src="data:image/png;base64,{b64_counts}" alt="spatial counts"></div>'
+        )
+    if b64_mt:
+        figs += (
+            '<div class="fig-wrap"><h3>MT gene %</h3>'
+            f'<img src="data:image/png;base64,{b64_mt}" alt="spatial MT%"></div>'
+        )
+    return f"""
+    <section>
+      <h2>Spatial Distribution of QC Metrics</h2>
+      <div class="fig-grid">{figs}</div>
+    </section>
+    """
+
+
+def _section_filter_breakdown(outputs):
+    b64 = _threshold_bar(outputs)
+    return f"""
+    <section>
+      <h2>Filter Breakdown</h2>
+      <div class="fig-grid">
+        <div class="fig-wrap">
+          <h3>Spots removed per filter criterion</h3>
+          <img src="data:image/png;base64,{b64}" alt="threshold bar">
+        </div>
+      </div>
+      <p class="note">Spots may fail multiple filters simultaneously &mdash; counts may overlap.</p>
+    </section>
+    """
+
+
+_PAGE_CSS = """
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           font-size: 14px; line-height: 1.6; color: #1a1a2e; background: #f7f8fc; }
+    header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+             color: white; padding: 32px 40px 24px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px; }
+    header p  { font-size: 0.85rem; opacity: 0.7; margin-top: 4px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    section { background: white; border-radius: 10px;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+              padding: 28px 32px; margin-bottom: 24px; }
+    section h2 { font-size: 1.15rem; font-weight: 700; color: #0f3460;
+                 border-bottom: 2px solid #e8eaf6; padding-bottom: 10px; margin-bottom: 18px; }
+    section h3 { font-size: 1rem; font-weight: 600; color: #16213e; margin: 18px 0 10px; }
+    section p  { color: #444; margin-bottom: 12px; font-size: 0.9rem; }
+    .timestamp { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .note { font-size: 0.82rem; color: #7a5c00; background: #fffbe6;
+            border-left: 3px solid #f0c040; padding: 8px 12px;
+            border-radius: 4px; margin-bottom: 14px; }
+    code { font-family: "SFMono-Regular", Consolas, monospace;
+           background: #f0f2ff; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+    .stat-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: #f0f2ff; border-radius: 8px; padding: 14px 20px;
+                 min-width: 130px; text-align: center; flex: 1 1 130px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #0f3460; }
+    .stat-label { font-size: 0.75rem; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 8px; }
+    th { background: #f0f2ff; color: #0f3460; font-weight: 600;
+         padding: 9px 12px; text-align: left; border-bottom: 2px solid #d0d4f0; }
+    td { padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f8f9ff; }
+    .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
+    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
+    footer a { color: #0f3460; text-decoration: none; }
+"""
+
+
+def _render_page(title, sections, timestamp):
+    body = "\n".join(sections)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"  <title>{title}</title>\n"
+        f"  <style>{_PAGE_CSS}</style>\n"
+        "</head>\n<body>\n"
+        "  <header>\n"
+        "    <h1>OmicSage &#8212; Spatial QC Report</h1>\n"
+        f"    <p>Generated {timestamp}</p>\n"
+        "  </header>\n"
+        "  <main>\n"
+        f"    {body}\n"
+        "  </main>\n"
+        "  <footer>\n"
+        "    Generated by <a href=\"https://github.com/fshokor/OmicSage\">OmicSage</a>\n"
+        "    &middot; MIT License\n"
+        "  </footer>\n"
+        "</body>\n</html>"
+    )
 
 
 def generate_spatial_qc_report(
@@ -43,329 +300,30 @@ def generate_spatial_qc_report(
     output_path: str,
     dataset_id: str = "spatial",
 ) -> str:
-    """Generate a self-contained HTML QC report for Visium data.
-
-    Parameters
-    ----------
-    adata
-        AnnData returned by :func:`spatial_qc` (contains
-        ``uns["omicsage_spatial_qc"]``).
-    output_path
-        Path to write the ``.html`` file.
-    dataset_id
-        Dataset label used in the report title.
-
-    Returns
-    -------
-    str
-        Absolute path to the written HTML file.
-    """
     if "omicsage_spatial_qc" not in adata.uns:
         raise ValueError(
             "adata.uns['omicsage_spatial_qc'] not found. "
             "Run spatial_qc() before generating the report."
         )
+    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M")
+    qc_info   = adata.uns["omicsage_spatial_qc"]
+    params    = qc_info.get("params",  {})
+    outputs   = qc_info.get("outputs", {})
 
-    qc_info = adata.uns["omicsage_spatial_qc"]
-    figures = _build_figures(adata, qc_info)
-    html = _render_html(adata, qc_info, figures, dataset_id)
-
-    output_path = str(output_path)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as fh:
-        fh.write(html)
-
-    return os.path.abspath(output_path)
-
-
-# ---------------------------------------------------------------------------
-# Figure generation
-# ---------------------------------------------------------------------------
-
-
-def _fig_to_base64(fig: plt.Figure) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
-
-
-def _build_figures(adata: ad.AnnData, qc_info: dict) -> dict[str, str]:
-    """Build all figures and return them as base64-encoded PNG strings."""
-    figures = {}
-
-    # ---- 1. Violin plots -------------------------------------------------
-    figures["violin"] = _violin_plots(adata, qc_info)
-
-    # ---- 2. Spatial scatter plots (if squidpy available + spatial ok) ----
-    if _SQUIDPY_AVAILABLE and "spatial" in adata.obsm and "spatial" in adata.uns:
-        figures["spatial_counts"] = _spatial_scatter(adata, "total_counts")
-        figures["spatial_mt"] = _spatial_scatter(adata, "pct_counts_mt")
-    else:
-        figures["spatial_counts"] = None
-        figures["spatial_mt"] = None
-
-    # ---- 3. Threshold bar chart -----------------------------------------
-    figures["threshold_bar"] = _threshold_bar(qc_info)
-
-    return figures
-
-
-def _violin_plots(adata: ad.AnnData, qc_info: dict) -> str:
-    params = qc_info.get("params", {})
-    metrics = [
-        ("total_counts", "Total UMI counts / spot",
-         params.get("min_counts"), params.get("max_counts")),
-        ("n_genes_by_counts", "Genes detected / spot",
-         params.get("min_genes"), params.get("max_genes")),
-        ("pct_counts_mt", "MT gene % / spot",
-         None, params.get("max_mt_pct")),
+    sections = [
+        _section_summary(adata, qc_info, dataset_id, timestamp),
+        _section_distributions(adata, params),
+        _section_spatial(adata),
+        _section_filter_breakdown(outputs),
     ]
-    available = [m for m in metrics if m[0] in adata.obs.columns]
-
-    fig, axes = plt.subplots(1, len(available), figsize=(5 * len(available), 4))
-    if len(available) == 1:
-        axes = [axes]
-
-    for ax, (col, label, lo, hi) in zip(axes, available):
-        vals = adata.obs[col].values
-        parts = ax.violinplot(vals, positions=[0], showmedians=True)
-        for pc in parts["bodies"]:
-            pc.set_facecolor("#4C72B0")
-            pc.set_alpha(0.7)
-        # threshold lines
-        if lo is not None:
-            ax.axhline(lo, color="red", linestyle="--", linewidth=1,
-                       label=f"min={lo}")
-        if hi is not None:
-            ax.axhline(hi, color="orange", linestyle="--", linewidth=1,
-                       label=f"max={hi}")
-        ax.set_xticks([])
-        ax.set_ylabel(label)
-        ax.set_title(label)
-        if lo is not None or hi is not None:
-            ax.legend(fontsize=8)
-
-    fig.suptitle("QC metrics per spot", fontsize=12, fontweight="bold")
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-def _spatial_scatter(adata: ad.AnnData, color_key: str) -> Optional[str]:
-    """Spatial scatter coloured by a QC metric using squidpy."""
-    try:
-        fig, ax = plt.subplots(figsize=(5, 5))
-        sq.pl.spatial_scatter(
-            adata,
-            color=color_key,
-            ax=ax,
-            show=False,
-            frameon=False,
-        )
-        ax.set_title(color_key.replace("_", " ").title())
-        fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
-        return None
-
-
-def _threshold_bar(qc_info: dict) -> str:
-    outputs = qc_info.get("outputs", {})
-    categories = [
-        ("Low counts", outputs.get("removed_low_counts", 0)),
-        ("High counts", outputs.get("removed_high_counts", 0)),
-        ("Low genes", outputs.get("removed_low_genes", 0)),
-        ("High genes", outputs.get("removed_high_genes", 0)),
-        ("High MT%", outputs.get("removed_high_mt", 0)),
-    ]
-    labels, values = zip(*categories)
-
-    fig, ax = plt.subplots(figsize=(6, 3))
-    colors = ["#e74c3c" if v > 0 else "#95a5a6" for v in values]
-    bars = ax.bar(labels, values, color=colors, edgecolor="white")
-    ax.set_ylabel("Spots removed")
-    ax.set_title("Spots removed per filter criterion\n(spots may overlap)")
-    for bar, val in zip(bars, values):
-        if val > 0:
-            ax.text(
-                bar.get_x() + bar.get_width() / 2,
-                bar.get_height() + 0.5,
-                str(val),
-                ha="center",
-                va="bottom",
-                fontsize=9,
-            )
-    ax.tick_params(axis="x", labelsize=8)
-    fig.tight_layout()
-    return _fig_to_base64(fig)
-
-
-# ---------------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------------
-
-
-def _render_html(
-    adata: ad.AnnData,
-    qc_info: dict,
-    figures: dict,
-    dataset_id: str,
-) -> str:
-    outputs = qc_info.get("outputs", {})
-    params = qc_info.get("params", {})
-    stats = qc_info.get("summary_stats", {})
-    timestamp = qc_info.get("timestamp", datetime.now().isoformat())
-
-    n_before = outputs.get("n_spots_before", "?")
-    n_after = outputs.get("n_spots_after", "?")
-    n_removed = outputs.get("n_spots_removed", "?")
-    pct_kept = (
-        f"{100 * n_after / n_before:.1f}%"
-        if isinstance(n_before, int) and n_before > 0
-        else "?"
+    html = _render_page(
+        title=f"OmicSage -- Spatial QC -- {dataset_id}",
+        sections=sections,
+        timestamp=timestamp,
     )
-
-    def stat_row(metric_key, label):
-        s = stats.get(metric_key, {})
-        if not s:
-            return ""
-        return (
-            f"<tr><td>{label}</td>"
-            f"<td>{s['mean']:.1f}</td>"
-            f"<td>{s['median']:.1f}</td>"
-            f"<td>{s['std']:.1f}</td>"
-            f"<td>{s['min']:.1f}</td>"
-            f"<td>{s['max']:.1f}</td></tr>"
-        )
-
-    def img_section(title, b64, alt="figure"):
-        if b64 is None:
-            return f"<p><em>{title} — not available (squidpy or spatial data missing)</em></p>"
-        return (
-            f"<h3>{title}</h3>"
-            f'<img src="data:image/png;base64,{b64}" alt="{alt}" '
-            f'style="max-width:100%;border:1px solid #e0e0e0;border-radius:4px;">'
-        )
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OmicSage — Spatial QC Report: {dataset_id}</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          margin: 0; padding: 0; background: #f8f9fa; color: #212529; }}
-  .header {{ background: linear-gradient(135deg, #2c3e50, #3498db);
-             color: white; padding: 2rem 2.5rem; }}
-  .header h1 {{ margin: 0 0 0.3rem; font-size: 1.6rem; }}
-  .header p  {{ margin: 0; opacity: 0.85; font-size: 0.9rem; }}
-  .container {{ max-width: 1100px; margin: 0 auto; padding: 1.5rem 2rem; }}
-  .card {{ background: white; border-radius: 8px; padding: 1.5rem 2rem;
-           margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
-  .card h2 {{ margin-top: 0; font-size: 1.15rem; color: #2c3e50;
-              border-bottom: 2px solid #3498db; padding-bottom: 0.4rem; }}
-  .card h3 {{ font-size: 1rem; color: #34495e; margin: 1rem 0 0.4rem; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-               gap: 1rem; margin-bottom: 0.5rem; }}
-  .kpi {{ background: #f0f4f8; border-radius: 6px; padding: 1rem;
-          text-align: center; border-left: 4px solid #3498db; }}
-  .kpi .value {{ font-size: 1.8rem; font-weight: 700; color: #2c3e50; }}
-  .kpi .label {{ font-size: 0.8rem; color: #7f8c8d; margin-top: 0.2rem; }}
-  .kpi.warn {{ border-left-color: #e74c3c; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
-  th {{ background: #f0f4f8; padding: 0.5rem 0.8rem; text-align: left;
-        font-weight: 600; color: #2c3e50; }}
-  td {{ padding: 0.4rem 0.8rem; border-bottom: 1px solid #f0f0f0; }}
-  tr:last-child td {{ border-bottom: none; }}
-  .param-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                 gap: 0.4rem; font-size: 0.88rem; }}
-  .param-item {{ display: flex; justify-content: space-between;
-                 background: #f8f9fa; padding: 0.3rem 0.6rem; border-radius: 4px; }}
-  .param-item .key {{ color: #7f8c8d; }}
-  .param-item .val {{ font-weight: 600; color: #2c3e50; }}
-  .footer {{ text-align: center; padding: 1.5rem; color: #95a5a6; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🔬 OmicSage — Spatial QC Report</h1>
-  <p>Dataset: <strong>{dataset_id}</strong> &nbsp;|&nbsp; Generated: {timestamp[:19].replace("T", " ")}</p>
-</div>
-
-<div class="container">
-
-  <!-- KPI cards -->
-  <div class="card">
-    <h2>Spot Summary</h2>
-    <div class="kpi-grid">
-      <div class="kpi">
-        <div class="value">{n_before:,}</div>
-        <div class="label">Spots (input)</div>
-      </div>
-      <div class="kpi {'warn' if isinstance(n_removed, int) and n_removed > 0 else ''}">
-        <div class="value">{n_removed:,}</div>
-        <div class="label">Spots removed</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{n_after:,}</div>
-        <div class="label">Spots retained</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{pct_kept}</div>
-        <div class="label">% kept</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{adata.n_vars:,}</div>
-        <div class="label">Genes</div>
-      </div>
-    </div>
-  </div>
-
-  <!-- QC metrics summary table -->
-  <div class="card">
-    <h2>QC Metric Summary (retained spots)</h2>
-    <table>
-      <thead>
-        <tr><th>Metric</th><th>Mean</th><th>Median</th><th>Std</th><th>Min</th><th>Max</th></tr>
-      </thead>
-      <tbody>
-        {stat_row("total_counts", "Total UMI counts")}
-        {stat_row("n_genes_by_counts", "Genes detected")}
-        {stat_row("pct_counts_mt", "MT gene %")}
-      </tbody>
-    </table>
-  </div>
-
-  <!-- Threshold parameters -->
-  <div class="card">
-    <h2>Filter Thresholds Applied</h2>
-    <div class="param-grid">
-      <div class="param-item"><span class="key">min_counts</span><span class="val">{params.get('min_counts','?'):,}</span></div>
-      <div class="param-item"><span class="key">max_counts</span><span class="val">{params.get('max_counts','?'):,}</span></div>
-      <div class="param-item"><span class="key">min_genes</span><span class="val">{params.get('min_genes','?')}</span></div>
-      <div class="param-item"><span class="key">max_genes</span><span class="val">{params.get('max_genes','?'):,}</span></div>
-      <div class="param-item"><span class="key">max_mt_pct</span><span class="val">{params.get('max_mt_pct','?')}%</span></div>
-      <div class="param-item"><span class="key">mt_prefix</span><span class="val">{params.get('mt_prefix','?')}</span></div>
-      <div class="param-item"><span class="key">filter_spots</span><span class="val">{params.get('filter_spots','?')}</span></div>
-    </div>
-  </div>
-
-  <!-- Figures -->
-  <div class="card">
-    <h2>QC Figures</h2>
-    {img_section("Violin plots — QC metrics per spot", figures.get("violin"), "violin plots")}
-    {img_section("Spots removed per filter criterion", figures.get("threshold_bar"), "threshold bar chart")}
-    {img_section("Spatial distribution — Total UMI counts", figures.get("spatial_counts"), "spatial counts")}
-    {img_section("Spatial distribution — MT gene %", figures.get("spatial_mt"), "spatial MT%")}
-  </div>
-
-</div>
-<div class="footer">
-  Generated by OmicSage &nbsp;|&nbsp; Phase 7 — Spatial Transcriptomics
-</div>
-</body>
-</html>"""
-
-    return html
+    output_path = str(output_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(html, encoding="utf-8")
+    size_kb = Path(output_path).stat().st_size / 1024
+    logger.info("Spatial QC report -> %s (%.1f KB)", output_path, size_kb)
+    return str(Path(output_path).resolve())

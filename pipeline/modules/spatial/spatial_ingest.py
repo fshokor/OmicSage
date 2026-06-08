@@ -308,9 +308,11 @@ def _load_h5ad(
     #    MT genes are identified by the "MT-" prefix on the feature_name
     #    column (populated in step 2) or var_names as a fallback.
     if "feature_name" in adata.var.columns:
+        # pandas Series.str.startswith → Series → .values → numpy array
         mt_mask = adata.var["feature_name"].str.startswith("MT-").values
     else:
-        mt_mask = adata.var_names.str.startswith("MT-").values
+        # pandas Index.str.startswith returns numpy array directly — no .values needed
+        mt_mask = adata.var_names.str.startswith("MT-")
 
     if mt_mask.sum() > 0:
         import scipy.sparse as sp

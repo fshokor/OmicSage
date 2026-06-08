@@ -52,7 +52,7 @@ spatial:
       - assay
     N_cells_per_location: 8
     detection_alpha: 20
-    max_epochs_ref: 250
-    max_epochs_st: 30000
+    max_epochs_ref: 50
+    max_epochs_st: 50
     batch_size_ref: 2500
     layer_ref: counts         # raw counts layer in reference AnnData
