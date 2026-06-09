@@ -14,6 +14,9 @@ spatial:
   source: data/benchmark/kuppe_visium_human_heart_2022_control.h5ad
   spatial_type: h5ad
   load_images: true
+  
+  ingest:
+    library_key: "sample_name"
 
   qc:
     min_counts: 500

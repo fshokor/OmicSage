@@ -1,7 +1,13 @@
 """
-spatial_qc_report.py — OmicSage Phase 7
+spatial_qc_report.py — OmicSage Phase 7, Session 5 (image update)
 HTML report for spatial QC results.
 Matches the _render_page / section structure of the RNA pipeline reports.
+
+Changes vs Session 4:
+  - _spatial_scatter() now accepts img_key to overlay H&E image (tutorial standard)
+  - New figure: tissue overview coloured by in_tissue / array position
+  - generate_spatial_qc_report() gains img_key parameter (default "hires")
+  - _resolve_img_key() helper for graceful fallback when image absent
 """
 
 from __future__ import annotations
@@ -28,6 +34,10 @@ except ImportError:
     _SQUIDPY_AVAILABLE = False
 
 
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
 def _fig_to_b64(fig):
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -35,6 +45,111 @@ def _fig_to_b64(fig):
     b64 = base64.b64encode(buf.read()).decode()
     plt.close(fig)
     return b64
+
+
+def _squidpy_scatter_b64(
+    adata,
+    color,
+    img_key=None,
+    library_key=None,
+    title=None,
+    figsize=(6, 5),
+):
+    """Render ``sq.pl.spatial_scatter`` and return a base64 PNG string.
+
+    Uses the canonical squidpy API (per scverse/squidpy source):
+      - ``img_res_key`` (NOT ``img_key`` -- the docstring shorthand is misleading)
+      - ``figsize`` is a top-level parameter
+      - ``return_ax=True`` returns axes so we can grab the figure cleanly
+      - NO ``show=`` parameter exists -- passing it crashes deep in matplotlib
+      - When ``library_key`` is set, squidpy creates one panel per library
+        automatically; we let it own the figure entirely.
+
+    Returns
+    -------
+    str or None
+        Base64-encoded PNG of the rendered figure, or None if rendering fails.
+    """
+    kwargs = dict(color=color, frameon=False, return_ax=True, figsize=figsize)
+    if img_key:
+        kwargs["img_res_key"] = img_key
+    if library_key:
+        kwargs["library_key"] = library_key
+
+    axes = sq.pl.spatial_scatter(adata, **kwargs)
+
+    # axes can be a single Axes or a Sequence[Axes] (multi-sample)
+    if axes is None:
+        fig = plt.gcf()
+    elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
+        first = axes[0] if len(axes) > 0 else None
+        fig = first.get_figure() if first is not None else plt.gcf()
+    else:
+        fig = axes.get_figure()
+
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass
+    return _fig_to_b64(fig)
+
+
+def _resolve_img_key(adata: ad.AnnData, img_key: Optional[str]) -> Optional[str]:
+    """
+    Return img_key if the image exists in adata.uns['spatial'], otherwise try
+    common aliases ('hires', 'lowres'), otherwise return None so figures
+    degrade gracefully to spots-only.
+    """
+    if img_key is None:
+        return None
+    spatial_uns = adata.uns.get("spatial", {})
+    for _sample, sample_data in spatial_uns.items():
+        images = sample_data.get("images", {})
+        if img_key in images:
+            return img_key
+        for alias in ("hires", "lowres"):
+            if alias in images:
+                return alias
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Figure functions
+# ---------------------------------------------------------------------------
+
+def _get_library_key(adata: ad.AnnData) -> Optional[str]:
+    """Return the obs column that maps spots to their library/sample ID.
+
+    Reading order (first match wins):
+    1. ``uns["omicsage_spatial_ingest"]["library_key"]`` -- set by spatial_ingest()
+       using either the user-supplied value or auto-detection at load time.
+    2. Auto-detection fallback -- for h5ad files loaded outside OmicSage that
+       lack the provenance key.
+
+    Returns ``None`` for single-sample data (squidpy does not need library_key).
+    """
+    # 1. Read from ingest provenance (authoritative)
+    ingest_prov = adata.uns.get("omicsage_spatial_ingest", {})
+    if "library_key" in ingest_prov and ingest_prov["library_key"] is not None:
+        return ingest_prov["library_key"]
+
+    # 2. Auto-detection fallback
+    library_ids = list(adata.uns.get("spatial", {}).keys())
+    if len(library_ids) <= 1:
+        return None
+    id_set = set(library_ids)
+    for candidate in ("library_id", "sample", "patient", "donor_id", "batch", "slide"):
+        if candidate in adata.obs.columns:
+            if id_set.issubset(set(adata.obs[candidate].astype(str).unique())):
+                return candidate
+    # Fallback: scan all string/category columns
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype.name in ("object", "category"):
+            if id_set.issubset(set(adata.obs[col].astype(str).unique())):
+                return col
+    return None
 
 
 def _violin_plots(adata, params):
@@ -74,18 +189,99 @@ def _violin_plots(adata, params):
     return _fig_to_b64(fig)
 
 
-def _spatial_scatter(adata, color_key):
+def _spatial_scatter(adata, color_key, img_key: Optional[str] = None):
+    """Spatial scatter coloured by color_key, delegating figure creation to squidpy."""
     if not _SQUIDPY_AVAILABLE:
         return None
     if "spatial" not in adata.obsm or "spatial" not in adata.uns:
         return None
+    if color_key not in adata.obs.columns:
+        return None
+    resolved = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    title = color_key.replace("_", " ").title()
+    if resolved:
+        title += " (on H&E)"
     try:
-        fig, ax = plt.subplots(figsize=(5, 5))
-        sq.pl.spatial_scatter(adata, color=color_key, ax=ax, show=False, frameon=False)
-        ax.set_title(color_key.replace("_", " ").title(), fontsize=10, fontweight="bold")
-        fig.tight_layout()
-        return _fig_to_b64(fig)
-    except Exception:
+        return _squidpy_scatter_b64(
+            adata, color=color_key,
+            img_key=resolved, library_key=library_key,
+            title=title, figsize=(5, 5),
+        )
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+def _tissue_overview(adata, img_key: Optional[str]) -> Optional[str]:
+    """
+    Two-panel overview of the tissue array:
+      Left : spots coloured by in_tissue flag (shows capture area layout)
+      Right: spots coloured by array_row (shows spatial gradient — QC check)
+    This is the first plot in most Visium tutorials.
+    Falls back gracefully when in_tissue / array_row columns are absent.
+    """
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+        return None
+
+    panels = []
+    for col in ("in_tissue", "array_row"):
+        if col in adata.obs.columns:
+            panels.append(col)
+
+    if not panels:
+        return None
+
+    resolved = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    # Render one panel at a time so each gets a clean title, then stitch into
+    # one row.  When library_key is set squidpy makes N subplots per call (one
+    # per sample) — we collect those figures and concatenate them horizontally.
+    try:
+        b64s = []
+        for col in panels:
+            title = col.replace("_", " ").title()
+            if resolved:
+                title += " (on H&E)"
+            b64 = _squidpy_scatter_b64(
+                adata, color=col,
+                img_key=resolved, library_key=library_key,
+                title=title, figsize=(5, 5),
+            )
+            if b64:
+                b64s.append(b64)
+        if not b64s:
+            return None
+        if len(b64s) == 1:
+            return b64s[0]
+        # Stitch multiple panels side-by-side using numpy/PIL via matplotlib
+        import io as _io
+        import numpy as _np
+        imgs = []
+        for b in b64s:
+            import base64 as _b64
+            arr = plt.imread(_io.BytesIO(_b64.b64decode(b)))
+            imgs.append(arr)
+        max_h = max(a.shape[0] for a in imgs)
+        # Pad shorter images to same height
+        padded = []
+        for a in imgs:
+            if a.shape[0] < max_h:
+                pad = _np.ones((max_h - a.shape[0], a.shape[1], a.shape[2]),
+                               dtype=a.dtype)
+                a = _np.vstack([a, pad])
+            padded.append(a)
+        combined = _np.hstack(padded)
+        fig2, ax2 = plt.subplots(figsize=(combined.shape[1] / 100,
+                                          combined.shape[0] / 100))
+        ax2.imshow(combined)
+        ax2.axis("off")
+        fig2.tight_layout(pad=0)
+        return _fig_to_b64(fig2)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
         return None
 
 
@@ -113,6 +309,10 @@ def _threshold_bar(outputs):
     fig.tight_layout()
     return _fig_to_b64(fig)
 
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
 
 def _section_summary(adata, qc_info, dataset_id, timestamp):
     outputs = qc_info.get("outputs", {})
@@ -189,25 +389,63 @@ def _section_distributions(adata, params):
     """
 
 
-def _section_spatial(adata):
-    b64_counts = _spatial_scatter(adata, "total_counts")
-    b64_mt     = _spatial_scatter(adata, "pct_counts_mt")
+def _section_tissue_overview(adata, img_key: Optional[str]) -> str:
+    """
+    Tissue array overview — first plot in all Visium tutorials.
+    Shows in_tissue capture mask and array_row gradient on the H&E image.
+    """
+    b64 = _tissue_overview(adata, img_key)
+    if not b64:
+        return ""
+    resolved = _resolve_img_key(adata, img_key)
+    caption = (
+        "Spots overlaid on the H&amp;E image. "
+        "Left: capture-area mask (<code>in_tissue</code>). "
+        "Right: array row gradient confirming correct orientation."
+        if resolved else
+        "Spot array layout. Left: capture-area mask. Right: array row gradient."
+    )
+    return f"""
+    <section>
+      <h2>Tissue Array Overview</h2>
+      <p>{caption}</p>
+      <div class="fig-grid">
+        <div class="fig-wrap" style="max-width:900px;">
+          <img src="data:image/png;base64,{b64}" alt="tissue overview">
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _section_spatial(adata, img_key: Optional[str] = None):
+    """QC metrics plotted on the tissue — total counts and MT% per spot."""
+    b64_counts = _spatial_scatter(adata, "total_counts", img_key)
+    b64_mt     = _spatial_scatter(adata, "pct_counts_mt", img_key)
     if not b64_counts and not b64_mt:
         return ""
+    resolved = _resolve_img_key(adata, img_key)
+    title = (
+        "Spatial Distribution of QC Metrics (on H&amp;E)"
+        if resolved else
+        "Spatial Distribution of QC Metrics"
+    )
     figs = ""
     if b64_counts:
         figs += (
-            '<div class="fig-wrap"><h3>Total UMI counts</h3>'
+            '<div class="fig-wrap"><h3>Total UMI counts per spot</h3>'
             f'<img src="data:image/png;base64,{b64_counts}" alt="spatial counts"></div>'
         )
     if b64_mt:
         figs += (
-            '<div class="fig-wrap"><h3>MT gene %</h3>'
+            '<div class="fig-wrap"><h3>MT gene % per spot</h3>'
             f'<img src="data:image/png;base64,{b64_mt}" alt="spatial MT%"></div>'
         )
     return f"""
     <section>
-      <h2>Spatial Distribution of QC Metrics</h2>
+      <h2>{title}</h2>
+      <p>High MT% spots concentrated at tissue edges may indicate damaged cells.
+         Low-count spots in the tissue interior may reflect poor RNA capture.</p>
       <div class="fig-grid">{figs}</div>
     </section>
     """
@@ -228,6 +466,10 @@ def _section_filter_breakdown(outputs):
     </section>
     """
 
+
+# ---------------------------------------------------------------------------
+# Shared CSS + page renderer
+# ---------------------------------------------------------------------------
 
 _PAGE_CSS = """
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -295,11 +537,36 @@ def _render_page(title, sections, timestamp):
     )
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
 def generate_spatial_qc_report(
     adata: ad.AnnData,
     output_path: str,
     dataset_id: str = "spatial",
+    img_key: Optional[str] = "hires",
 ) -> str:
+    """Generate a self-contained HTML QC report for Visium data.
+
+    Parameters
+    ----------
+    adata
+        AnnData returned by :func:`spatial_qc`.
+    output_path
+        Path to write the ``.html`` file.
+    dataset_id
+        Dataset label shown in the report header.
+    img_key
+        H&E image key stored in ``adata.uns["spatial"][sample]["images"]``.
+        Common values: ``"hires"`` (default), ``"lowres"``.
+        If the image is absent all figures degrade gracefully to spots-only.
+
+    Returns
+    -------
+    str
+        Absolute path to the written HTML file.
+    """
     if "omicsage_spatial_qc" not in adata.uns:
         raise ValueError(
             "adata.uns['omicsage_spatial_qc'] not found. "
@@ -312,8 +579,9 @@ def generate_spatial_qc_report(
 
     sections = [
         _section_summary(adata, qc_info, dataset_id, timestamp),
+        _section_tissue_overview(adata, img_key),       # NEW: tissue array + H&E
         _section_distributions(adata, params),
-        _section_spatial(adata),
+        _section_spatial(adata, img_key),               # UPDATED: img_key support
         _section_filter_breakdown(outputs),
     ]
     html = _render_page(

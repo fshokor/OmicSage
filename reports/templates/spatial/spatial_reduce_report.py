@@ -1,21 +1,25 @@
 """
-spatial_reduce_report.py — OmicSage Phase 7, Session 2
+spatial_reduce_report.py — OmicSage Phase 7, Session 5 (style update)
 HTML report for spatial reduction results.
 
-Generates a self-contained HTML report with:
-  - Summary table: HVGs selected, PCA components, spatial graph stats
-  - HVG scatter: mean vs dispersion with HVGs highlighted
-  - PCA variance explained: elbow plot (cumulative variance per PC)
-  - PCA scatter: spots coloured by total_counts (quality check)
-  - Spatial connectivity: histogram of neighbours per spot (~6 for Visium)
+Style: matches spatial_qc_report.py exactly (_PAGE_CSS / _render_page pattern).
+
+Sections:
+  1. Run Summary       — stat cards: spots, genes, HVGs, PCA components, variance
+  2. HVG selection     — mean vs dispersion scatter (HVGs highlighted)
+  3. PCA               — elbow plot + PCA scatter coloured by total_counts
+  4. Spatial structure — spatial scatter of top HVG on tissue + neighbours histogram
+                         (mirrors tutorial: sq.pl.spatial_scatter with img_key)
 """
 
 from __future__ import annotations
 
 import base64
-import io
+import logging
 import os
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from typing import Optional
 
 import anndata as ad
@@ -24,6 +28,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 matplotlib.use("Agg")
+logger = logging.getLogger(__name__)
 
 try:
     import squidpy as sq
@@ -33,135 +38,235 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Shared CSS + page renderer  (identical to spatial_qc_report.py)
 # ---------------------------------------------------------------------------
 
+_PAGE_CSS = """
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           font-size: 14px; line-height: 1.6; color: #1a1a2e; background: #f7f8fc; }
+    header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+             color: white; padding: 32px 40px 24px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px; }
+    header p  { font-size: 0.85rem; opacity: 0.7; margin-top: 4px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    section { background: white; border-radius: 10px;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+              padding: 28px 32px; margin-bottom: 24px; }
+    section h2 { font-size: 1.15rem; font-weight: 700; color: #0f3460;
+                 border-bottom: 2px solid #e8eaf6; padding-bottom: 10px; margin-bottom: 18px; }
+    section h3 { font-size: 1rem; font-weight: 600; color: #16213e; margin: 18px 0 10px; }
+    section p  { color: #444; margin-bottom: 12px; font-size: 0.9rem; }
+    .timestamp { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .note { font-size: 0.82rem; color: #7a5c00; background: #fffbe6;
+            border-left: 3px solid #f0c040; padding: 8px 12px;
+            border-radius: 4px; margin-bottom: 14px; }
+    code { font-family: "SFMono-Regular", Consolas, monospace;
+           background: #f0f2ff; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+    .stat-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: #f0f2ff; border-radius: 8px; padding: 14px 20px;
+                 min-width: 130px; text-align: center; flex: 1 1 130px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #0f3460; }
+    .stat-label { font-size: 0.75rem; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 8px; }
+    th { background: #f0f2ff; color: #0f3460; font-weight: 600;
+         padding: 9px 12px; text-align: left; border-bottom: 2px solid #d0d4f0; }
+    td { padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f8f9ff; }
+    .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
+    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
+    footer a { color: #0f3460; text-decoration: none; }
+"""
 
-def generate_spatial_reduce_report(
-    adata: ad.AnnData,
-    output_path: str,
-    dataset_id: str = "spatial",
-) -> str:
-    """Generate a self-contained HTML reduction report for Visium data.
 
-    Parameters
-    ----------
-    adata
-        AnnData returned by :func:`spatial_reduce` (contains
-        ``uns["omicsage_spatial_reduce"]``).
-    output_path
-        Path to write the ``.html`` file.
-    dataset_id
-        Dataset label used in the report title.
+def _render_page(title: str, header_subtitle: str, sections: list[str], timestamp: str) -> str:
+    body = "\n".join(sections)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"  <title>{title}</title>\n"
+        f"  <style>{_PAGE_CSS}</style>\n"
+        "</head>\n<body>\n"
+        "  <header>\n"
+        "    <h1>OmicSage &#8212; Spatial Reduce Report</h1>\n"
+        f"    <p>{header_subtitle} &middot; Generated {timestamp}</p>\n"
+        "  </header>\n"
+        "  <main>\n"
+        f"    {body}\n"
+        "  </main>\n"
+        "  <footer>\n"
+        "    Generated by <a href=\"https://github.com/fshokor/OmicSage\">OmicSage</a>\n"
+        "    &middot; MIT License\n"
+        "  </footer>\n"
+        "</body>\n</html>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Figure helpers
+# ---------------------------------------------------------------------------
+
+def _fig_to_b64(fig: plt.Figure) -> str:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    plt.close(fig)
+    return b64
+
+def _squidpy_scatter_b64(
+    adata,
+    color,
+    img_key=None,
+    library_key=None,
+    title=None,
+    figsize=(6, 5),
+):
+    """Render ``sq.pl.spatial_scatter`` and return a base64 PNG string.
+
+    Uses the canonical squidpy API (per scverse/squidpy source):
+      - ``img_res_key`` (NOT ``img_key`` — the docstring shorthand is misleading)
+      - ``figsize`` is a top-level parameter
+      - ``return_ax=True`` returns axes so we can grab the figure cleanly
+      - NO ``show=`` parameter exists — passing it crashes deep in matplotlib
+      - When ``library_key`` is set, squidpy creates one panel per library
+        automatically; we let it own the figure entirely.
 
     Returns
     -------
-    str
-        Absolute path to the written HTML file.
+    str or None
+        Base64-encoded PNG of the rendered figure, or None if rendering fails.
     """
-    if "omicsage_spatial_reduce" not in adata.uns:
-        raise ValueError(
-            "adata.uns['omicsage_spatial_reduce'] not found. "
-            "Run spatial_reduce() before generating the report."
-        )
+    kwargs = dict(color=color, frameon=False, return_ax=True, figsize=figsize)
+    if img_key:
+        kwargs["img_res_key"] = img_key
+    if library_key:
+        kwargs["library_key"] = library_key
 
-    reduce_info = adata.uns["omicsage_spatial_reduce"]
-    figures = _build_figures(adata, reduce_info)
-    html = _render_html(adata, reduce_info, figures, dataset_id)
+    axes = sq.pl.spatial_scatter(adata, **kwargs)
 
-    output_path = str(output_path)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as fh:
-        fh.write(html)
+    # axes can be a single Axes or a Sequence[Axes] (multi-sample)
+    if axes is None:
+        fig = plt.gcf()
+    elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
+        # Sequence of axes - grab figure from first
+        first = axes[0] if len(axes) > 0 else None
+        fig = first.get_figure() if first is not None else plt.gcf()
+    else:
+        fig = axes.get_figure()
 
-    return os.path.abspath(output_path)
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass  # tight_layout sometimes warns on multi-axes figures
+    return _fig_to_b64(fig)
+
+
+
+def _img_tag(b64: str, alt: str = "figure") -> str:
+    return f'<img src="data:image/png;base64,{b64}" alt="{alt}">'
+
+
+def _get_library_key(adata: ad.AnnData) -> Optional[str]:
+    """Return the obs column that maps spots to their library/sample ID.
+
+    Reading order (first match wins):
+    1. ``uns["omicsage_spatial_ingest"]["library_key"]`` — set by spatial_ingest()
+       using either the user-supplied value or auto-detection at load time.
+    2. Auto-detection fallback — for h5ad files loaded outside OmicSage that
+       lack the provenance key.
+
+    Returns ``None`` for single-sample data (squidpy does not need library_key).
+    """
+    # 1. Read from ingest provenance (authoritative)
+    ingest_prov = adata.uns.get("omicsage_spatial_ingest", {})
+    if "library_key" in ingest_prov and ingest_prov["library_key"] is not None:
+        return ingest_prov["library_key"]
+
+    # 2. Auto-detection fallback
+    library_ids = list(adata.uns.get("spatial", {}).keys())
+    if len(library_ids) <= 1:
+        return None
+    id_set = set(library_ids)
+    for candidate in ("library_id", "sample", "patient", "donor_id", "batch", "slide"):
+        if candidate in adata.obs.columns:
+            if id_set.issubset(set(adata.obs[candidate].astype(str).unique())):
+                return candidate
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype.name in ("object", "category"):
+            if id_set.issubset(set(adata.obs[col].astype(str).unique())):
+                return col
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Figure generation
+# Individual figure functions
 # ---------------------------------------------------------------------------
 
-
-def _fig_to_base64(fig: plt.Figure) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
-
-
-def _build_figures(adata: ad.AnnData, reduce_info: dict) -> dict[str, Optional[str]]:
-    """Build all figures and return as base64-encoded PNG strings."""
-    figures: dict[str, Optional[str]] = {}
-    figures["hvg_scatter"] = _hvg_scatter(adata)
-    figures["pca_variance"] = _pca_variance(adata, reduce_info)
-    figures["pca_scatter"] = _pca_scatter(adata)
-    figures["spatial_neighbors"] = _spatial_neighbors_hist(adata)
-    return figures
-
-
-def _hvg_scatter(adata: ad.AnnData) -> Optional[str]:
-    """Mean vs dispersions scatter, HVGs highlighted in orange."""
+def _fig_hvg_scatter(adata: ad.AnnData) -> Optional[str]:
+    """Mean vs normalized dispersion, HVGs highlighted in orange."""
     required = {"means", "dispersions_norm", "highly_variable"}
     if not required.issubset(adata.var.columns):
         return None
     try:
         means = adata.var["means"].values
-        disp = adata.var["dispersions_norm"].values
-        hvg = adata.var["highly_variable"].values
+        disp  = adata.var["dispersions_norm"].values
+        hvg   = adata.var["highly_variable"].values
 
         fig, ax = plt.subplots(figsize=(6, 4))
-        ax.scatter(
-            means[~hvg], disp[~hvg],
-            s=3, alpha=0.3, color="#95a5a6", label="non-HVG", rasterized=True,
-        )
-        ax.scatter(
-            means[hvg], disp[hvg],
-            s=5, alpha=0.6, color="#e67e22", label=f"HVG (n={hvg.sum():,})",
-            rasterized=True,
-        )
+        ax.scatter(means[~hvg], disp[~hvg], s=3, alpha=0.3,
+                   color="#95a5a6", label="non-HVG", rasterized=True)
+        ax.scatter(means[hvg],  disp[hvg],  s=5, alpha=0.6,
+                   color="#e67e22", label=f"HVG (n={hvg.sum():,})", rasterized=True)
         ax.set_xlabel("Mean expression")
         ax.set_ylabel("Normalized dispersion")
-        ax.set_title("Highly Variable Genes")
-        ax.legend(fontsize=9)
+        ax.set_title("Highly Variable Genes", fontsize=10, fontweight="bold")
+        ax.legend(fontsize=9, frameon=False)
+        ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
         return None
 
 
-def _pca_variance(adata: ad.AnnData, reduce_info: dict) -> Optional[str]:
-    """Elbow plot: individual + cumulative explained variance per PC."""
+def _fig_pca_variance(adata: ad.AnnData, n_comps: int) -> Optional[str]:
+    """Elbow plot: per-PC + cumulative variance explained."""
     try:
-        vr = np.array(adata.uns["pca"]["variance_ratio"])
+        vr   = np.array(adata.uns["pca"]["variance_ratio"])
         cumvr = np.cumsum(vr)
-        pcs = np.arange(1, len(vr) + 1)
+        pcs  = np.arange(1, len(vr) + 1)
 
         fig, ax1 = plt.subplots(figsize=(7, 4))
         ax2 = ax1.twinx()
-
-        ax1.bar(pcs, vr * 100, color="#3498db", alpha=0.7, label="Per-PC variance %")
+        ax1.bar(pcs, vr * 100, color="#3498db", alpha=0.7)
         ax2.plot(pcs, cumvr * 100, color="#e74c3c", linewidth=2,
-                 marker="o", markersize=3, label="Cumulative variance %")
+                 marker="o", markersize=3)
         ax2.axhline(90, color="#e74c3c", linestyle="--", linewidth=0.8, alpha=0.5)
-
         ax1.set_xlabel("Principal component")
         ax1.set_ylabel("Variance explained (%)", color="#3498db")
         ax2.set_ylabel("Cumulative variance (%)", color="#e74c3c")
-        ax1.set_title("PCA — Variance Explained")
+        ax1.set_title("PCA — Variance Explained", fontsize=10, fontweight="bold")
         ax1.tick_params(axis="y", colors="#3498db")
         ax2.tick_params(axis="y", colors="#e74c3c")
-
-        n_comps = reduce_info["outputs"].get("n_comps_computed", len(vr))
         ax1.set_xlim(0.5, min(n_comps + 0.5, len(vr) + 0.5))
+        ax1.spines[["top"]].set_visible(False)
         fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
         return None
 
 
-def _pca_scatter(adata: ad.AnnData) -> Optional[str]:
-    """PCA embedding scatter coloured by total_counts (spot quality check)."""
+def _fig_pca_scatter(adata: ad.AnnData) -> Optional[str]:
+    """PCA scatter coloured by total_counts."""
     if "X_pca" not in adata.obsm:
         return None
     try:
@@ -174,197 +279,313 @@ def _pca_scatter(adata: ad.AnnData) -> Optional[str]:
         label = "total_counts" if "total_counts" in adata.obs.columns else ""
 
         fig, ax = plt.subplots(figsize=(5, 4))
-        sc_plot = ax.scatter(
-            pca[:, 0], pca[:, 1],
-            c=color_vals, cmap="viridis", s=4, alpha=0.7, rasterized=True,
-        )
+        sc_plot = ax.scatter(pca[:, 0], pca[:, 1],
+                             c=color_vals, cmap="viridis",
+                             s=4, alpha=0.7, rasterized=True)
         plt.colorbar(sc_plot, ax=ax, label=label)
         ax.set_xlabel("PC1")
         ax.set_ylabel("PC2")
-        ax.set_title(f"PCA — coloured by {label}" if label else "PCA")
+        ax.set_title("PCA — coloured by total counts", fontsize=10, fontweight="bold")
+        ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
         return None
 
 
-def _spatial_neighbors_hist(adata: ad.AnnData) -> Optional[str]:
-    """Histogram of number of spatial neighbours per spot."""
+def _fig_top_hvg_on_tissue(adata: ad.AnnData, img_key: Optional[str]) -> Optional[str]:
+    """
+    Spatial scatter of the top HVG overlaid on the H&E image (if available).
+    Mirrors the tutorial plot: sq.pl.spatial_scatter(adata, color=top_gene, img_key=...).
+    Falls back to no image if img_key is None or image is absent.
+    """
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+        return None
+    if "highly_variable" not in adata.var.columns:
+        return None
+
+    # Pick the top HVG by normalized dispersion (most spatially interesting)
+    hvg_mask = adata.var["highly_variable"]
+    if not hvg_mask.any():
+        return None
+    if "dispersions_norm" in adata.var.columns:
+        top_gene = (
+            adata.var.loc[hvg_mask, "dispersions_norm"].idxmax()
+        )
+    else:
+        top_gene = adata.var_names[hvg_mask][0]
+
+    resolved_img_key = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    try:
+        return _squidpy_scatter_b64(
+            adata, color=top_gene,
+            img_key=resolved_img_key, library_key=library_key,
+            title=f"Top HVG: {top_gene}", figsize=(6, 6),
+        )
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+def _fig_spatial_neighbours(adata: ad.AnnData) -> Optional[str]:
+    """Histogram of number of spatial neighbours per spot (~6 for Visium grid)."""
     if "spatial_connectivities" not in adata.obsp:
         return None
     try:
         conn = adata.obsp["spatial_connectivities"]
-        n_neighbors_per_spot = np.array(conn.sum(axis=1)).ravel().astype(int)
+        n_nb = np.array(conn.sum(axis=1)).ravel().astype(int)
 
         fig, ax = plt.subplots(figsize=(5, 3))
-        unique, counts = np.unique(n_neighbors_per_spot, return_counts=True)
+        unique, counts = np.unique(n_nb, return_counts=True)
         ax.bar(unique, counts, color="#2ecc71", edgecolor="white")
         ax.axvline(6, color="#e74c3c", linestyle="--", linewidth=1.2,
                    label="expected 6 (Visium grid)")
         ax.set_xlabel("Neighbours per spot")
         ax.set_ylabel("Number of spots")
-        ax.set_title("Spatial neighbours distribution")
-        ax.legend(fontsize=8)
+        ax.set_title("Spatial neighbours distribution", fontsize=10, fontweight="bold")
+        ax.legend(fontsize=8, frameon=False)
         ax.set_xticks(sorted(unique))
+        ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
         return None
 
 
 # ---------------------------------------------------------------------------
-# HTML rendering
+# Utility
 # ---------------------------------------------------------------------------
 
+def _resolve_img_key(adata: ad.AnnData, img_key: Optional[str]) -> Optional[str]:
+    """
+    Return img_key if the image is actually present in adata.uns["spatial"],
+    otherwise return None so figures degrade gracefully.
+    """
+    if img_key is None:
+        return None
+    spatial_uns = adata.uns.get("spatial", {})
+    for _sample, sample_data in spatial_uns.items():
+        images = sample_data.get("images", {})
+        if img_key in images:
+            return img_key
+        # common aliases
+        for alias in ("hires", "lowres"):
+            if alias in images:
+                return alias
+    return None
 
-def _render_html(
-    adata: ad.AnnData,
-    reduce_info: dict,
-    figures: dict,
-    dataset_id: str,
-) -> str:
-    params = reduce_info.get("params", {})
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+def _section_summary(adata: ad.AnnData, reduce_info: dict,
+                     dataset_id: str, timestamp: str) -> str:
+    params  = reduce_info.get("params", {})
     outputs = reduce_info.get("outputs", {})
-    timestamp = reduce_info.get("timestamp", datetime.now().isoformat())
 
-    n_hvgs = outputs.get("n_hvgs", "?")
-    n_comps = outputs.get("n_comps_computed", "?")
-    n_edges = outputs.get("spatial_graph_n_edges", "?")
-    mean_nb = outputs.get("spatial_graph_mean_neighbors", "?")
-    cum_var = outputs.get("pca_cumulative_variance_top10", None)
+    n_hvgs    = outputs.get("n_hvgs", "?")
+    n_comps   = outputs.get("n_comps_computed", "?")
+    n_edges   = outputs.get("spatial_graph_n_edges", "?")
+    mean_nb   = outputs.get("spatial_graph_mean_neighbors", "?")
+    cum_var   = outputs.get("pca_cumulative_variance_top10", None)
+    cum_var_s = f"{cum_var * 100:.1f}%" if cum_var is not None else "?"
     skipped_norm = params.get("skipped_normalization", False)
 
-    cum_var_str = f"{cum_var * 100:.1f}%" if cum_var is not None else "?"
+    stat_cards = "".join(
+        f'<div class="stat-card"><div class="stat-value">{v}</div>'
+        f'<div class="stat-label">{k}</div></div>'
+        for k, v in [
+            ("Spots",              f"{adata.n_obs:,}"),
+            ("Genes (total)",      f"{adata.n_vars:,}"),
+            ("HVGs selected",      f"{n_hvgs:,}" if isinstance(n_hvgs, int) else n_hvgs),
+            ("PCA components",     str(n_comps)),
+            ("Variance (top 10 PCs)", cum_var_s),
+            ("Spatial graph edges", f"{n_edges:,}" if isinstance(n_edges, int) else n_edges),
+            ("Mean neighbours/spot", str(mean_nb)),
+        ]
+    )
 
-    def img_section(title: str, b64: Optional[str], alt: str = "figure") -> str:
-        if b64 is None:
-            return (
-                f"<p><em>{title} — not available</em></p>"
-            )
-        return (
-            f"<h3>{title}</h3>"
-            f'<img src="data:image/png;base64,{b64}" alt="{alt}" '
-            f'style="max-width:100%;border:1px solid #e0e0e0;border-radius:4px;">'
+    param_rows = "".join(
+        f"<tr><td><code>{k}</code></td><td>{v}</td></tr>"
+        for k, v in [
+            ("normalize_total",  params.get("normalize_total", "?")),
+            ("target_sum",       params.get("target_sum", "?")),
+            ("log1p",            params.get("log1p", "?")),
+            ("n_top_genes (HVG)", params.get("n_top_genes", "?")),
+            ("hvg_flavor",       params.get("flavor", "?")),
+            ("n_comps (PCA)",    params.get("n_comps", "?")),
+            ("n_neighbors",      params.get("n_neighbors", "?")),
+            ("coord_type",       params.get("coord_type") or "None (auto)"),
+        ]
+    )
+
+    norm_note = (
+        '<p class="note">⚠ Normalization skipped — benchmark dataset detected '
+        "(pre-processed input).</p>"
+        if skipped_norm else ""
+    )
+
+    return f"""
+    <section>
+      <h2>Run Summary</h2>
+      <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
+      {norm_note}
+      <div class="stat-grid">{stat_cards}</div>
+      <h3>Parameters</h3>
+      <table>
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+        <tbody>{param_rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _section_hvg(adata: ad.AnnData) -> str:
+    b64 = _fig_hvg_scatter(adata)
+    if not b64:
+        return ""
+    return f"""
+    <section>
+      <h2>Highly Variable Gene Selection</h2>
+      <p>Genes are ranked by normalized dispersion. HVGs (orange) are used for PCA and downstream clustering.</p>
+      <div class="fig-grid">
+        <div class="fig-wrap">
+          <h3>Mean expression vs normalized dispersion</h3>
+          {_img_tag(b64, "HVG scatter")}
+        </div>
+      </div>
+    </section>
+    """
+
+
+def _section_pca(adata: ad.AnnData, n_comps: int) -> str:
+    b64_var     = _fig_pca_variance(adata, n_comps)
+    b64_scatter = _fig_pca_scatter(adata)
+    if not b64_var and not b64_scatter:
+        return ""
+    figs = ""
+    if b64_var:
+        figs += (
+            '<div class="fig-wrap">'
+            "<h3>Variance explained (elbow plot)</h3>"
+            + _img_tag(b64_var, "PCA variance")
+            + "</div>"
+        )
+    if b64_scatter:
+        figs += (
+            '<div class="fig-wrap">'
+            "<h3>PCA — spots coloured by total counts</h3>"
+            + _img_tag(b64_scatter, "PCA scatter")
+            + "</div>"
+        )
+    return f"""
+    <section>
+      <h2>PCA</h2>
+      <p>PCA run on HVGs. The elbow plot shows variance explained per component; the red dashed line marks 90% cumulative variance.</p>
+      <div class="fig-grid">{figs}</div>
+    </section>
+    """
+
+
+def _section_spatial_structure(adata: ad.AnnData, img_key: Optional[str]) -> str:
+    b64_hvg = _fig_top_hvg_on_tissue(adata, img_key)
+    b64_nb  = _fig_spatial_neighbours(adata)
+    if not b64_hvg and not b64_nb:
+        return ""
+    figs = ""
+    if b64_hvg:
+        resolved = _resolve_img_key(adata, img_key)
+        subtitle = (
+            "Top HVG expression overlaid on H&amp;E image"
+            if resolved
+            else "Top HVG expression on tissue array (no H&amp;E image available)"
+        )
+        figs += (
+            '<div class="fig-wrap">'
+            f"<h3>{subtitle}</h3>"
+            + _img_tag(b64_hvg, "top HVG on tissue")
+            + "</div>"
+        )
+    if b64_nb:
+        figs += (
+            '<div class="fig-wrap">'
+            "<h3>Spatial neighbours per spot</h3>"
+            + _img_tag(b64_nb, "neighbours histogram")
+            + "</div>"
+        )
+    return f"""
+    <section>
+      <h2>Spatial Structure</h2>
+      <p>Left: expression of the most variable gene overlaid on the tissue array.
+         Right: distribution of spatial neighbours per spot — Visium grids produce 6 neighbours for interior spots.</p>
+      <div class="fig-grid">{figs}</div>
+    </section>
+    """
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+def generate_spatial_reduce_report(
+    adata: ad.AnnData,
+    output_path: str,
+    dataset_id: str = "spatial",
+    img_key: Optional[str] = "hires",
+) -> str:
+    """Generate a self-contained HTML reduction report for Visium data.
+
+    Parameters
+    ----------
+    adata
+        AnnData returned by :func:`spatial_reduce`.
+    output_path
+        Path to write the ``.html`` file.
+    dataset_id
+        Dataset label shown in the report header.
+    img_key
+        H&E image key stored in ``adata.uns["spatial"][sample]["images"]``.
+        Common values: ``"hires"`` (default), ``"lowres"``.
+        If the image is absent the figure degrades gracefully to spots-only.
+
+    Returns
+    -------
+    str
+        Absolute path to the written HTML file.
+    """
+    if "omicsage_spatial_reduce" not in adata.uns:
+        raise ValueError(
+            "adata.uns['omicsage_spatial_reduce'] not found. "
+            "Run spatial_reduce() before generating the report."
         )
 
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OmicSage — Spatial Reduce Report: {dataset_id}</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          margin: 0; padding: 0; background: #f8f9fa; color: #212529; }}
-  .header {{ background: linear-gradient(135deg, #2c3e50, #27ae60);
-             color: white; padding: 2rem 2.5rem; }}
-  .header h1 {{ margin: 0 0 0.3rem; font-size: 1.6rem; }}
-  .header p  {{ margin: 0; opacity: 0.85; font-size: 0.9rem; }}
-  .container {{ max-width: 1100px; margin: 0 auto; padding: 1.5rem 2rem; }}
-  .card {{ background: white; border-radius: 8px; padding: 1.5rem 2rem;
-           margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
-  .card h2 {{ margin-top: 0; font-size: 1.15rem; color: #2c3e50;
-              border-bottom: 2px solid #27ae60; padding-bottom: 0.4rem; }}
-  .card h3 {{ font-size: 1rem; color: #34495e; margin: 1rem 0 0.4rem; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(160px, 1fr));
-               gap: 1rem; margin-bottom: 0.5rem; }}
-  .kpi {{ background: #f0f4f8; border-radius: 6px; padding: 1rem;
-          text-align: center; border-left: 4px solid #27ae60; }}
-  .kpi .value {{ font-size: 1.8rem; font-weight: 700; color: #2c3e50; }}
-  .kpi .label {{ font-size: 0.8rem; color: #7f8c8d; margin-top: 0.2rem; }}
-  .kpi.info {{ border-left-color: #3498db; }}
-  .kpi.warn {{ border-left-color: #e67e22; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 0.9rem; }}
-  th {{ background: #f0f4f8; padding: 0.5rem 0.8rem; text-align: left;
-        font-weight: 600; color: #2c3e50; }}
-  td {{ padding: 0.4rem 0.8rem; border-bottom: 1px solid #f0f0f0; }}
-  tr:last-child td {{ border-bottom: none; }}
-  .param-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                 gap: 0.4rem; font-size: 0.88rem; }}
-  .param-item {{ display: flex; justify-content: space-between;
-                 background: #f8f9fa; padding: 0.3rem 0.6rem; border-radius: 4px; }}
-  .param-item .key {{ color: #7f8c8d; }}
-  .param-item .val {{ font-weight: 600; color: #2c3e50; }}
-  .badge {{ display: inline-block; padding: 0.15rem 0.5rem; border-radius: 4px;
-            font-size: 0.78rem; font-weight: 600; }}
-  .badge-green {{ background: #d5f5e3; color: #1e8449; }}
-  .badge-orange {{ background: #fdebd0; color: #a04000; }}
-  .footer {{ text-align: center; padding: 1.5rem; color: #95a5a6; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🔬 OmicSage — Spatial Reduce Report</h1>
-  <p>Dataset: <strong>{dataset_id}</strong> &nbsp;|&nbsp; Generated: {timestamp[:19].replace("T", " ")}</p>
-</div>
+    timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M")
+    reduce_info = adata.uns["omicsage_spatial_reduce"]
+    n_comps     = reduce_info.get("outputs", {}).get("n_comps_computed", 50)
 
-<div class="container">
+    sections = [
+        _section_summary(adata, reduce_info, dataset_id, timestamp),
+        _section_hvg(adata),
+        _section_pca(adata, n_comps),
+        _section_spatial_structure(adata, img_key),
+    ]
 
-  <!-- KPI summary -->
-  <div class="card">
-    <h2>Reduction Summary</h2>
-    <div class="kpi-grid">
-      <div class="kpi">
-        <div class="value">{adata.n_obs:,}</div>
-        <div class="label">Spots (input)</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{adata.n_vars:,}</div>
-        <div class="label">Genes (total)</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{n_hvgs:,}</div>
-        <div class="label">HVGs selected</div>
-      </div>
-      <div class="kpi info">
-        <div class="value">{n_comps}</div>
-        <div class="label">PCA components</div>
-      </div>
-      <div class="kpi info">
-        <div class="value">{cum_var_str}</div>
-        <div class="label">Variance (top 10 PCs)</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{n_edges:,}</div>
-        <div class="label">Spatial graph edges</div>
-      </div>
-      <div class="kpi {'warn' if isinstance(mean_nb, float) and abs(mean_nb - 6) > 0.5 else ''}">
-        <div class="value">{mean_nb}</div>
-        <div class="label">Mean neighbours/spot</div>
-      </div>
-    </div>
-    {"<p><span class='badge badge-orange'>⚠ Normalization skipped</span> — benchmark dataset detected (pre-processed).</p>" if skipped_norm else ""}
-  </div>
+    html = _render_page(
+        title=f"OmicSage -- Spatial Reduce -- {dataset_id}",
+        header_subtitle=f"Dataset: {dataset_id}",
+        sections=sections,
+        timestamp=timestamp,
+    )
 
-  <!-- Parameters -->
-  <div class="card">
-    <h2>Parameters Used</h2>
-    <div class="param-grid">
-      <div class="param-item"><span class="key">n_top_genes</span><span class="val">{params.get('n_top_genes','?'):,}</span></div>
-      <div class="param-item"><span class="key">n_comps</span><span class="val">{params.get('n_comps','?')}</span></div>
-      <div class="param-item"><span class="key">n_neighbors</span><span class="val">{params.get('n_neighbors','?')}</span></div>
-      <div class="param-item"><span class="key">coord_type</span><span class="val">{params.get('coord_type') or 'None (auto)'}</span></div>
-      <div class="param-item"><span class="key">normalize_total</span><span class="val">{params.get('normalize_total','?')}</span></div>
-      <div class="param-item"><span class="key">target_sum</span><span class="val">{params.get('target_sum','?'):.0f}</span></div>
-      <div class="param-item"><span class="key">log1p</span><span class="val">{params.get('log1p','?')}</span></div>
-      <div class="param-item"><span class="key">hvg_flavor</span><span class="val">{params.get('flavor','?')}</span></div>
-    </div>
-  </div>
-
-  <!-- Figures -->
-  <div class="card">
-    <h2>Figures</h2>
-    {img_section("Highly Variable Genes — mean vs dispersion", figures.get("hvg_scatter"), "HVG scatter")}
-    {img_section("PCA — Variance Explained (elbow plot)", figures.get("pca_variance"), "PCA variance")}
-    {img_section("PCA — Spots coloured by total_counts", figures.get("pca_scatter"), "PCA scatter")}
-    {img_section("Spatial neighbours per spot", figures.get("spatial_neighbors"), "neighbours histogram")}
-  </div>
-
-</div>
-<div class="footer">
-  Generated by OmicSage &nbsp;|&nbsp; Phase 7 — Spatial Transcriptomics
-</div>
-</body>
-</html>"""
-
-    return html
+    output_path = str(output_path)
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(html, encoding="utf-8")
+    size_kb = Path(output_path).stat().st_size / 1024
+    logger.info("Spatial reduce report -> %s (%.1f KB)", output_path, size_kb)
+    return str(Path(output_path).resolve())

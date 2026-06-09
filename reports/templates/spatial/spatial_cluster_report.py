@@ -1,22 +1,22 @@
 """
-spatial_cluster_report.py — OmicSage Phase 7, Session 3
+spatial_cluster_report.py — OmicSage Phase 7, Session 5 (style update)
 HTML report for spatial clustering and spatially variable gene results.
 
-Generates a self-contained HTML report with:
-  - Cluster summary: n_clusters, sizes, resolution used
-  - Spatial scatter: spots coloured by cluster label
-  - UMAP scatter: spots coloured by cluster label (if UMAP available)
-  - Top spatially variable genes: bar chart of Moran's I scores
-  - Spatial scatter of top 3 SVGs
-  - Summary table of top 20 SVGs
+Style: matches spatial_qc_report.py exactly (_PAGE_CSS / _render_page pattern).
+
+Sections:
+  1. Run Summary       — stat cards: n_clusters, n_spots, resolution, n_SVGs
+  2. Clustering        — spatial scatter on tissue (with H&E) + cluster size bar chart
+  3. Spatially variable genes — Moran's I bar chart + top 3 SVGs on tissue + SVG table
 """
 
 from __future__ import annotations
 
 import base64
-import io
-import os
+import logging
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from typing import Optional
 
 import anndata as ad
@@ -26,6 +26,7 @@ import numpy as np
 import pandas as pd
 
 matplotlib.use("Agg")
+logger = logging.getLogger(__name__)
 
 try:
     import squidpy as sq
@@ -35,26 +36,578 @@ except ImportError:
 
 
 # ---------------------------------------------------------------------------
-# Public API
+# Shared CSS + page renderer  (identical to spatial_qc_report.py)
 # ---------------------------------------------------------------------------
 
+_PAGE_CSS = """
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+           font-size: 14px; line-height: 1.6; color: #1a1a2e; background: #f7f8fc; }
+    header { background: linear-gradient(135deg, #1a1a2e 0%, #16213e 60%, #0f3460 100%);
+             color: white; padding: 32px 40px 24px; }
+    header h1 { font-size: 1.8rem; font-weight: 700; letter-spacing: -0.5px; }
+    header p  { font-size: 0.85rem; opacity: 0.7; margin-top: 4px; }
+    main { max-width: 1100px; margin: 0 auto; padding: 32px 24px; }
+    section { background: white; border-radius: 10px;
+              box-shadow: 0 1px 4px rgba(0,0,0,0.07);
+              padding: 28px 32px; margin-bottom: 24px; }
+    section h2 { font-size: 1.15rem; font-weight: 700; color: #0f3460;
+                 border-bottom: 2px solid #e8eaf6; padding-bottom: 10px; margin-bottom: 18px; }
+    section h3 { font-size: 1rem; font-weight: 600; color: #16213e; margin: 18px 0 10px; }
+    section p  { color: #444; margin-bottom: 12px; font-size: 0.9rem; }
+    .timestamp { font-size: 0.8rem; color: #888; margin-bottom: 6px; }
+    .note { font-size: 0.82rem; color: #7a5c00; background: #fffbe6;
+            border-left: 3px solid #f0c040; padding: 8px 12px;
+            border-radius: 4px; margin-bottom: 14px; }
+    code { font-family: "SFMono-Regular", Consolas, monospace;
+           background: #f0f2ff; padding: 1px 5px; border-radius: 3px; font-size: 0.85em; }
+    .stat-grid { display: flex; flex-wrap: wrap; gap: 14px; margin-bottom: 24px; }
+    .stat-card { background: #f0f2ff; border-radius: 8px; padding: 14px 20px;
+                 min-width: 130px; text-align: center; flex: 1 1 130px; }
+    .stat-value { font-size: 1.4rem; font-weight: 700; color: #0f3460; }
+    .stat-label { font-size: 0.75rem; color: #666; margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; font-size: 0.88rem; margin-top: 8px; }
+    th { background: #f0f2ff; color: #0f3460; font-weight: 600;
+         padding: 9px 12px; text-align: left; border-bottom: 2px solid #d0d4f0; }
+    td { padding: 8px 12px; border-bottom: 1px solid #eee; vertical-align: middle; }
+    tr:last-child td { border-bottom: none; }
+    tr:hover td { background: #f8f9ff; }
+    .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
+    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
+    footer a { color: #0f3460; text-decoration: none; }
+"""
+
+
+def _render_page(title: str, header_subtitle: str, sections: list[str], timestamp: str) -> str:
+    body = "\n".join(sections)
+    return (
+        "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
+        "  <meta charset=\"UTF-8\">\n"
+        "  <meta name=\"viewport\" content=\"width=device-width, initial-scale=1.0\">\n"
+        f"  <title>{title}</title>\n"
+        f"  <style>{_PAGE_CSS}</style>\n"
+        "</head>\n<body>\n"
+        "  <header>\n"
+        "    <h1>OmicSage &#8212; Spatial Cluster Report</h1>\n"
+        f"    <p>{header_subtitle} &middot; Generated {timestamp}</p>\n"
+        "  </header>\n"
+        "  <main>\n"
+        f"    {body}\n"
+        "  </main>\n"
+        "  <footer>\n"
+        "    Generated by <a href=\"https://github.com/fshokor/OmicSage\">OmicSage</a>\n"
+        "    &middot; MIT License\n"
+        "  </footer>\n"
+        "</body>\n</html>"
+    )
+
+
+# ---------------------------------------------------------------------------
+# Figure helpers
+# ---------------------------------------------------------------------------
+
+def _fig_to_b64(fig: plt.Figure) -> str:
+    buf = BytesIO()
+    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+    buf.seek(0)
+    b64 = base64.b64encode(buf.read()).decode()
+    plt.close(fig)
+    return b64
+
+def _squidpy_scatter_b64(
+    adata,
+    color,
+    img_key=None,
+    library_key=None,
+    title=None,
+    figsize=(6, 5),
+):
+    """Render ``sq.pl.spatial_scatter`` and return a base64 PNG string.
+
+    Uses the canonical squidpy API (per scverse/squidpy source):
+      - ``img_res_key`` (NOT ``img_key`` — the docstring shorthand is misleading)
+      - ``figsize`` is a top-level parameter
+      - ``return_ax=True`` returns axes so we can grab the figure cleanly
+      - NO ``show=`` parameter exists — passing it crashes deep in matplotlib
+      - When ``library_key`` is set, squidpy creates one panel per library
+        automatically; we let it own the figure entirely.
+
+    Returns
+    -------
+    str or None
+        Base64-encoded PNG of the rendered figure, or None if rendering fails.
+    """
+    kwargs = dict(color=color, frameon=False, return_ax=True, figsize=figsize)
+    if img_key:
+        kwargs["img_res_key"] = img_key
+    if library_key:
+        kwargs["library_key"] = library_key
+
+    axes = sq.pl.spatial_scatter(adata, **kwargs)
+
+    # axes can be a single Axes or a Sequence[Axes] (multi-sample)
+    if axes is None:
+        fig = plt.gcf()
+    elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
+        # Sequence of axes - grab figure from first
+        first = axes[0] if len(axes) > 0 else None
+        fig = first.get_figure() if first is not None else plt.gcf()
+    else:
+        fig = axes.get_figure()
+
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass  # tight_layout sometimes warns on multi-axes figures
+    return _fig_to_b64(fig)
+
+
+
+def _img_tag(b64: str, alt: str = "figure") -> str:
+    return f'<img src="data:image/png;base64,{b64}" alt="{alt}">'
+
+
+def _resolve_img_key(adata: ad.AnnData, img_key: Optional[str]) -> Optional[str]:
+    """Return img_key if the image is present, otherwise try hires/lowres, else None."""
+    if img_key is None:
+        return None
+    spatial_uns = adata.uns.get("spatial", {})
+    for _sample, sample_data in spatial_uns.items():
+        images = sample_data.get("images", {})
+        if img_key in images:
+            return img_key
+        for alias in ("hires", "lowres"):
+            if alias in images:
+                return alias
+    return None
+
+
+def _get_library_key(adata: ad.AnnData) -> Optional[str]:
+    """Return the obs column that maps spots to their library/sample ID.
+
+    Reading order (first match wins):
+    1. ``uns["omicsage_spatial_ingest"]["library_key"]`` — set by spatial_ingest()
+       using either the user-supplied value or auto-detection at load time.
+    2. Auto-detection fallback — for h5ad files loaded outside OmicSage that
+       lack the provenance key.
+
+    Returns ``None`` for single-sample data (squidpy does not need library_key).
+    """
+    # 1. Read from ingest provenance (authoritative)
+    ingest_prov = adata.uns.get("omicsage_spatial_ingest", {})
+    if "library_key" in ingest_prov and ingest_prov["library_key"] is not None:
+        return ingest_prov["library_key"]
+
+    # 2. Auto-detection fallback
+    library_ids = list(adata.uns.get("spatial", {}).keys())
+    if len(library_ids) <= 1:
+        return None
+    id_set = set(library_ids)
+    for candidate in ("library_id", "sample", "patient", "donor_id", "batch", "slide"):
+        if candidate in adata.obs.columns:
+            if id_set.issubset(set(adata.obs[candidate].astype(str).unique())):
+                return candidate
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype.name in ("object", "category"):
+            if id_set.issubset(set(adata.obs[col].astype(str).unique())):
+                return col
+    return None
+
+
+# ---------------------------------------------------------------------------
+# Individual figure functions
+# ---------------------------------------------------------------------------
+
+def _fig_clusters_on_tissue(
+    adata: ad.AnnData,
+    cluster_key: str,
+    img_key: Optional[str],
+) -> Optional[str]:
+    """
+    Spatial scatter of Leiden clusters overlaid on the H&E tissue image.
+    Mirrors the tutorial: sq.pl.spatial_scatter(adata, color=cluster_key, img_key=...).
+    Degrades gracefully to spots-only when image is absent.
+    """
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+        return None
+    if cluster_key not in adata.obs.columns:
+        return None
+
+    resolved = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    suffix = " (on H&E)" if resolved else ""
+    try:
+        return _squidpy_scatter_b64(
+            adata, color=cluster_key,
+            img_key=resolved, library_key=library_key,
+            title=f"Leiden clusters{suffix}", figsize=(6, 6),
+        )
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+def _fig_cluster_sizes(cluster_info: dict) -> Optional[str]:
+    """Horizontal bar chart of spots per Leiden cluster."""
+    sizes = cluster_info.get("outputs", {}).get("cluster_sizes", {})
+    if not sizes:
+        return None
+    try:
+        try:
+            labels = sorted(sizes.keys(), key=lambda x: int(x))
+        except ValueError:
+            labels = sorted(sizes.keys())
+        values = [sizes[k] for k in labels]
+
+        fig, ax = plt.subplots(figsize=(5, max(3, len(labels) * 0.35)))
+        colors = plt.cm.tab20(np.linspace(0, 1, len(labels)))
+        ax.barh(labels, values, color=colors, edgecolor="white")
+        ax.set_xlabel("Number of spots")
+        ax.set_ylabel("Cluster")
+        ax.set_title("Spots per cluster", fontsize=10, fontweight="bold")
+        ax.invert_yaxis()
+        for i, val in enumerate(values):
+            ax.text(val + max(values) * 0.01, i, str(val), va="center", fontsize=8)
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.tight_layout()
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+def _fig_svg_bar(adata: ad.AnnData) -> Optional[str]:
+    """Horizontal bar chart of Moran's I scores for the top 20 SVGs."""
+    if "moranI" not in adata.uns:
+        return None
+    try:
+        moran_df: pd.DataFrame = adata.uns["moranI"]
+        top = moran_df.head(20).copy()
+        genes  = top.index.tolist()
+        scores = top["I"].values
+        sig    = top["pval_norm_fdr_bh"].values < 0.05
+
+        colors = ["#e74c3c" if s else "#95a5a6" for s in sig]
+        fig, ax = plt.subplots(figsize=(7, max(3, len(genes) * 0.35)))
+        ax.barh(genes, scores, color=colors, edgecolor="white")
+        ax.set_xlabel("Moran's I")
+        ax.set_title("Top spatially variable genes (red = FDR < 0.05)",
+                     fontsize=10, fontweight="bold")
+        ax.invert_yaxis()
+        ax.set_xlim(0, max(scores) * 1.15)
+        ax.spines[["top", "right"]].set_visible(False)
+        fig.tight_layout()
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+def _fig_top_svgs_on_tissue(
+    adata: ad.AnnData,
+    img_key: Optional[str],
+    n_top: int = 4,
+) -> Optional[str]:
+    """
+    Spatial scatter of the top N SVGs overlaid on the H&E tissue image.
+    Tutorial standard: one panel per gene, img_key for background.
+    Using n_top=4 to show a 2×2 grid which makes better use of space.
+    """
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    if "moranI" not in adata.uns:
+        return None
+    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+        return None
+
+    moran_df: pd.DataFrame = adata.uns["moranI"]
+    top_genes = [g for g in moran_df.head(n_top).index if g in adata.var_names]
+    if not top_genes:
+        return None
+
+    resolved = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    # Render each gene separately (squidpy owns the figure per call),
+    # then stitch all panels into one image.
+    try:
+        import base64 as _b64, io as _io
+        import numpy as _np
+
+        b64s = []
+        for gene in top_genes:
+            score = moran_df.loc[gene, "I"] if gene in moran_df.index else None
+            title = gene if score is None else f"{gene}  (I = {score:.3f})"
+            b = _squidpy_scatter_b64(
+                adata, color=gene,
+                img_key=resolved, library_key=library_key,
+                title=title, figsize=(5, 5),
+            )
+            if b:
+                b64s.append(b)
+
+        if not b64s:
+            return None
+
+        # Load each panel as a numpy array and stitch into a 2-column grid
+        imgs = [plt.imread(_io.BytesIO(_b64.b64decode(b))) for b in b64s]
+        ncols = min(len(imgs), 2)
+        nrows = (len(imgs) + ncols - 1) // ncols
+
+        # Pad all images to the same size
+        max_h = max(a.shape[0] for a in imgs)
+        max_w = max(a.shape[1] for a in imgs)
+        ch    = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+
+        def pad_img(a):
+            ph = max_h - a.shape[0]
+            pw = max_w - a.shape[1]
+            return _np.pad(a, ((0, ph), (0, pw), (0, 0)),
+                           mode="constant", constant_values=1)
+
+        padded = [pad_img(a) for a in imgs]
+        # Fill grid with white panels if odd number of images
+        while len(padded) < nrows * ncols:
+            padded.append(_np.ones((max_h, max_w, ch), dtype=padded[0].dtype))
+
+        rows = [_np.hstack(padded[r * ncols:(r + 1) * ncols]) for r in range(nrows)]
+        grid = _np.vstack(rows)
+
+        fig2, ax2 = plt.subplots(figsize=(grid.shape[1] / 100, grid.shape[0] / 100))
+        ax2.imshow(grid)
+        ax2.axis("off")
+        suffix = " on H&E" if resolved else ""
+        fig2.suptitle(f"Top {len(top_genes)} spatially variable genes{suffix}",
+                      fontsize=10, fontweight="bold", y=1.01)
+        fig2.tight_layout(pad=0)
+        return _fig_to_b64(fig2)
+    except Exception as e:
+        logger.warning("figure failed (%s): %s", __name__, e)
+        return None
+
+
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+def _section_summary(
+    adata: ad.AnnData,
+    cluster_info: dict,
+    dataset_id: str,
+    timestamp: str,
+) -> str:
+    params  = cluster_info.get("params", {})
+    outputs = cluster_info.get("outputs", {})
+
+    n_clusters   = outputs.get("n_clusters", "?")
+    n_svg_sig    = outputs.get("n_significant_fdr05", None)
+    n_svg_tested = outputs.get("n_genes_tested", None)
+    top5_svg     = outputs.get("top5_svg", [])
+    resolution   = params.get("resolution", "?")
+    cluster_key  = params.get("cluster_key", "spatial_cluster")
+    run_svg      = params.get("run_svg", False)
+    has_annot    = params.get("annotation_map_provided", False)
+
+    stat_cards = "".join(
+        f'<div class="stat-card"><div class="stat-value">{v}</div>'
+        f'<div class="stat-label">{k}</div></div>'
+        for k, v in [
+            ("Spots",          f"{adata.n_obs:,}"),
+            ("Leiden clusters", str(n_clusters)),
+            ("Resolution",     str(resolution)),
+        ]
+        + (
+            [("SVGs (FDR<0.05)", str(n_svg_sig)),
+             ("Genes tested",   f"{n_svg_tested:,}" if isinstance(n_svg_tested, int) else str(n_svg_tested))]
+            if n_svg_sig is not None else []
+        )
+    )
+
+    top5_html = " ".join(
+        f'<code>{g}</code>' for g in top5_svg
+    ) if top5_svg else "<em>none</em>"
+
+    annot_note = (
+        '<p class="note">Cluster labels annotated using <code>annotation_map</code>.</p>'
+        if has_annot else ""
+    )
+
+    param_rows = "".join(
+        f"<tr><td><code>{k}</code></td><td>{v}</td></tr>"
+        for k, v in [
+            ("cluster_key",     cluster_key),
+            ("resolution",      resolution),
+            ("n_neighbors (KNN)", params.get("n_neighbors", "?")),
+            ("n_pcs",           params.get("n_pcs_actual", "?")),
+            ("run_svg",         str(run_svg)),
+            ("annotation_map",  "yes" if has_annot else "no"),
+        ]
+    )
+
+    return f"""
+    <section>
+      <h2>Run Summary</h2>
+      <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
+      {annot_note}
+      <div class="stat-grid">{stat_cards}</div>
+      {"<h3>Top SVGs</h3><p>" + top5_html + "</p>" if top5_svg else ""}
+      <h3>Parameters</h3>
+      <table>
+        <thead><tr><th>Parameter</th><th>Value</th></tr></thead>
+        <tbody>{param_rows}</tbody>
+      </table>
+    </section>
+    """
+
+
+def _section_clustering(
+    adata: ad.AnnData,
+    cluster_info: dict,
+    img_key: Optional[str],
+) -> str:
+    cluster_key = cluster_info.get("params", {}).get("cluster_key", "spatial_cluster")
+    b64_tissue  = _fig_clusters_on_tissue(adata, cluster_key, img_key)
+    b64_sizes   = _fig_cluster_sizes(cluster_info)
+
+    if not b64_tissue and not b64_sizes:
+        return ""
+
+    resolved = _resolve_img_key(adata, img_key)
+    tissue_title = (
+        "Leiden clusters overlaid on H&amp;E image"
+        if resolved
+        else "Leiden clusters on tissue array"
+    )
+
+    figs = ""
+    if b64_tissue:
+        figs += (
+            '<div class="fig-wrap">'
+            f"<h3>{tissue_title}</h3>"
+            + _img_tag(b64_tissue, "clusters on tissue")
+            + "</div>"
+        )
+    if b64_sizes:
+        figs += (
+            '<div class="fig-wrap">'
+            "<h3>Spots per cluster</h3>"
+            + _img_tag(b64_sizes, "cluster size bar chart")
+            + "</div>"
+        )
+    return f"""
+    <section>
+      <h2>Leiden Clustering</h2>
+      <p>Spots are clustered using the Leiden algorithm on the KNN graph built from PCA embeddings.
+         Cluster colours are consistent between the spatial and size panels.</p>
+      <div class="fig-grid">{figs}</div>
+    </section>
+    """
+
+
+def _section_svg(adata: ad.AnnData, img_key: Optional[str]) -> str:
+    if "moranI" not in adata.uns:
+        return ""
+
+    b64_bar    = _fig_svg_bar(adata)
+    b64_tissue = _fig_top_svgs_on_tissue(adata, img_key, n_top=4)
+
+    # Build SVG table
+    try:
+        moran_df: pd.DataFrame = adata.uns["moranI"]
+        top20 = moran_df.head(20).reset_index()
+        rows = ""
+        for _, row in top20.iterrows():
+            sig_badge = (
+                '<span style="color:#e74c3c;font-weight:700;">★</span>'
+                if row.get("pval_norm_fdr_bh", 1.0) < 0.05
+                else ""
+            )
+            rows += (
+                f"<tr><td>{row.iloc[0]}</td>"
+                f"<td>{row['I']:.4f}</td>"
+                f"<td>{row.get('pval_norm', float('nan')):.2e}</td>"
+                f"<td>{row.get('pval_norm_fdr_bh', float('nan')):.2e} {sig_badge}</td>"
+                f"</tr>"
+            )
+        n_total = len(moran_df)
+        svg_table = f"""
+        <h3>Top 20 SVGs</h3>
+        <table>
+          <thead>
+            <tr><th>Gene</th><th>Moran's I</th><th>p-value</th><th>FDR-adjusted p</th></tr>
+          </thead>
+          <tbody>{rows}</tbody>
+        </table>
+        <p class="note">&#9733; = FDR &lt; 0.05 &nbsp;&middot;&nbsp; Showing top 20 of {n_total:,} tested genes</p>
+        """
+    except Exception as e:
+        logger.warning("SVG table failed: %s", e)
+        svg_table = "<p><em>SVG table could not be rendered.</em></p>"
+
+    figs = ""
+    if b64_bar:
+        figs += (
+            '<div class="fig-wrap">'
+            "<h3>Moran's I scores — top 20 SVGs</h3>"
+            + _img_tag(b64_bar, "Moran's I bar chart")
+            + "</div>"
+        )
+    if b64_tissue:
+        resolved = _resolve_img_key(adata, img_key)
+        subtitle = (
+            "Top SVGs overlaid on H&amp;E image"
+            if resolved
+            else "Top SVGs on tissue array"
+        )
+        figs += (
+            '<div class="fig-wrap">'
+            f"<h3>{subtitle}</h3>"
+            + _img_tag(b64_tissue, "top SVGs on tissue")
+            + "</div>"
+        )
+
+    return f"""
+    <section>
+      <h2>Spatially Variable Genes (Moran's I)</h2>
+      <p>Moran's I measures spatial autocorrelation: genes with high scores are expressed
+         in spatially coherent patterns rather than randomly across spots.
+         Red bars indicate significance at FDR &lt; 0.05.</p>
+      <div class="fig-grid">{figs}</div>
+      {svg_table}
+    </section>
+    """
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
 
 def generate_spatial_cluster_report(
     adata: ad.AnnData,
     output_path: str,
     dataset_id: str = "spatial",
+    img_key: Optional[str] = "hires",
 ) -> str:
     """Generate a self-contained HTML clustering report for Visium data.
 
     Parameters
     ----------
     adata
-        AnnData returned by :func:`spatial_cluster` (contains
-        ``uns["omicsage_spatial_cluster"]``).
+        AnnData returned by :func:`spatial_cluster`.
     output_path
         Path to write the ``.html`` file.
     dataset_id
-        Dataset label used in the report title.
+        Dataset label shown in the report header.
+    img_key
+        H&E image key stored in ``adata.uns["spatial"][sample]["images"]``.
+        Common values: ``"hires"`` (default), ``"lowres"``.
+        If the image is absent the figures degrade gracefully to spots-only.
 
     Returns
     -------
@@ -67,360 +620,25 @@ def generate_spatial_cluster_report(
             "Run spatial_cluster() before generating the report."
         )
 
+    timestamp    = datetime.now().strftime("%Y-%m-%d %H:%M")
     cluster_info = adata.uns["omicsage_spatial_cluster"]
-    figures = _build_figures(adata, cluster_info)
-    html = _render_html(adata, cluster_info, figures, dataset_id)
+
+    sections = [
+        _section_summary(adata, cluster_info, dataset_id, timestamp),
+        _section_clustering(adata, cluster_info, img_key),
+        _section_svg(adata, img_key),
+    ]
+
+    html = _render_page(
+        title=f"OmicSage -- Spatial Cluster -- {dataset_id}",
+        header_subtitle=f"Dataset: {dataset_id}",
+        sections=sections,
+        timestamp=timestamp,
+    )
 
     output_path = str(output_path)
-    os.makedirs(os.path.dirname(output_path) or ".", exist_ok=True)
-    with open(output_path, "w", encoding="utf-8") as fh:
-        fh.write(html)
-
-    return os.path.abspath(output_path)
-
-
-# ---------------------------------------------------------------------------
-# Figure generation
-# ---------------------------------------------------------------------------
-
-
-def _fig_to_base64(fig: plt.Figure) -> str:
-    buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
-    plt.close(fig)
-    buf.seek(0)
-    return base64.b64encode(buf.read()).decode("utf-8")
-
-
-def _build_figures(adata: ad.AnnData, cluster_info: dict) -> dict[str, Optional[str]]:
-    figures: dict[str, Optional[str]] = {}
-    cluster_key = cluster_info["params"]["cluster_key"]
-
-    figures["spatial_clusters"] = _spatial_cluster_scatter(adata, cluster_key)
-    figures["cluster_sizes"] = _cluster_size_bar(cluster_info)
-    figures["svg_bar"] = _svg_bar(adata)
-    figures["svg_spatial"] = _svg_spatial_scatter(adata)
-
-    return figures
-
-
-def _spatial_cluster_scatter(
-    adata: ad.AnnData, cluster_key: str
-) -> Optional[str]:
-    """Spatial scatter coloured by Leiden cluster."""
-    if not _SQUIDPY_AVAILABLE:
-        return None
-    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
-        return None
-    if cluster_key not in adata.obs.columns:
-        return None
-    try:
-        fig, ax = plt.subplots(figsize=(6, 6))
-        sq.pl.spatial_scatter(
-            adata,
-            color=cluster_key,
-            ax=ax,
-            show=False,
-            frameon=False,
-        )
-        ax.set_title("Leiden clusters (spatial)")
-        fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
-        return None
-
-
-def _cluster_size_bar(cluster_info: dict) -> Optional[str]:
-    """Horizontal bar chart of spots per cluster."""
-    sizes = cluster_info["outputs"].get("cluster_sizes", {})
-    if not sizes:
-        return None
-    try:
-        # Sort by cluster id numerically where possible
-        try:
-            labels = sorted(sizes.keys(), key=lambda x: int(x))
-        except ValueError:
-            labels = sorted(sizes.keys())
-        values = [sizes[k] for k in labels]
-
-        fig, ax = plt.subplots(figsize=(5, max(3, len(labels) * 0.35)))
-        colors = plt.cm.tab20(np.linspace(0, 1, len(labels)))
-        ax.barh(labels, values, color=colors, edgecolor="white")
-        ax.set_xlabel("Number of spots")
-        ax.set_ylabel("Cluster")
-        ax.set_title("Spots per cluster")
-        ax.invert_yaxis()
-        for i, (label, val) in enumerate(zip(labels, values)):
-            ax.text(val + max(values) * 0.01, i, str(val), va="center", fontsize=8)
-        fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
-        return None
-
-
-def _svg_bar(adata: ad.AnnData) -> Optional[str]:
-    """Bar chart of Moran's I score for top 20 SVGs."""
-    if "moranI" not in adata.uns:
-        return None
-    try:
-        moran_df: pd.DataFrame = adata.uns["moranI"]
-        top = moran_df.head(20).copy()
-        genes = top.index.tolist()
-        scores = top["I"].values
-        sig = top["pval_norm_fdr_bh"].values < 0.05
-
-        colors = ["#e74c3c" if s else "#95a5a6" for s in sig]
-
-        fig, ax = plt.subplots(figsize=(7, max(3, len(genes) * 0.35)))
-        ax.barh(genes, scores, color=colors, edgecolor="white")
-        ax.set_xlabel("Moran's I")
-        ax.set_title("Top spatially variable genes\n(red = FDR < 0.05)")
-        ax.invert_yaxis()
-        ax.set_xlim(0, max(scores) * 1.15)
-        fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
-        return None
-
-
-def _svg_spatial_scatter(adata: ad.AnnData) -> Optional[str]:
-    """Spatial scatter of top 3 SVGs side by side."""
-    if not _SQUIDPY_AVAILABLE:
-        return None
-    if "moranI" not in adata.uns:
-        return None
-    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
-        return None
-    try:
-        moran_df: pd.DataFrame = adata.uns["moranI"]
-        top_genes = moran_df.head(3).index.tolist()
-        # Only keep genes that are actually in adata
-        top_genes = [g for g in top_genes if g in adata.var_names]
-        if not top_genes:
-            return None
-
-        n = len(top_genes)
-        fig, axes = plt.subplots(1, n, figsize=(5 * n, 5))
-        if n == 1:
-            axes = [axes]
-
-        for ax, gene in zip(axes, top_genes):
-            sq.pl.spatial_scatter(
-                adata,
-                color=gene,
-                ax=ax,
-                show=False,
-                frameon=False,
-            )
-            ax.set_title(gene)
-
-        fig.suptitle("Top spatially variable genes", fontsize=12, fontweight="bold")
-        fig.tight_layout()
-        return _fig_to_base64(fig)
-    except Exception:
-        return None
-
-
-# ---------------------------------------------------------------------------
-# HTML rendering
-# ---------------------------------------------------------------------------
-
-
-def _render_html(
-    adata: ad.AnnData,
-    cluster_info: dict,
-    figures: dict,
-    dataset_id: str,
-) -> str:
-    params = cluster_info.get("params", {})
-    outputs = cluster_info.get("outputs", {})
-    timestamp = cluster_info.get("timestamp", datetime.now().isoformat())
-
-    n_clusters = outputs.get("n_clusters", "?")
-    n_annotated = outputs.get("n_annotated_spots", 0)
-    n_svg_tested = outputs.get("n_genes_tested", None)
-    n_svg_sig = outputs.get("n_significant_fdr05", None)
-    top5_svg = outputs.get("top5_svg", [])
-    cluster_key = params.get("cluster_key", "spatial_cluster")
-    resolution = params.get("resolution", "?")
-    run_svg = params.get("run_svg", False)
-
-    def img_section(title: str, b64: Optional[str], alt: str = "figure") -> str:
-        if b64 is None:
-            return f"<p><em>{title} — not available</em></p>"
-        return (
-            f"<h3>{title}</h3>"
-            f'<img src="data:image/png;base64,{b64}" alt="{alt}" '
-            f'style="max-width:100%;border:1px solid #e0e0e0;border-radius:4px;">'
-        )
-
-    # Pre-compute values that would require backslashes or nested quotes
-    # inside the main f-string (not allowed in Python < 3.12)
-    annotation_map_val = "yes" if params.get("annotation_map_provided") else "no"
-    resolution_val = params.get("resolution", "?")
-    n_neighbors_val = params.get("n_neighbors", "?")
-    n_pcs_actual_val = params.get("n_pcs_actual", "?")
-
-    svg_section_html = ""  # built separately to avoid nested f-string with backslashes
-
-    # SVG table
-    svg_table_html = ""
-    if "moranI" in adata.uns:
-        try:
-            moran_df: pd.DataFrame = adata.uns["moranI"]
-            top20 = moran_df.head(20).reset_index()
-            rows = ""
-            for _, row in top20.iterrows():
-                sig_badge = (
-                    '<span style="color:#e74c3c;font-weight:600;">★</span>'
-                    if row.get("pval_norm_fdr_bh", 1.0) < 0.05
-                    else ""
-                )
-                rows += (
-                    f"<tr>"
-                    f"<td>{row.iloc[0]}</td>"
-                    f"<td>{row['I']:.4f}</td>"
-                    f"<td>{row.get('pval_norm', float('nan')):.2e}</td>"
-                    f"<td>{row.get('pval_norm_fdr_bh', float('nan')):.2e} {sig_badge}</td>"
-                    f"</tr>"
-                )
-            svg_table_html = f"""
-            <table>
-              <thead>
-                <tr>
-                  <th>Gene</th><th>Moran's I</th>
-                  <th>p-value</th><th>FDR-adjusted p</th>
-                </tr>
-              </thead>
-              <tbody>{rows}</tbody>
-            </table>
-            <p style="font-size:0.8rem;color:#7f8c8d;">
-              ★ = FDR &lt; 0.05 &nbsp;|&nbsp; Showing top 20 of {len(moran_df)} tested genes
-            </p>
-            """
-        except Exception:
-            svg_table_html = "<p><em>SVG table could not be rendered.</em></p>"
-
-    # Top 5 SVG badges
-    top5_html = " ".join(
-        f'<span style="display:inline-block;background:#fdebd0;color:#a04000;'
-        f'padding:0.2rem 0.5rem;border-radius:4px;font-size:0.85rem;'
-        f'font-weight:600;margin:2px;">{g}</span>'
-        for g in top5_svg
-    ) or "<em>none</em>"
-
-    # Build SVG section separately — avoids nested f-string with backslash escapes
-    if run_svg:
-        svg_bar_fig = img_section("Top 20 SVGs \u2014 Moran's I score", figures.get("svg_bar"), "SVG bar chart")
-        svg_spatial_fig = img_section("Spatial expression of top 3 SVGs", figures.get("svg_spatial"), "SVG spatial scatter")
-        svg_section_html = (
-            '<div class="card">'
-            "<h2>Spatially Variable Genes (Moran\u2019s I)</h2>"
-            + svg_bar_fig
-            + svg_spatial_fig
-            + "<h3>Top 20 SVGs</h3>"
-            + svg_table_html
-            + "</div>"
-        )
-
-    html = f"""<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>OmicSage — Spatial Cluster Report: {dataset_id}</title>
-<style>
-  body {{ font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-          margin: 0; padding: 0; background: #f8f9fa; color: #212529; }}
-  .header {{ background: linear-gradient(135deg, #2c3e50, #8e44ad);
-             color: white; padding: 2rem 2.5rem; }}
-  .header h1 {{ margin: 0 0 0.3rem; font-size: 1.6rem; }}
-  .header p  {{ margin: 0; opacity: 0.85; font-size: 0.9rem; }}
-  .container {{ max-width: 1100px; margin: 0 auto; padding: 1.5rem 2rem; }}
-  .card {{ background: white; border-radius: 8px; padding: 1.5rem 2rem;
-           margin-bottom: 1.5rem; box-shadow: 0 1px 4px rgba(0,0,0,0.08); }}
-  .card h2 {{ margin-top: 0; font-size: 1.15rem; color: #2c3e50;
-              border-bottom: 2px solid #8e44ad; padding-bottom: 0.4rem; }}
-  .card h3 {{ font-size: 1rem; color: #34495e; margin: 1rem 0 0.4rem; }}
-  .kpi-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-               gap: 1rem; margin-bottom: 0.5rem; }}
-  .kpi {{ background: #f0f4f8; border-radius: 6px; padding: 1rem;
-          text-align: center; border-left: 4px solid #8e44ad; }}
-  .kpi .value {{ font-size: 1.8rem; font-weight: 700; color: #2c3e50; }}
-  .kpi .label {{ font-size: 0.8rem; color: #7f8c8d; margin-top: 0.2rem; }}
-  .kpi.green {{ border-left-color: #27ae60; }}
-  .kpi.blue  {{ border-left-color: #3498db; }}
-  table {{ border-collapse: collapse; width: 100%; font-size: 0.88rem; }}
-  th {{ background: #f0f4f8; padding: 0.5rem 0.8rem; text-align: left;
-        font-weight: 600; color: #2c3e50; }}
-  td {{ padding: 0.4rem 0.8rem; border-bottom: 1px solid #f0f0f0; }}
-  tr:last-child td {{ border-bottom: none; }}
-  .param-grid {{ display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
-                 gap: 0.4rem; font-size: 0.88rem; }}
-  .param-item {{ display: flex; justify-content: space-between;
-                 background: #f8f9fa; padding: 0.3rem 0.6rem; border-radius: 4px; }}
-  .param-item .key {{ color: #7f8c8d; }}
-  .param-item .val {{ font-weight: 600; color: #2c3e50; }}
-  .footer {{ text-align: center; padding: 1.5rem; color: #95a5a6; font-size: 0.8rem; }}
-</style>
-</head>
-<body>
-<div class="header">
-  <h1>🔬 OmicSage — Spatial Cluster Report</h1>
-  <p>Dataset: <strong>{dataset_id}</strong> &nbsp;|&nbsp; Generated: {timestamp[:19].replace("T", " ")}</p>
-</div>
-
-<div class="container">
-
-  <!-- KPI summary -->
-  <div class="card">
-    <h2>Clustering Summary</h2>
-    <div class="kpi-grid">
-      <div class="kpi">
-        <div class="value">{adata.n_obs:,}</div>
-        <div class="label">Spots clustered</div>
-      </div>
-      <div class="kpi">
-        <div class="value">{n_clusters}</div>
-        <div class="label">Leiden clusters</div>
-      </div>
-      <div class="kpi blue">
-        <div class="value">{resolution}</div>
-        <div class="label">Resolution</div>
-      </div>
-      {f'<div class="kpi green"><div class="value">{n_svg_sig}</div><div class="label">SVGs (FDR&lt;0.05)</div></div>' if n_svg_sig is not None else ""}
-      {f'<div class="kpi"><div class="value">{n_svg_tested:,}</div><div class="label">Genes tested</div></div>' if n_svg_tested is not None else ""}
-    </div>
-    {f"<p><strong>Top SVGs:</strong> {top5_html}</p>" if top5_svg else ""}
-  </div>
-
-  <!-- Parameters -->
-  <div class="card">
-    <h2>Parameters Used</h2>
-    <div class="param-grid">
-      <div class="param-item"><span class="key">resolution</span><span class="val">{resolution_val}</span></div>
-      <div class="param-item"><span class="key">n_neighbors (KNN)</span><span class="val">{n_neighbors_val}</span></div>
-      <div class="param-item"><span class="key">n_pcs</span><span class="val">{n_pcs_actual_val}</span></div>
-      <div class="param-item"><span class="key">cluster_key</span><span class="val">{cluster_key}</span></div>
-      <div class="param-item"><span class="key">annotation_map</span><span class="val">{annotation_map_val}</span></div>
-      <div class="param-item"><span class="key">run_svg</span><span class="val">{run_svg}</span></div>
-    </div>
-  </div>
-
-  <!-- Clustering figures -->
-  <div class="card">
-    <h2>Clustering Figures</h2>
-    {img_section("Clusters in spatial context", figures.get("spatial_clusters"), "spatial clusters")}
-    {img_section("Spots per cluster", figures.get("cluster_sizes"), "cluster size bar chart")}
-  </div>
-
-  {svg_section_html}
-
-</div>
-<div class="footer">
-  Generated by OmicSage &nbsp;|&nbsp; Phase 7 — Spatial Transcriptomics
-</div>
-</body>
-</html>"""
-
-    return html
+    Path(output_path).parent.mkdir(parents=True, exist_ok=True)
+    Path(output_path).write_text(html, encoding="utf-8")
+    size_kb = Path(output_path).stat().st_size / 1024
+    logger.info("Spatial cluster report -> %s (%.1f KB)", output_path, size_kb)
+    return str(Path(output_path).resolve())

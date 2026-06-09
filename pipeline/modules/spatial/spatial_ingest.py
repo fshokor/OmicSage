@@ -75,6 +75,38 @@ _TECHNOLOGY_NOTES = {
 
 
 # ---------------------------------------------------------------------------
+# Image normalisation helper
+# ---------------------------------------------------------------------------
+
+
+def _strip_alpha_from_images(adata: ad.AnnData) -> None:
+    """Strip alpha channel from H&E tissue images stored in uns['spatial'].
+
+    Visium h5ad files published on GEO (e.g. Kuppe et al. 2022) store the
+    H&E image as an RGBA array with shape (H, W, 4) rather than the RGB
+    (H, W, 3) that squidpy's spatial_scatter expects.  When a 4-channel
+    array is passed to sq.pl.spatial_scatter it raises a ValueError which
+    the report try/except blocks catch silently, producing figures with no
+    tissue background.
+
+    This function converts every (H, W, 4) image to (H, W, 3) by dropping
+    the alpha channel.  It operates in-place on adata.uns and is idempotent
+    (safe to call multiple times; already-RGB images are left unchanged).
+    """
+    import numpy as np
+
+    for sample_data in adata.uns.get("spatial", {}).values():
+        images = sample_data.get("images", {})
+        for key, img in list(images.items()):
+            if (
+                isinstance(img, np.ndarray)
+                and img.ndim == 3
+                and img.shape[2] == 4
+            ):
+                images[key] = img[:, :, :3]
+
+
+# ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
 
@@ -84,6 +116,7 @@ def spatial_ingest(
     spatial_type: str = "auto",
     counts_file: str = "filtered_feature_bc_matrix.h5",
     library_id: Optional[str] = None,
+    library_key: Optional[str] = None,
     load_images: bool = True,
     inplace: bool = False,
 ) -> tuple[ad.AnnData, dict]:
@@ -112,6 +145,15 @@ def spatial_ingest(
     library_id
         Identifier stored in ``uns["spatial"]`` (Visium only).
         When ``None``, inferred from the directory name.
+    library_key
+        Column in ``adata.obs`` that maps each spot to its library/sample ID.
+        Required by ``sq.pl.spatial_scatter`` when multiple samples are merged
+        into one AnnData (i.e. ``uns["spatial"]`` has more than one key).
+        When ``None`` (default), the value is auto-detected at ingest time by
+        matching ``uns["spatial"]`` keys against obs columns, and stored in
+        provenance so report generators can use it without re-detecting.
+        Set explicitly when auto-detection fails (e.g. sample names were
+        renamed during concatenation).
     load_images
         Whether to load tissue images (Visium only).
     inplace
@@ -164,12 +206,18 @@ def spatial_ingest(
 
     _validate_spatial_adata(adata, source_repr)
 
+    # Resolve library_key: use explicit value if given, otherwise auto-detect.
+    # Stored in provenance so report generators read it directly instead of
+    # re-running detection on every report call.
+    resolved_library_key = library_key or _detect_library_key(adata)
+
     params = {
         "source": source_repr,
         "spatial_type": resolved_type,
         "technology_notes": _TECHNOLOGY_NOTES.get(resolved_type, ""),
         "counts_file": counts_file,
         "library_id": effective_library_id,
+        "library_key": resolved_library_key,
         "load_images": load_images,
         "n_obs": int(adata.n_obs),
         "n_vars": int(adata.n_vars),
@@ -191,6 +239,36 @@ def list_supported_types() -> dict[str, str]:
         k: ("implemented" if v[1] else "planned")
         for k, v in _LOADER_REGISTRY.items()
     }
+
+
+def _detect_library_key(adata: ad.AnnData) -> Optional[str]:
+    """Auto-detect the obs column that maps spots to their library/sample ID.
+
+    Matches the keys of ``uns["spatial"]`` against obs column values.
+    Returns ``None`` for single-sample data (no ``library_key`` needed by
+    squidpy) or when no matching column is found.
+
+    The result is stored in ``uns["omicsage_spatial_ingest"]["library_key"]``
+    at ingest time so downstream report generators can read it directly
+    rather than re-running detection.
+
+    Priority order: common column names checked first for speed, then a full
+    scan of all string/category columns as fallback.
+    """
+    library_ids = list(adata.uns.get("spatial", {}).keys())
+    if len(library_ids) <= 1:
+        return None  # single-sample — squidpy does not need library_key
+    id_set = set(library_ids)
+    for candidate in ("library_id", "sample", "patient", "donor_id", "batch", "slide"):
+        if candidate in adata.obs.columns:
+            if id_set.issubset(set(adata.obs[candidate].astype(str).unique())):
+                return candidate
+    # Full scan fallback
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype.name in ("object", "category"):
+            if id_set.issubset(set(adata.obs[col].astype(str).unique())):
+                return col
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -322,6 +400,11 @@ def _load_h5ad(
         adata.obsm["MT"] = mt_matrix
         adata = adata[:, ~mt_mask].copy()
 
+    # 4. Strip alpha channel from H&E images (RGBA → RGB).
+    #    Some published h5ad files store images as (H, W, 4); squidpy
+    #    spatial_scatter requires (H, W, 3).
+    _strip_alpha_from_images(adata)
+
     return adata, library_id or "custom", path
 
 
@@ -340,6 +423,7 @@ def _load_visium(
     adata = sq.read.visium(path, **kwargs)
     if "counts" not in adata.layers:
         adata.layers["counts"] = adata.X.copy()
+    _strip_alpha_from_images(adata)
     return adata, library_id or Path(path).name, path
 
 
