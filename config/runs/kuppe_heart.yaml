@@ -14,7 +14,7 @@ spatial:
   source: data/benchmark/kuppe_visium_human_heart_2022_control.h5ad
   spatial_type: h5ad
   load_images: true
-  
+
   ingest:
     library_key: "sample_name"
 
@@ -48,14 +48,62 @@ spatial:
 
   deconvolve:
     ref_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
+    
+    # --- NEW: method selection ---
+    method: nnls                    # "nnls" (default, fast), "cell2location", or "none"
+    per_sample: false               # cell2location only — loop over library_key
+    library_key: null               # null = auto-detect from ingest provenance
+    
+    # --- Shared by both methods ---
     cell_type_key: cell_type_original
+    layer_ref: counts               # raw counts layer in reference AnnData
+    
+    # --- NNLS-specific ---
+    n_jobs: 4                       # parallel NNLS solves
+    target_sum: 10000               # library-size normalization target
+    
+    # --- cell2location-specific (ignored when method=nnls) ---
     batch_key_ref: donor_id
     batch_key_st: patient
     covariate_keys:
       - assay
     N_cells_per_location: 8
     detection_alpha: 20
-    max_epochs_ref: 50
-    max_epochs_st: 50
+    max_epochs_ref: 50              # was 50 — kept as testing value
+    max_epochs_st: 50               # was 50 — production should be 30000
     batch_size_ref: 2500
-    layer_ref: counts         # raw counts layer in reference AnnData
+    batch_size_st: null             # null = full data; set 2048 to save memory
+    num_samples_posterior: 200      # NEW: was 1000, reduced for memory
+    cell_count_cutoff: 5
+    cell_percentage_cutoff2: 0.03
+    nonz_mean_cutoff: 1.12
+
+
+  downstream:
+    enabled: true
+    # Region clustering from cell type abundance (sc-best-practices §32.3.4.2)
+    run_region_clustering: true
+    region_resolution: 0.5
+    region_n_neighbors: 15
+    # Cell-type specific gene expression (Spearman correlation)
+    run_celltype_expression: true
+    n_marker_genes: 20
+    # Cell-type specific SVGs (Moran's I on enriched spots)
+    run_celltype_svg: true
+    svg_n_genes: null              # null = all HVGs
+    # Spatial co-occurrence across distance ranges
+    run_co_occurrence: true
+    # Neighbourhood enrichment (permutation test on spatial adjacency)
+    run_nhood_enrichment: true
+    n_perms_nhood: 1000
+    # Ligand-receptor communication (OmniPath via squidpy)
+    run_ligrec: true
+    ligrec_n_perms: 1000
+    ligrec_organism: "human"
+    # SVG pathway enrichment (gseapy prerank on Moran's I)
+    run_svg_gsea: true
+    svg_gsea_gene_sets: "GO_Biological_Process_2023"
+    svg_gsea_organism: "Human"
+    # General
+    dominant_celltype_key: "dominant_cell_type"
+    n_jobs: 4

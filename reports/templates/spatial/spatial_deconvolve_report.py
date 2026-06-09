@@ -1,12 +1,24 @@
 """
-spatial_deconvolve_report.py — OmicSage Phase 7
-HTML report for cell2location deconvolution results.
-Matches the _render_page / section structure of the RNA pipeline reports.
+spatial_deconvolve_report.py — OmicSage Phase 7, Session 5 (multi-method)
+HTML report for spatial deconvolution results.
+
+Works with both deconvolution methods:
+  - method="nnls"          : proportions, sum to 1 per spot
+  - method="cell2location" : absolute abundances
+
+The report reads provenance from uns["omicsage_spatial_deconvolve"]:
+  - outputs["method"], outputs["per_sample"], outputs["library_key"]
+  - outputs["cell_type_names"], outputs["n_spots"], outputs["n_shared_genes"]
+  - skipped + skip_reason for graceful-skip mode
+
+Style matches spatial_qc_report.py (_PAGE_CSS / _render_page pattern).
+Spatial figures use the canonical squidpy API via _squidpy_scatter_b64.
 """
 
 from __future__ import annotations
 
 import base64
+import io
 import logging
 from datetime import datetime
 from io import BytesIO
@@ -28,6 +40,11 @@ except ImportError:
     _SQUIDPY_AVAILABLE = False
 
 
+# ---------------------------------------------------------------------------
+# Squidpy + figure helpers (matches the other spatial reports)
+# ---------------------------------------------------------------------------
+
+
 def _fig_to_b64(fig):
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -37,98 +54,286 @@ def _fig_to_b64(fig):
     return b64
 
 
-def _mean_abundance_bar(adata, cell_type_names):
+def _resolve_img_key(adata: ad.AnnData, img_key: Optional[str]) -> Optional[str]:
+    """Return img_key if the image exists in uns['spatial'], else try aliases, else None."""
+    if img_key is None:
+        return None
+    spatial_uns = adata.uns.get("spatial", {})
+    for _sample, sample_data in spatial_uns.items():
+        images = sample_data.get("images", {})
+        if img_key in images:
+            return img_key
+        for alias in ("hires", "lowres"):
+            if alias in images:
+                return alias
+    return None
+
+
+def _get_library_key(adata: ad.AnnData) -> Optional[str]:
+    """Return the obs column that maps spots to their library/sample ID.
+
+    Reading order (first match wins):
+    1. uns["omicsage_spatial_ingest"]["library_key"] -- set at ingest time
+    2. Auto-detection fallback by matching uns['spatial'] keys vs obs columns
+    Returns None for single-sample data (squidpy does not need library_key).
+    """
+    ingest_prov = adata.uns.get("omicsage_spatial_ingest", {})
+    if "library_key" in ingest_prov and ingest_prov["library_key"] is not None:
+        return ingest_prov["library_key"]
+
+    library_ids = list(adata.uns.get("spatial", {}).keys())
+    if len(library_ids) <= 1:
+        return None
+    id_set = set(library_ids)
+    for candidate in ("library_id", "sample", "patient", "donor_id", "batch", "slide"):
+        if candidate in adata.obs.columns:
+            if id_set.issubset(set(adata.obs[candidate].astype(str).unique())):
+                return candidate
+    for col in adata.obs.columns:
+        if adata.obs[col].dtype.name in ("object", "category"):
+            if id_set.issubset(set(adata.obs[col].astype(str).unique())):
+                return col
+    return None
+
+
+def _squidpy_scatter_b64(
+    adata,
+    color,
+    img_key=None,
+    library_key=None,
+    cmap=None,
+    title=None,
+    figsize=(6, 5),
+):
+    """Render sq.pl.spatial_scatter and return a base64 PNG string.
+
+    Uses the canonical squidpy API:
+      - ``img_res_key`` (NOT ``img_key`` -- the docstring shorthand is misleading)
+      - ``figsize`` is top-level
+      - ``return_ax=True`` returns axes so we can grab the figure cleanly
+      - NO ``show=`` parameter exists; passing it crashes inside matplotlib
+      - When ``library_key`` is set, squidpy makes one panel per library and
+        owns the figure entirely.
+    """
+    kwargs = dict(color=color, frameon=False, return_ax=True, figsize=figsize)
+    if img_key:
+        kwargs["img_res_key"] = img_key
+    if library_key:
+        kwargs["library_key"] = library_key
+    if cmap:
+        kwargs["cmap"] = cmap
+
+    axes = sq.pl.spatial_scatter(adata, **kwargs)
+
+    if axes is None:
+        fig = plt.gcf()
+    elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
+        first = axes[0] if len(axes) > 0 else None
+        fig = first.get_figure() if first is not None else plt.gcf()
+    else:
+        fig = axes.get_figure()
+
+    if title:
+        fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
+    try:
+        fig.tight_layout()
+    except Exception:
+        pass
+    return _fig_to_b64(fig)
+
+
+def _stitch_panels(b64_panels: list, ncols: int = 3) -> Optional[str]:
+    """Combine N base64 PNGs into one image grid. Returns the stitched base64."""
+    if not b64_panels:
+        return None
+    if len(b64_panels) == 1:
+        return b64_panels[0]
+    imgs = [plt.imread(io.BytesIO(base64.b64decode(b))) for b in b64_panels]
+    ncols = min(len(imgs), ncols)
+    nrows = (len(imgs) + ncols - 1) // ncols
+    max_h = max(a.shape[0] for a in imgs)
+    max_w = max(a.shape[1] for a in imgs)
+    ch    = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+
+    def _pad(a):
+        ph = max_h - a.shape[0]
+        pw = max_w - a.shape[1]
+        return np.pad(a, ((0, ph), (0, pw), (0, 0)),
+                      mode="constant", constant_values=1)
+
+    padded = [_pad(a) for a in imgs]
+    while len(padded) < nrows * ncols:
+        padded.append(np.ones((max_h, max_w, ch), dtype=padded[0].dtype))
+
+    rows = [np.hstack(padded[r * ncols:(r + 1) * ncols]) for r in range(nrows)]
+    grid = np.vstack(rows)
+    fig, ax = plt.subplots(figsize=(grid.shape[1] / 100, grid.shape[0] / 100))
+    ax.imshow(grid); ax.axis("off")
+    fig.tight_layout(pad=0)
+    return _fig_to_b64(fig)
+
+
+# ---------------------------------------------------------------------------
+# Individual figure functions
+# ---------------------------------------------------------------------------
+
+
+def _fig_mean_abundance_bar(adata: ad.AnnData, cell_type_names: list) -> Optional[str]:
+    """Horizontal bar of mean abundance per cell type, sorted ascending."""
     try:
         available = [ct for ct in cell_type_names if ct in adata.obs.columns]
         if not available:
             return None
         means = {ct: float(adata.obs[ct].mean()) for ct in available}
-        sorted_cts = sorted(means, key=means.get, reverse=False)
+        sorted_cts = sorted(means, key=means.get)
         values = [means[ct] for ct in sorted_cts]
+
         fig, ax = plt.subplots(figsize=(6, max(3, len(sorted_cts) * 0.4)))
         colors = plt.cm.tab20(np.linspace(0, 1, len(sorted_cts)))
         ax.barh(sorted_cts, values, color=colors, edgecolor="white")
-        ax.set_xlabel("Mean cell abundance per spot (5% quantile)")
-        ax.set_title("Mean cell type abundance across all spots",
+        ax.set_xlabel("Mean per-spot abundance / proportion")
+        ax.set_title("Mean cell-type abundance across all spots",
                      fontsize=10, fontweight="bold")
         ax.spines[["top", "right"]].set_visible(False)
         fig.tight_layout()
         return _fig_to_b64(fig)
-    except Exception:
+    except Exception as e:
+        logger.warning("mean abundance bar failed: %s", e)
         return None
 
 
-def _dominant_celltype_spatial(adata, cell_type_names):
+def _fig_dominant_celltype(
+    adata: ad.AnnData,
+    img_key: Optional[str],
+) -> Optional[str]:
+    """Spatial scatter coloured by dominant cell type per spot."""
     if not _SQUIDPY_AVAILABLE:
         return None
-    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+    if "spatial" not in adata.obsm:
         return None
+    if "dominant_cell_type" not in adata.obs.columns:
+        return None
+    resolved    = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
+    suffix = " (on H&E)" if resolved else ""
     try:
-        available = [ct for ct in cell_type_names if ct in adata.obs.columns]
-        if not available:
-            return None
-        adata.obs["dominant_cell_type"] = (
-            adata.obs[available].idxmax(axis=1).astype("category")
+        return _squidpy_scatter_b64(
+            adata,
+            color="dominant_cell_type",
+            img_key=resolved,
+            library_key=library_key,
+            title=f"Dominant cell type per spot{suffix}",
+            figsize=(6, 6),
         )
-        fig, ax = plt.subplots(figsize=(6, 6))
-        sq.pl.spatial_scatter(adata, color="dominant_cell_type",
-                              ax=ax, show=False, frameon=False)
-        ax.set_title("Dominant cell type per spot", fontsize=10, fontweight="bold")
-        fig.tight_layout()
-        return _fig_to_b64(fig)
-    except Exception:
+    except Exception as e:
+        logger.warning("dominant cell type figure failed: %s", e)
         return None
 
 
-def _spatial_top6(adata, cell_type_names):
+def _fig_top_celltypes_spatial(
+    adata: ad.AnnData,
+    cell_type_names: list,
+    img_key: Optional[str],
+    n_top: int = 6,
+) -> Optional[str]:
+    """Spatial scatter for top-N cell types by mean abundance, in a grid."""
     if not _SQUIDPY_AVAILABLE:
         return None
-    if "spatial" not in adata.obsm or "spatial" not in adata.uns:
+    if "spatial" not in adata.obsm:
         return None
+
+    available = [ct for ct in cell_type_names if ct in adata.obs.columns]
+    if not available:
+        return None
+
+    means = {ct: float(adata.obs[ct].mean()) for ct in available}
+    top   = sorted(means, key=means.get, reverse=True)[:n_top]
+
+    resolved    = _resolve_img_key(adata, img_key)
+    library_key = _get_library_key(adata)
     try:
-        available = [ct for ct in cell_type_names if ct in adata.obs.columns]
-        if not available:
-            return None
-        means = {ct: float(adata.obs[ct].mean()) for ct in available}
-        top6  = sorted(means, key=means.get, reverse=True)[:6]
-        n     = len(top6)
-        ncols = min(3, n)
-        nrows = int(np.ceil(n / ncols))
-        fig, axes = plt.subplots(nrows, ncols, figsize=(5 * ncols, 5 * nrows))
-        axes = np.array(axes).ravel() if n > 1 else [axes]
-        for ax, ct in zip(axes, top6):
-            sq.pl.spatial_scatter(adata, color=ct, ax=ax, show=False,
-                                  frameon=False, cmap="magma")
-            ax.set_title(ct, fontsize=9)
-        for ax in axes[n:]:
-            ax.set_visible(False)
-        fig.suptitle("Top 6 cell types", fontsize=11, fontweight="bold")
-        fig.tight_layout()
-        return _fig_to_b64(fig)
-    except Exception:
+        b64_panels = []
+        for ct in top:
+            b = _squidpy_scatter_b64(
+                adata,
+                color=ct,
+                img_key=resolved,
+                library_key=library_key,
+                cmap="magma",
+                title=ct,
+                figsize=(5, 5),
+            )
+            if b:
+                b64_panels.append(b)
+        return _stitch_panels(b64_panels, ncols=3)
+    except Exception as e:
+        logger.warning("top cell types figure failed: %s", e)
         return None
 
 
-def _section_summary(adata, deconv_info, dataset_id, timestamp):
+# ---------------------------------------------------------------------------
+# Sections
+# ---------------------------------------------------------------------------
+
+
+def _section_summary(
+    adata: ad.AnnData,
+    deconv_info: dict,
+    dataset_id: str,
+    timestamp: str,
+) -> str:
     outputs     = deconv_info.get("outputs", {})
     skipped     = deconv_info.get("skipped", True)
     skip_reason = deconv_info.get("skip_reason", "")
+    method      = outputs.get("method", "?")
+    per_sample  = outputs.get("per_sample", False)
+    library_key = outputs.get("library_key")
     n_spots     = outputs.get("n_spots", adata.n_obs)
     n_ct        = outputs.get("n_cell_types", 0)
     n_shared    = outputs.get("n_shared_genes", 0)
 
+    if skipped:
+        stat_cards = (
+            f'<div class="stat-card"><div class="stat-value">{n_spots:,}</div>'
+            f'<div class="stat-label">Spots</div></div>'
+            f'<div class="stat-card"><div class="stat-value">Skipped</div>'
+            f'<div class="stat-label">Deconvolution</div></div>'
+        )
+        skip_note = (
+            f'<p class="note">&#x26A0; Deconvolution skipped &mdash; '
+            f'{skip_reason}</p>'
+        )
+        return f"""
+        <section>
+          <h2>Run Summary</h2>
+          <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
+          {skip_note}
+          <div class="stat-grid">{stat_cards}</div>
+        </section>
+        """
+
+    method_label = {
+        "nnls":          "NNLS (proportions, memory-safe)",
+        "cell2location": "cell2location (Bayesian, gold standard)",
+    }.get(method, method)
+
+    cards = [
+        ("Method",         method_label),
+        ("Spots",          f"{n_spots:,}"),
+        ("Cell types",     str(n_ct)),
+        ("Shared genes",   f"{n_shared:,}"),
+    ]
+    if per_sample and library_key:
+        cards.append(("Per-sample loop", f"by <code>{library_key}</code>"))
+    elif per_sample:
+        cards.append(("Per-sample loop", "yes"))
+
     stat_cards = "".join(
         f'<div class="stat-card"><div class="stat-value">{v}</div>'
         f'<div class="stat-label">{k}</div></div>'
-        for k, v in [
-            ("Spots", f"{n_spots:,}"),
-            ("Cell types", "Skipped" if skipped else n_ct),
-        ] + ([] if skipped else [("Shared genes", f"{n_shared:,}")])
+        for k, v in cards
     )
-    skip_note = (
-        f'<p class="note">&#x26A0; Deconvolution skipped &mdash; {skip_reason}</p>'
-        if skipped else ""
-    )
+
     ct_names  = outputs.get("cell_type_names", [])
     ct_badges = " ".join(f"<code>{ct}</code>" for ct in ct_names)
 
@@ -136,19 +341,30 @@ def _section_summary(adata, deconv_info, dataset_id, timestamp):
     <section>
       <h2>Run Summary</h2>
       <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
-      {skip_note}
       <div class="stat-grid">{stat_cards}</div>
       {"<h3>Cell Types</h3><p>" + ct_badges + "</p>" if ct_badges else ""}
     </section>
     """
 
 
-def _section_params(deconv_info):
+def _section_params(deconv_info: dict) -> str:
     params = deconv_info.get("params", {})
     if not params:
         return ""
+
+    # Render scalars first, then lists/dicts as their str representation
+    def _fmt(v):
+        if v is None:
+            return "<em>None</em>"
+        if isinstance(v, bool):
+            return "yes" if v else "no"
+        if isinstance(v, (list, tuple)):
+            return ", ".join(str(x) for x in v) if v else "<em>None</em>"
+        return str(v)
+
     rows = "".join(
-        f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in params.items()
+        f"<tr><td><code>{k}</code></td><td>{_fmt(v)}</td></tr>"
+        for k, v in params.items()
     )
     return f"""
     <section>
@@ -161,13 +377,22 @@ def _section_params(deconv_info):
     """
 
 
-def _section_abundance(adata, deconv_info):
+def _section_abundance(
+    adata: ad.AnnData,
+    deconv_info: dict,
+    img_key: Optional[str],
+) -> str:
     ct_names = deconv_info.get("outputs", {}).get("cell_type_names", [])
     if not ct_names:
         return ""
-    b64_bar  = _mean_abundance_bar(adata, ct_names)
-    b64_dom  = _dominant_celltype_spatial(adata, ct_names)
-    b64_top6 = _spatial_top6(adata, ct_names)
+
+    b64_bar  = _fig_mean_abundance_bar(adata, ct_names)
+    b64_dom  = _fig_dominant_celltype(adata, img_key)
+    b64_top  = _fig_top_celltypes_spatial(adata, ct_names, img_key, n_top=6)
+
+    if not (b64_bar or b64_dom or b64_top):
+        return ""
+
     figs = ""
     if b64_bar:
         figs += (
@@ -179,20 +404,27 @@ def _section_abundance(adata, deconv_info):
             '<div class="fig-wrap"><h3>Dominant cell type per spot</h3>'
             f'<img src="data:image/png;base64,{b64_dom}" alt="dominant cell type"></div>'
         )
-    if b64_top6:
+    if b64_top:
         figs += (
-            '<div class="fig-wrap"><h3>Top 6 cell types &mdash; spatial</h3>'
-            f'<img src="data:image/png;base64,{b64_top6}" alt="spatial top 6"></div>'
+            '<div class="fig-wrap" style="max-width:900px;">'
+            '<h3>Top 6 cell types &mdash; spatial abundance</h3>'
+            f'<img src="data:image/png;base64,{b64_top}" alt="top cell types"></div>'
         )
-    if not figs:
-        return ""
+
     return f"""
     <section>
       <h2>Cell Type Abundances</h2>
+      <p>NNLS outputs proportions (sum to 1 per spot). cell2location outputs
+         absolute abundances. The dominant-cell-type panel uses an argmax
+         across cell types per spot &mdash; written to <code>obs["dominant_cell_type"]</code>.</p>
       <div class="fig-grid">{figs}</div>
     </section>
     """
 
+
+# ---------------------------------------------------------------------------
+# Shared CSS + page renderer
+# ---------------------------------------------------------------------------
 
 _PAGE_CSS = """
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -236,7 +468,7 @@ _PAGE_CSS = """
 """
 
 
-def _render_page(title, sections, timestamp):
+def _render_page(title: str, sections: list, timestamp: str) -> str:
     body = "\n".join(sections)
     return (
         "<!DOCTYPE html>\n<html lang=\"en\">\n<head>\n"
@@ -260,16 +492,45 @@ def _render_page(title, sections, timestamp):
     )
 
 
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+
+
 def generate_spatial_deconvolve_report(
     adata: ad.AnnData,
     output_path: str,
     dataset_id: str = "spatial",
+    img_key: Optional[str] = "hires",
 ) -> str:
+    """Generate a self-contained HTML deconvolution report.
+
+    Works for both NNLS and cell2location outputs (same provenance contract).
+
+    Parameters
+    ----------
+    adata
+        AnnData returned by :func:`spatial_deconvolve`.
+    output_path
+        Path to write the ``.html`` file.
+    dataset_id
+        Dataset label shown in the report header.
+    img_key
+        H&E image key in ``uns["spatial"][sample]["images"]``.
+        ``"hires"`` (default) or ``"lowres"``. Figures degrade gracefully
+        to spots-only when the image is absent.
+
+    Returns
+    -------
+    str
+        Absolute path to the written HTML file.
+    """
     if "omicsage_spatial_deconvolve" not in adata.uns:
         raise ValueError(
             "adata.uns['omicsage_spatial_deconvolve'] not found. "
             "Run spatial_deconvolve() before generating the report."
         )
+
     timestamp   = datetime.now().strftime("%Y-%m-%d %H:%M")
     deconv_info = adata.uns["omicsage_spatial_deconvolve"]
     skipped     = deconv_info.get("skipped", True)
@@ -277,9 +538,10 @@ def generate_spatial_deconvolve_report(
     sections = [_section_summary(adata, deconv_info, dataset_id, timestamp)]
     if not skipped:
         sections += [
-            _section_abundance(adata, deconv_info),
+            _section_abundance(adata, deconv_info, img_key),
             _section_params(deconv_info),
         ]
+
     html = _render_page(
         title=f"OmicSage -- Spatial Deconvolution -- {dataset_id}",
         sections=sections,

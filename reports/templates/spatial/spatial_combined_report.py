@@ -13,10 +13,11 @@ from pathlib import Path
 
 
 TAB_REGISTRY = [
-    ("spatial_qc_report.html",         "QC",         "🔬"),
-    ("spatial_reduce_report.html",     "Reduce",     "🔭"),
-    ("spatial_cluster_report.html",    "Cluster",    "🫧"),
-    ("spatial_deconvolve_report.html", "Deconvolve", "🧬"),
+    ("spatial_qc_report.html",          "QC",         "🔬"),
+    ("spatial_reduce_report.html",      "Reduce",     "🔭"),
+    ("spatial_cluster_report.html",     "Cluster",    "🫧"),
+    ("spatial_deconvolve_report.html",  "Deconvolve", "🧬"),
+    ("spatial_downstream_report.html",  "Downstream", "🔗"),
 ]
 
 

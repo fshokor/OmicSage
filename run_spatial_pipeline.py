@@ -11,7 +11,7 @@ Usage
   python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step cluster
   python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step reduce --force
 
-Step order: ingest -> qc -> reduce -> cluster -> deconvolve
+Step order: ingest -> qc -> reduce -> cluster -> deconvolve -> downstream
 
 Checkpointing: every step writes output_dir/NN_<step>.h5ad.
 If the file exists the step is skipped. Use --force to override.
@@ -47,7 +47,7 @@ os.chdir(root)
 sys.path.insert(0, str(root))
 
 
-STEP_ORDER = ["ingest", "qc", "reduce", "cluster", "deconvolve"]
+STEP_ORDER = ["ingest", "qc", "reduce", "cluster", "deconvolve", "downstream"]
 
 STEP_OUTPUT = {
     "ingest":     "01_ingested.h5ad",
@@ -55,6 +55,7 @@ STEP_OUTPUT = {
     "reduce":     "03_reduced.h5ad",
     "cluster":    "04_clustered.h5ad",
     "deconvolve": "05_deconvolved.h5ad",
+    "downstream": "06_downstream.h5ad",
 }
 
 STEP_PREDECESSOR = {
@@ -63,6 +64,7 @@ STEP_PREDECESSOR = {
     "reduce":     "qc",
     "cluster":    "reduce",
     "deconvolve": "cluster",
+    "downstream": "cluster",
 }
 
 STEP_REPORT = {
@@ -70,6 +72,7 @@ STEP_REPORT = {
     "reduce":     "spatial_reduce_report.html",
     "cluster":    "spatial_cluster_report.html",
     "deconvolve": "spatial_deconvolve_report.html",
+    "downstream": "spatial_downstream_report.html",
 }
 
 
@@ -289,12 +292,63 @@ def run_deconvolve(input_path, output_dir, cfg, force=False):
     return out_path
 
 
+def run_downstream(input_path, output_dir, cfg, force=False):
+    import scanpy as sc
+    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from reports.templates.spatial.spatial_downstream_report import generate_spatial_downstream_report
+    out_path    = output_dir / STEP_OUTPUT["downstream"]
+    report_path = output_dir / STEP_REPORT["downstream"]
+    dataset_id  = cfg.get("dataset_id", "spatial")
+    if out_path.exists() and not force:
+        print(f"  [downstream] cached -> {out_path}")
+        return out_path
+    adata          = sc.read_h5ad(input_path)
+    ds_cfg         = cfg.get("spatial", {}).get("downstream", {})
+    dominant_key   = ds_cfg.get("dominant_celltype_key", "dominant_cell_type")
+    adata, params = spatial_downstream(
+        adata,
+        run_region_clustering=ds_cfg.get("run_region_clustering", True),
+        region_resolution=ds_cfg.get("region_resolution", 0.5),
+        region_n_neighbors=ds_cfg.get("region_n_neighbors", 15),
+        run_celltype_expression=ds_cfg.get("run_celltype_expression", True),
+        n_marker_genes=ds_cfg.get("n_marker_genes", 20),
+        run_celltype_svg=ds_cfg.get("run_celltype_svg", True),
+        svg_n_genes=ds_cfg.get("svg_n_genes", None),
+        run_co_occurrence=ds_cfg.get("run_co_occurrence", True),
+        run_nhood_enrichment=ds_cfg.get("run_nhood_enrichment", True),
+        n_perms_nhood=ds_cfg.get("n_perms_nhood", 1000),
+        run_ligrec=ds_cfg.get("run_ligrec", True),
+        ligrec_n_perms=ds_cfg.get("ligrec_n_perms", 1000),
+        ligrec_organism=ds_cfg.get("ligrec_organism", "human"),
+        run_svg_gsea=ds_cfg.get("run_svg_gsea", True),
+        svg_gsea_gene_sets=ds_cfg.get("svg_gsea_gene_sets", "GO_Biological_Process_2023"),
+        svg_gsea_organism=ds_cfg.get("svg_gsea_organism", "Human"),
+        dominant_celltype_key=dominant_key,
+        n_jobs=ds_cfg.get("n_jobs", 1),
+        inplace=True,
+    )
+    analyses = params.get("analyses", {})
+    ran = [k for k, v in analyses.items() if not v.get("skipped")]
+    skipped = [k for k, v in analyses.items() if v.get("skipped")]
+    print(f"  [downstream] ran: {', '.join(ran) or 'none'}")
+    if skipped:
+        print(f"  [downstream] skipped: {', '.join(skipped)}")
+    generate_spatial_downstream_report(
+        adata, str(report_path), dataset_id=dataset_id, dominant_celltype_key=dominant_key
+    )
+    print(f"  [downstream] report -> {report_path}")
+    adata.write_h5ad(out_path)
+    print(f"  [downstream] -> {out_path}")
+    return out_path
+
+
 STEP_RUNNERS = {
     "ingest":     lambda inp, out, cfg, force: run_ingest(cfg, out, force),
     "qc":         run_qc,
     "reduce":     run_reduce,
     "cluster":    run_cluster,
     "deconvolve": run_deconvolve,
+    "downstream": run_downstream,
 }
 
 
