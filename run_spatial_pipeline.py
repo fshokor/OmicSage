@@ -64,7 +64,10 @@ STEP_PREDECESSOR = {
     "reduce":     "qc",
     "cluster":    "reduce",
     "deconvolve": "cluster",
-    "downstream": "cluster",
+    # downstream prefers the deconvolve checkpoint (has cell-type abundance
+    # columns); falls back to cluster checkpoint when deconvolve was skipped.
+    # resolve_input() implements the fallback logic.
+    "downstream": "deconvolve",
 }
 
 STEP_REPORT = {
@@ -91,6 +94,12 @@ def get_step_cfg(cfg, step):
     }
 
 
+# Steps that have a preferred predecessor but can fall back to an earlier one.
+STEP_PREDECESSOR_FALLBACK = {
+    "downstream": "cluster",  # deconvolve preferred; cluster is the fallback
+}
+
+
 def resolve_input(step, cfg, output_dir):
     pred = STEP_PREDECESSOR[step]
     if pred is None:
@@ -98,6 +107,18 @@ def resolve_input(step, cfg, output_dir):
     pred_out = output_dir / STEP_OUTPUT[pred]
     if pred_out.exists():
         return pred_out
+
+    # Try fallback predecessor (e.g. downstream: deconvolve -> cluster)
+    fallback = STEP_PREDECESSOR_FALLBACK.get(step)
+    if fallback is not None:
+        fallback_out = output_dir / STEP_OUTPUT[fallback]
+        if fallback_out.exists():
+            print(
+                f"  [{step}] deconvolve checkpoint not found — "
+                f"falling back to '{fallback}' checkpoint ({fallback_out.name})"
+            )
+            return fallback_out
+
     raise FileNotFoundError(
         f"[{step}] requires output of '{pred}' at {pred_out}\n"
         f"  Run '{pred}' first or use --from-step {pred}"
@@ -133,6 +154,7 @@ def run_ingest(cfg, output_dir, force=False):
         spatial_type=spatial_cfg.get("spatial_type", "auto"),
         counts_file=spatial_cfg.get("counts_file", "filtered_feature_bc_matrix.h5"),
         library_id=spatial_cfg.get("library_id", None),
+        library_key=spatial_cfg.get("library_key", None),
         load_images=spatial_cfg.get("load_images", True),
     )
     print(f"  [ingest] {adata.n_obs:,} spots x {adata.n_vars:,} genes")
@@ -141,12 +163,12 @@ def run_ingest(cfg, output_dir, force=False):
     return out_path
 
 
-def run_qc(input_path, output_dir, cfg, force=False):
+def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
     from pipeline.modules.spatial.spatial_qc import spatial_qc
     from reports.templates.spatial.spatial_qc_report import generate_spatial_qc_report
     out_path    = output_dir / STEP_OUTPUT["qc"]
-    report_path = output_dir / STEP_REPORT["qc"]
+    report_path = reports_dir / STEP_REPORT["qc"]
     dataset_id  = cfg.get("dataset_id", "spatial")
     if out_path.exists() and not force:
         print(f"  [qc] cached -> {out_path}")
@@ -174,12 +196,12 @@ def run_qc(input_path, output_dir, cfg, force=False):
     return out_path
 
 
-def run_reduce(input_path, output_dir, cfg, force=False):
+def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
     from pipeline.modules.spatial.spatial_reduce import spatial_reduce
     from reports.templates.spatial.spatial_reduce_report import generate_spatial_reduce_report
     out_path    = output_dir / STEP_OUTPUT["reduce"]
-    report_path = output_dir / STEP_REPORT["reduce"]
+    report_path = reports_dir / STEP_REPORT["reduce"]
     dataset_id  = cfg.get("dataset_id", "spatial")
     if out_path.exists() and not force:
         print(f"  [reduce] cached -> {out_path}")
@@ -208,12 +230,12 @@ def run_reduce(input_path, output_dir, cfg, force=False):
     return out_path
 
 
-def run_cluster(input_path, output_dir, cfg, force=False):
+def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
     from pipeline.modules.spatial.spatial_cluster import spatial_cluster
     from reports.templates.spatial.spatial_cluster_report import generate_spatial_cluster_report
     out_path     = output_dir / STEP_OUTPUT["cluster"]
-    report_path  = output_dir / STEP_REPORT["cluster"]
+    report_path  = reports_dir / STEP_REPORT["cluster"]
     dataset_id   = cfg.get("dataset_id", "spatial")
     if out_path.exists() and not force:
         print(f"  [cluster] cached -> {out_path}")
@@ -243,66 +265,94 @@ def run_cluster(input_path, output_dir, cfg, force=False):
     return out_path
 
 
-def run_deconvolve(input_path, output_dir, cfg, force=False):
+def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
     from pipeline.modules.spatial.spatial_deconvolve import spatial_deconvolve
     from reports.templates.spatial.spatial_deconvolve_report import generate_spatial_deconvolve_report
     out_path    = output_dir / STEP_OUTPUT["deconvolve"]
-    report_path = output_dir / STEP_REPORT["deconvolve"]
+    report_path = reports_dir / STEP_REPORT["deconvolve"]
     dataset_id  = cfg.get("dataset_id", "spatial")
     if out_path.exists() and not force:
         print(f"  [deconvolve] cached -> {out_path}")
         return out_path
-    adata       = sc.read_h5ad(input_path)
-    deconv_cfg  = cfg.get("spatial", {}).get("deconvolve", {})
-    ref_path    = deconv_cfg.get("ref_path", None)
-    ref_adata   = None
+    adata      = sc.read_h5ad(input_path)
+    deconv_cfg = cfg.get("spatial", {}).get("deconvolve", {})
+    method     = deconv_cfg.get("method", "nnls")
+    ref_path   = deconv_cfg.get("ref_path", None)
+    ref_adata  = None
     if ref_path:
         print(f"  [deconvolve] loading reference: {ref_path!r}")
         ref_adata = sc.read_h5ad(ref_path)
-        layer_ref = deconv_cfg.get("layer_ref", "counts")
-        ref_adata.X = ref_adata.layers[layer_ref].copy()
+        # NOTE: do NOT pre-assign ref_adata.X here — spatial_deconvolve
+        # handles this internally for both methods.
         print(f"  [deconvolve] reference: {ref_adata.n_obs:,} cells x {ref_adata.n_vars:,} genes")
     else:
         print("  [deconvolve] no ref_path — will be skipped")
+    print(f"  [deconvolve] method: {method}")
     adata, params = spatial_deconvolve(
         adata,
         ref_adata=ref_adata,
-        cell_type_key=deconv_cfg.get("cell_type_key",        "cell_type_original"),
-        batch_key_ref=deconv_cfg.get("batch_key_ref",        "donor_id"),
-        batch_key_st=deconv_cfg.get("batch_key_st",          "patient"),
-        covariate_keys=deconv_cfg.get("covariate_keys",      None),
-        layer_ref=deconv_cfg.get("layer_ref",                "counts"),
+        # method selection
+        method=method,
+        per_sample=deconv_cfg.get("per_sample",             False),
+        library_key=deconv_cfg.get("library_key",           None),
+        # shared
+        cell_type_key=deconv_cfg.get("cell_type_key",       "cell_type_original"),
+        layer_ref=deconv_cfg.get("layer_ref",               "counts"),
+        # NNLS-specific
+        n_jobs=deconv_cfg.get("n_jobs",                     4),
+        target_sum=deconv_cfg.get("target_sum",             1e4),
+        # cell2location-specific (ignored when method=nnls)
+        batch_key_ref=deconv_cfg.get("batch_key_ref",       "donor_id"),
+        batch_key_st=deconv_cfg.get("batch_key_st",         "patient"),
+        covariate_keys=deconv_cfg.get("covariate_keys",     None),
         N_cells_per_location=deconv_cfg.get("N_cells_per_location", 8),
-        detection_alpha=deconv_cfg.get("detection_alpha",    20),
-        max_epochs_ref=deconv_cfg.get("max_epochs_ref",      250),
-        max_epochs_st=deconv_cfg.get("max_epochs_st",        30000),
-        batch_size_ref=deconv_cfg.get("batch_size_ref",      2500),
+        detection_alpha=deconv_cfg.get("detection_alpha",   20),
+        max_epochs_ref=deconv_cfg.get("max_epochs_ref",     250),
+        max_epochs_st=deconv_cfg.get("max_epochs_st",       30000),
+        batch_size_ref=deconv_cfg.get("batch_size_ref",     2500),
+        batch_size_st=deconv_cfg.get("batch_size_st",       None),
+        num_samples_posterior=deconv_cfg.get("num_samples_posterior", 1000),
+        cell_count_cutoff=deconv_cfg.get("cell_count_cutoff",         5),
+        cell_percentage_cutoff2=deconv_cfg.get("cell_percentage_cutoff2", 0.03),
+        nonz_mean_cutoff=deconv_cfg.get("nonz_mean_cutoff", 1.12),
         inplace=True,
     )
     if params["skipped"]:
         print(f"  [deconvolve] skipped: {params['skip_reason']}")
     else:
         out = params["outputs"]
-        print(f"  [deconvolve] {out['n_cell_types']} cell types, {out['n_spots']:,} spots")
-    generate_spatial_deconvolve_report(adata, str(report_path), dataset_id=dataset_id)
+        print(f"  [deconvolve] {out['n_cell_types']} cell types, "              f"{out['n_spots']:,} spots ({out['method']})")
+        if out.get("per_sample"):
+            print(f"  [deconvolve] per-sample loop over '{out['library_key']}'")
+    generate_spatial_deconvolve_report(
+        adata, str(report_path), dataset_id=dataset_id,
+        img_key=cfg.get("spatial", {}).get("report", {}).get("img_key", "hires"),
+    )
     print(f"  [deconvolve] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [deconvolve] -> {out_path}")
     return out_path
 
 
-def run_downstream(input_path, output_dir, cfg, force=False):
+def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
     from pipeline.modules.spatial.spatial_downstream import spatial_downstream
     from reports.templates.spatial.spatial_downstream_report import generate_spatial_downstream_report
     out_path    = output_dir / STEP_OUTPUT["downstream"]
-    report_path = output_dir / STEP_REPORT["downstream"]
+    report_path = reports_dir / STEP_REPORT["downstream"]
     dataset_id  = cfg.get("dataset_id", "spatial")
     if out_path.exists() and not force:
         print(f"  [downstream] cached -> {out_path}")
         return out_path
+    print(f"  [downstream] loading: {input_path.name}", flush=True)
     adata          = sc.read_h5ad(input_path)
+    print(
+        f"  [downstream] loaded: {adata.n_obs:,} spots x {adata.n_vars:,} genes  "
+        f"| deconvolved: {'omicsage_spatial_deconvolve' in adata.uns}  "
+        f"| cell types: {len(list(adata.uns.get('omicsage_spatial_deconvolve', {}).get('outputs', {}).get('cell_type_names', [])))}",
+        flush=True,
+    )
     ds_cfg         = cfg.get("spatial", {}).get("downstream", {})
     dominant_key   = ds_cfg.get("dominant_celltype_key", "dominant_cell_type")
     adata, params = spatial_downstream(
@@ -398,8 +448,13 @@ def main():
     cfg          = load_config(args.config)
     dataset_id   = cfg.get("dataset_id", "spatial")
     dataset_name = cfg.get("dataset_name", dataset_id)
-    output_dir   = Path(cfg.get("output_dir", f"outputs/{dataset_id}"))
+
+    output_dir = Path(cfg["paths"]["output_dir"])
+    reports_dir   = Path(cfg["paths"]["reports_dir"])
     output_dir.mkdir(parents=True, exist_ok=True)
+    reports_dir.mkdir(parents=True, exist_ok=True)
+    print(output_dir)
+    print(reports_dir)
 
     from_idx, to_idx = resolve_step_window(args.from_step, args.to_step, args.step)
     window = STEP_ORDER[from_idx : to_idx + 1]
@@ -425,12 +480,12 @@ def main():
             STEP_RUNNERS[step](None, output_dir, cfg, args.force)
         else:
             input_path = resolve_input(step, cfg, output_dir)
-            STEP_RUNNERS[step](input_path, output_dir, cfg, args.force)
+            STEP_RUNNERS[step](input_path, output_dir, reports_dir, cfg, args.force)
 
     from reports.templates.spatial.spatial_combined_report import generate_spatial_combined_report
-    combined_path = output_dir / "00_spatial_combined_report.html"
+    combined_path = reports_dir / "00_spatial_combined_report.html"
     generate_spatial_combined_report(
-        reports_dir=output_dir,
+        reports_dir=reports_dir,
         dataset_name=dataset_name,
         output_path=combined_path,
     )

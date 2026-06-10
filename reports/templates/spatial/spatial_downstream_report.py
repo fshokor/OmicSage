@@ -501,6 +501,50 @@ def _section_nhood_enrichment(adata: ad.AnnData, prov: dict, dominant_celltype_k
     """
 
 
+def _deserialize_ligrec(raw: dict) -> dict:
+    """Reconstruct ligrec dict-of-DataFrames from the serialized checkpoint format.
+
+    _serialize_ligrec_uns stores each DataFrame as three keys:
+        <name>_data     JSON records string
+        <name>_columns  JSON array of stringified column names (tuple strings)
+        <name>_index    JSON array of stringified index names (tuple strings)
+
+    This function reassembles each DataFrame and restores the MultiIndex on
+    both axes so sq.pl.ligrec receives the format it expects.
+    """
+    import json as _json
+    from ast import literal_eval
+
+    def _parse_label(s: str):
+        try:
+            return literal_eval(s)
+        except Exception:
+            return s
+
+    # Collect data/columns/index triplets
+    keys = {k.rsplit("_", 1)[0] for k in raw if k.endswith(("_data", "_columns", "_index"))}
+    result: dict = {}
+    for k in keys:
+        data_json    = raw.get(f"{k}_data")
+        columns_json = raw.get(f"{k}_columns")
+        index_json   = raw.get(f"{k}_index")
+        if data_json and columns_json and index_json:
+            cols = [_parse_label(c) for c in _json.loads(columns_json)]
+            idx  = [_parse_label(i) for i in _json.loads(index_json)]
+            df   = pd.read_json(data_json, orient="records")
+            df.columns = pd.MultiIndex.from_tuples(cols) if isinstance(cols[0], tuple) else cols
+            df.index   = pd.MultiIndex.from_tuples(idx)  if isinstance(idx[0],  tuple) else idx
+            result[k] = df
+        else:
+            result[k] = raw.get(f"{k}_data", raw.get(k))
+    # pass through any non-DataFrame keys (metadata scalars etc.)
+    for k, v in raw.items():
+        base = k.rsplit("_", 1)[0]
+        if not k.endswith(("_data", "_columns", "_index")) and base not in result:
+            result[k] = v
+    return result
+
+
 def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -> str:
     info = prov.get("analyses", {}).get("ligrec", {})
     if info.get("skipped"):
@@ -509,6 +553,15 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
     ligrec_key = f"{dominant_celltype_key}_ligrec"
     if ligrec_key not in adata.uns:
         return _skip_section("Ligand-Receptor Communication", f"uns['{ligrec_key}'] not found")
+
+    # Deserialize ligrec into a temporary local copy so adata.uns is never
+    # mutated — the serialized format must be preserved for write_h5ad().
+    raw = adata.uns[ligrec_key]
+    if any(k.endswith("_data") for k in raw):
+        import copy as _copy
+        adata = _copy.copy(adata)                  # shallow copy of AnnData
+        adata.uns = dict(adata.uns)                # detach uns dict
+        adata.uns[ligrec_key] = _deserialize_ligrec(raw)
 
     # Attempt to render the squidpy dotplot
     b64 = None
@@ -520,7 +573,7 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
                 figsize=(10, 6),
                 cluster_key=dominant_celltype_key,
                 pvalue_threshold=0.05,
-                alpha=0.001,
+                alpha=0.0001,
             )
         except Exception as e:
             logger.warning("[downstream_report] ligrec dotplot failed: %s", e)
@@ -572,6 +625,14 @@ def _section_svg_gsea(adata: ad.AnnData, prov: dict) -> str:
     gsea_df: pd.DataFrame = adata.uns.get("svg_gsea")
     if gsea_df is None or len(gsea_df) == 0:
         return _skip_section("SVG Pathway Enrichment", "no GSEA results")
+
+    # Defensive coercion: gseapy may return numeric columns as object dtype.
+    # nlargest/nsmallest require a real numeric dtype — coerce before sorting.
+    _FLOAT_COLS = {"ES", "NES", "NOM p-val", "FDR q-val", "FWER p-val"}
+    gsea_df = gsea_df.copy()
+    for _col in _FLOAT_COLS:
+        if _col in gsea_df.columns:
+            gsea_df[_col] = pd.to_numeric(gsea_df[_col], errors="coerce")
 
     # Bar chart of top 10 pathways by NES
     b64 = None

@@ -81,6 +81,7 @@ def spatial_deconvolve(
     cell_count_cutoff: int = 5,
     cell_percentage_cutoff2: float = 0.03,
     nonz_mean_cutoff: float = 1.12,
+    log_every_n_epochs: int = 10,
     inplace: bool = False,
 ) -> tuple[ad.AnnData, dict]:
     """Deconvolve Visium spots into cell type abundances.
@@ -202,6 +203,7 @@ def spatial_deconvolve(
             cell_count_cutoff=cell_count_cutoff,
             cell_percentage_cutoff2=cell_percentage_cutoff2,
             nonz_mean_cutoff=nonz_mean_cutoff,
+            log_every_n_epochs=log_every_n_epochs,
         )
         if per_sample:
             proportions, cell_type_names, n_shared = _deconvolve_c2l_per_sample(
@@ -281,65 +283,103 @@ def _deconvolve_nnls(
 ) -> tuple[np.ndarray, list, int]:
     """Non-negative least squares deconvolution.
 
-    For each spot, solves ``argmin ||W p - x||^2  s.t. p >= 0`` where:
-      - W is the reference signature matrix (genes × cell_types), built as
-        the per-cell-type mean of library-size-normalised reference counts.
-      - x is the spot's library-size-normalised expression vector.
-      - p is the cell-type proportion vector (rescaled to sum to 1).
+    For each spot solves ``argmin ||W p - x||^2  s.t. p >= 0`` where:
+      - W  is the (n_shared_genes × n_cell_types) signature matrix
+      - x  is the spot's library-size-normalised expression vector
+      - p  is the cell-type proportion vector (rescaled to sum to 1)
 
-    Memory profile: O(n_genes × n_cell_types) for W plus O(n_genes) per spot.
-    For Kuppe (~3,000 genes × ~14 cell types × ~11,700 spots) peak RAM is
-    ~150 MB regardless of the spot count.
+    Memory design
+    -------------
+    The reference can be large (e.g. 50k cells × 36k genes = 7 GB dense).
+    We avoid ever densifying it by:
+      1. Finding shared genes first (index lookup, no data loaded)
+      2. Subsetting the sparse reference to shared genes only (~3k)
+      3. Computing per-cell-type means one cell type at a time from the
+         sparse subset — peak allocation is
+         max(n_cells_per_celltype) × n_shared × 4 B ≈ 40–80 MB
+      4. The spatial matrix is small (11k × 3k × 4 B ≈ 130 MB) and is
+         the only dense allocation
+
+    Combined peak RAM for Kuppe: ~200–300 MB.
     """
     from scipy.optimize import nnls
     from joblib import Parallel, delayed
 
-    # 1. Build per-cell-type reference signatures
     if layer_ref not in ref_adata.layers:
         raise ValueError(f"ref_adata.layers['{layer_ref}'] is missing.")
 
     cell_types = (
         ref_adata.obs[cell_type_key].astype("category").cat.categories.tolist()
     )
-    ref_X = ref_adata.layers[layer_ref]
-    ref_norm = _lib_normalize(ref_X, target_sum)
 
-    sig = np.zeros((ref_adata.n_vars, len(cell_types)), dtype=np.float32)
-    for i, ct in enumerate(cell_types):
-        mask = (ref_adata.obs[cell_type_key].values == ct)
-        if mask.sum() == 0:
-            continue
-        sig[:, i] = ref_norm[mask].mean(axis=0)
-
-    ref_sig_df = pd.DataFrame(
-        sig, index=ref_adata.var_names, columns=cell_types
-    )
-
-    # 2. Restrict to shared genes
-    shared = [g for g in adata.var_names if g in ref_sig_df.index]
+    # ── Step 1: find shared genes while everything is still sparse ──────────
+    spatial_genes = set(adata.var_names)
+    shared = [g for g in ref_adata.var_names if g in spatial_genes]
     if not shared:
         raise ValueError(
             "No shared genes between spatial and reference data. "
             "Check that both use the same gene ID format (e.g. ENSEMBL IDs)."
         )
-    W = ref_sig_df.loc[shared].values.astype(np.float32)
-    # Drop genes with zero signal in every cell type (no information)
-    nonzero = W.sum(axis=1) > 0
-    if not nonzero.all():
-        W = W[nonzero]
-        shared = [g for g, keep in zip(shared, nonzero) if keep]
-
-    # 3. Library-size normalise spatial counts
-    st_norm = _lib_normalize(
-        adata[:, shared].layers["counts"], target_sum,
-    ).astype(np.float32)
-
-    # 4. NNLS per spot (parallel via threads — scipy.nnls releases the GIL)
     logger.info(
-        "NNLS deconvolution: %d spots × %d cell types × %d shared genes",
-        st_norm.shape[0], W.shape[1], W.shape[0],
+        "NNLS: %d shared genes, %d cell types, %d ref cells, %d spots",
+        len(shared), len(cell_types), ref_adata.n_obs, adata.n_obs,
     )
 
+    # ── Step 2: build signature matrix — sparse, one cell type at a time ────
+    # ref_sub is still SPARSE: n_ref_cells × n_shared — never fully densified
+    shared_idx = {g: i for i, g in enumerate(ref_adata.var_names)}
+    shared_pos = [shared_idx[g] for g in shared]
+
+    sig = np.zeros((len(shared), len(cell_types)), dtype=np.float32)
+    ct_labels = np.asarray(ref_adata.obs[cell_type_key].values)
+
+    for i, ct in enumerate(cell_types):
+        mask = (ct_labels == ct)
+        n_ct = mask.sum()
+        if n_ct == 0:
+            continue
+        # Slice sparse: n_ct_cells × n_shared — max ~3.5k × 3k × 4B ≈ 42 MB
+        ct_X = ref_adata.layers[layer_ref][mask]
+        if sp.issparse(ct_X):
+            ct_X = ct_X[:, shared_pos]
+        else:
+            ct_X = np.asarray(ct_X, dtype=np.float32)[:, shared_pos]
+        # Per-row library-size normalisation (sparse-aware)
+        row_sums = np.array(
+            ct_X.sum(axis=1) if sp.issparse(ct_X)
+            else ct_X.sum(axis=1)
+        ).ravel().astype(np.float32)
+        row_sums[row_sums == 0] = 1.0
+        if sp.issparse(ct_X):
+            ct_norm = ct_X.multiply(
+                (target_sum / row_sums)[:, None]
+            ).toarray().astype(np.float32)
+        else:
+            ct_norm = (ct_X / row_sums[:, None]) * target_sum
+        sig[:, i] = ct_norm.mean(axis=0)
+        del ct_X, ct_norm  # free immediately
+
+    # Drop genes with zero signal across all cell types
+    nonzero = sig.sum(axis=1) > 0
+    if not nonzero.all():
+        sig    = sig[nonzero]
+        shared = [g for g, keep in zip(shared, nonzero) if keep]
+    W = sig  # (n_shared, n_cell_types) — tiny
+
+    # ── Step 3: normalise spatial counts (small matrix) ─────────────────────
+    # adata[:, shared] subset: 11k × 3k, dense float32 ≈ 130 MB
+    spatial_pos = [list(adata.var_names).index(g) for g in shared]
+    st_counts = adata.layers["counts"]
+    if sp.issparse(st_counts):
+        st_sub = st_counts[:, spatial_pos].toarray().astype(np.float32)
+    else:
+        st_sub = np.asarray(st_counts, dtype=np.float32)[:, spatial_pos]
+    row_sums = st_sub.sum(axis=1)
+    row_sums[row_sums == 0] = 1.0
+    st_norm = (st_sub / row_sums[:, None]) * target_sum
+    del st_sub  # free raw counts copy
+
+    # ── Step 4: NNLS per spot (threads share W and st_norm, no copies) ──────
     def _solve(x):
         p, _ = nnls(W, x, maxiter=200)
         s = p.sum()
@@ -370,6 +410,55 @@ def _lib_normalize(X, target_sum: float) -> np.ndarray:
 # ---------------------------------------------------------------------------
 
 
+def _make_epoch_callback(label: str, max_epochs: int, log_every_n: int):
+    """Lightning callback: log epoch/loss/ETA every log_every_n epochs.
+
+    Tries lightning.pytorch, falls back to pytorch_lightning.
+    Returns None if neither is available.
+    """
+    import time as _time
+    try:
+        try:
+            from lightning.pytorch.callbacks import Callback
+        except ImportError:
+            from pytorch_lightning.callbacks import Callback
+    except ImportError:
+        return None
+
+    _nd = len(str(max_epochs))
+
+    class _EpochLog(Callback):
+        def on_train_start(self, trainer, pl_module):
+            self._t0 = _time.time()
+            print(f"    [{label}] starting -- {max_epochs} epochs", flush=True)
+
+        def on_train_epoch_end(self, trainer, pl_module):
+            epoch = trainer.current_epoch + 1
+            if epoch % log_every_n != 0 and epoch != max_epochs:
+                return
+            elapsed = _time.time() - self._t0
+            loss_val = trainer.callback_metrics.get("train_loss_epoch")
+            loss_str = (
+                f"  loss={float(loss_val):.3f}" if loss_val is not None else ""
+            )
+            eta_str = ""
+            if epoch > 0:
+                eta_s = ((max_epochs - epoch) * elapsed) / epoch
+                eta_str = (
+                    f"  ETA {eta_s / 60:.1f}min" if eta_s > 5 else "  ETA <1min"
+                )
+            print(
+                f"    [{label}] epoch {epoch:{_nd}d}/{max_epochs}{loss_str}{eta_str}",
+                flush=True,
+            )
+
+        def on_train_end(self, trainer, pl_module):
+            elapsed = _time.time() - self._t0
+            print(f"    [{label}] done -- {elapsed / 60:.1f} min", flush=True)
+
+    return _EpochLog()
+
+
 def _fit_c2l_reference(
     ref_adata: ad.AnnData,
     cell_type_key: str,
@@ -382,17 +471,26 @@ def _fit_c2l_reference(
     cell_percentage_cutoff2: float,
     nonz_mean_cutoff: float,
     num_samples_posterior: int,
+    log_every_n_epochs: int = 10,
 ) -> tuple[pd.DataFrame, ad.AnnData]:
     """Fit cell2location RegressionModel — returns inferred signatures + filtered ref."""
     ref = ref_adata.copy()
     ref.X = ref.layers[layer_ref].copy()
 
-    selected = c2l.utils.filtering.filter_genes(
-        ref,
-        cell_count_cutoff=cell_count_cutoff,
-        cell_percentage_cutoff2=cell_percentage_cutoff2,
-        nonz_mean_cutoff=nonz_mean_cutoff,
-    )
+    # filter_genes internally calls log10(nonz_mean) which raises divide-by-zero
+    # for genes with zero mean — those genes are discarded by the filter anyway,
+    # so the warning is expected and harmless. Suppress at both numpy and Python
+    # warning levels because pandas re-raises numpy RuntimeWarnings via its own
+    # arraylike dispatch path.
+    import warnings as _warnings
+    with _warnings.catch_warnings(), np.errstate(divide="ignore", invalid="ignore"):
+        _warnings.filterwarnings("ignore", category=RuntimeWarning, message="divide by zero encountered in log10")
+        selected = c2l.utils.filtering.filter_genes(
+            ref,
+            cell_count_cutoff=cell_count_cutoff,
+            cell_percentage_cutoff2=cell_percentage_cutoff2,
+            nonz_mean_cutoff=nonz_mean_cutoff,
+        )
     ref = ref[:, selected].copy()
 
     setup_kw: dict = dict(adata=ref, labels_key=cell_type_key, layer=layer_ref)
@@ -405,12 +503,14 @@ def _fit_c2l_reference(
 
     c2l.models.RegressionModel.setup_anndata(**setup_kw)
     reg_model = c2l.models.RegressionModel(ref)
-    reg_model.train(
-        max_epochs=max_epochs_ref,
-        batch_size=batch_size_ref,
-        train_size=1,
-        lr=0.002,
+    _cb = _make_epoch_callback("ref model", max_epochs_ref, log_every_n_epochs)
+    _kw: dict = dict(
+        max_epochs=max_epochs_ref, batch_size=batch_size_ref,
+        train_size=1, lr=0.002, enable_progress_bar=False,
     )
+    if _cb is not None:
+        _kw["callbacks"] = [_cb]
+    reg_model.train(**_kw)
     reg_model.export_posterior(
         ref,
         sample_kwargs={
@@ -441,6 +541,8 @@ def _fit_c2l_spatial(
     max_epochs_st: int,
     batch_size_st: Optional[int],
     num_samples_posterior: int,
+    label: str = "spatial",
+    log_every_n_epochs: int = 10,
 ) -> tuple[np.ndarray, list]:
     """Fit the cell2location spatial model and return (proportions, cell_type_names)."""
     setup_kw: dict = dict(adata=adata_st)
@@ -454,11 +556,14 @@ def _fit_c2l_spatial(
         N_cells_per_location=N_cells_per_location,
         detection_alpha=detection_alpha,
     )
-    model.train(
-        max_epochs=max_epochs_st,
-        batch_size=batch_size_st,
-        train_size=1,
+    _cb = _make_epoch_callback(label, max_epochs_st, log_every_n_epochs)
+    _kw: dict = dict(
+        max_epochs=max_epochs_st, batch_size=batch_size_st,
+        train_size=1, enable_progress_bar=False,
     )
+    if _cb is not None:
+        _kw["callbacks"] = [_cb]
+    model.train(**_kw)
 
     adata_st = model.export_posterior(
         adata_st,
@@ -495,12 +600,23 @@ def _deconvolve_c2l(
     nonz_mean_cutoff: float,
 ) -> tuple[np.ndarray, list, int]:
     """Standard cell2location pipeline — all spots in one spatial fit."""
+    import time as _time
+    t0 = _time.time()
+    print(
+        f"  [deconvolve] step 1/2 -- reference model ({max_epochs_ref} epochs) ...",
+        flush=True,
+    )
     inf_aver, ref = _fit_c2l_reference(
         ref_adata, cell_type_key, layer_ref,
         batch_key_ref, covariate_keys,
         max_epochs_ref, batch_size_ref,
         cell_count_cutoff, cell_percentage_cutoff2, nonz_mean_cutoff,
         num_samples_posterior,
+        log_every_n_epochs=log_every_n_epochs,
+    )
+    print(
+        f"  [deconvolve] reference done in {(_time.time() - t0) / 60:.1f} min",
+        flush=True,
     )
 
     adata_st = adata.copy()
@@ -541,18 +657,30 @@ def _deconvolve_c2l_per_sample(
     cell_count_cutoff: int,
     cell_percentage_cutoff2: float,
     nonz_mean_cutoff: float,
+    log_every_n_epochs: int = 10,
 ) -> tuple[np.ndarray, list, int]:
     """Per-sample cell2location — reference fit once, spatial fit per library.
 
     Each spatial fit holds only ~n_obs/N_libraries spots in memory, dropping
     peak RAM by roughly Nx compared to a single fit on all spots together.
     """
+    import time as _time
+    t0 = _time.time()
+    print(
+        f"  [deconvolve] step 1/2 -- reference model ({max_epochs_ref} epochs) ...",
+        flush=True,
+    )
     inf_aver, ref = _fit_c2l_reference(
         ref_adata, cell_type_key, layer_ref,
         batch_key_ref, covariate_keys,
         max_epochs_ref, batch_size_ref,
         cell_count_cutoff, cell_percentage_cutoff2, nonz_mean_cutoff,
         num_samples_posterior,
+        log_every_n_epochs=log_every_n_epochs,
+    )
+    print(
+        f"  [deconvolve] reference done in {(_time.time() - t0) / 60:.1f} min",
+        flush=True,
     )
 
     shared = [g for g in adata.var_names if g in ref.var_names]
@@ -561,8 +689,10 @@ def _deconvolve_c2l_per_sample(
     inf_aver_shared = inf_aver.loc[shared]
 
     libraries = list(adata.obs[library_key].unique())
-    logger.info(
-        "Per-sample cell2location: %d libraries × spatial fits", len(libraries)
+    print(
+        f"  [deconvolve] step 2/2 -- spatial fits: "
+        f"{len(libraries)} libraries x {max_epochs_st} epochs each",
+        flush=True,
     )
 
     cell_type_names: Optional[list] = None
@@ -572,13 +702,14 @@ def _deconvolve_c2l_per_sample(
 
     for i, lib_id in enumerate(libraries):
         mask = (adata.obs[library_key].values == lib_id)
-        logger.info(
-            "  [%d/%d] library=%s  spots=%d",
-            i + 1, len(libraries), lib_id, int(mask.sum()),
+        n_spots = int(mask.sum())
+        t_lib = _time.time()
+        print(
+            f"  [deconvolve]   [{i + 1}/{len(libraries)}] {lib_id} ({n_spots:,} spots) ...",
+            flush=True,
         )
         adata_sub = adata[mask, shared].copy()
         adata_sub.X = adata_sub.layers["counts"].copy()
-        # Inside a single library batch_key would have only one level — disable
         proportions, ct_names = _fit_c2l_spatial(
             adata_sub, inf_aver_shared,
             batch_key_st=None,
@@ -587,6 +718,13 @@ def _deconvolve_c2l_per_sample(
             max_epochs_st=max_epochs_st,
             batch_size_st=batch_size_st,
             num_samples_posterior=num_samples_posterior,
+            label=f"{lib_id} [{i + 1}/{len(libraries)}]",
+            log_every_n_epochs=log_every_n_epochs,
+        )
+        print(
+            f"  [deconvolve]   [{i + 1}/{len(libraries)}] {lib_id} done "
+            f"in {(_time.time() - t_lib) / 60:.1f} min",
+            flush=True,
         )
         if cell_type_names is None:
             cell_type_names = ct_names

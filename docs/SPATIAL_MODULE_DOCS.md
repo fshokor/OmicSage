@@ -1,5 +1,5 @@
 # OmicSage — Spatial Transcriptomics Module Documentation
-> Phase 7 — Spatial Transcriptomics (Sessions 1–4)
+> Phase 7 — Spatial Transcriptomics (Sessions 1–5)
 > Last updated: June 2026
 
 This document covers every script produced in Phase 7: pipeline modules,
@@ -16,11 +16,13 @@ report generators, the combined report, the runner, the config, and the tests.
    - [spatial_reduce.py](#23-spatial_reducepy)
    - [spatial_cluster.py](#24-spatial_clusterpy)
    - [spatial_deconvolve.py](#25-spatial_deconvolvepy)
+   - [spatial_downstream.py](#26-spatial_downstreampy)
 3. [Report Templates](#3-report-templates)
    - [spatial_qc_report.py](#31-spatial_qc_reportpy)
    - [spatial_reduce_report.py](#32-spatial_reduce_reportpy)
    - [spatial_cluster_report.py](#33-spatial_cluster_reportpy)
    - [spatial_deconvolve_report.py](#34-spatial_deconvolve_reportpy)
+   - [spatial_downstream_report.py](#35-spatial_downstream_reportpy)
 4. [Combined Report](#4-combined-report)
 5. [Pipeline Runner](#5-pipeline-runner)
 6. [Config File](#6-config-file)
@@ -48,8 +50,12 @@ spatial_cluster.py
       ▼
 spatial_deconvolve.py
       │  obsm["q05_cell_abundance_w_sf"], obs[cell_type] columns
+      │  (graceful skip when no reference — downstream still runs)
       ▼
-  (Session 5) spatial_downstream.py
+spatial_downstream.py
+      │  obs["region_cluster"], uns["celltype_marker_genes"],
+      │  uns["celltype_svg"], uns["*_nhood_enrichment"],
+      │  uns["*_co_occurrence"], uns["*_ligrec"], uns["svg_gsea"]
 ```
 
 Every module follows the same contract:
@@ -345,9 +351,104 @@ uns["omicsage_spatial_deconvolve"]   provenance dict
 
 ---
 
+### 2.6 `spatial_downstream.py`
+
+**Location:** `pipeline/modules/spatial/spatial_downstream.py`
+**Phase 7 Session:** 5
+
+**Purpose:** All spatial downstream analyses in a single module — seven analyses
+covering tissue niche identification, cell-type-resolved gene expression,
+spatially variable gene characterisation, spatial interaction statistics,
+ligand-receptor communication, and pathway enrichment. Every analysis is
+independently gated: if its required inputs are absent, it records
+`skipped=True` in provenance and the pipeline continues without error.
+
+**Public API:**
+
+```python
+spatial_downstream(
+    adata: AnnData,
+    # Region clustering (sc-best-practices §32.3.4.2)
+    run_region_clustering: bool = True,
+    region_resolution: float = 0.5,
+    region_n_neighbors: int = 15,
+    # Cell-type specific gene expression
+    run_celltype_expression: bool = True,
+    n_marker_genes: int = 20,
+    # Cell-type specific SVGs
+    run_celltype_svg: bool = True,
+    svg_n_genes: Optional[int] = None,    # None = all HVGs
+    # Co-occurrence
+    run_co_occurrence: bool = True,
+    co_occurrence_interval: Optional[list] = None,
+    # Neighbourhood enrichment
+    run_nhood_enrichment: bool = True,
+    n_perms_nhood: int = 1000,
+    # Ligand-receptor
+    run_ligrec: bool = True,
+    ligrec_n_perms: int = 1000,
+    ligrec_organism: str = "human",       # "human" or "mouse"
+    # SVG pathway enrichment
+    run_svg_gsea: bool = True,
+    svg_gsea_gene_sets: str = "GO_Biological_Process_2023",
+    svg_gsea_organism: str = "Human",     # "Human" or "Mouse"
+    # Shared
+    dominant_celltype_key: str = "dominant_cell_type",
+    n_jobs: int = 1,
+    inplace: bool = False,
+) -> tuple[AnnData, dict]
+```
+
+**Analyses — Tier 1** (require only `uns["moranI"]`, available after `spatial_cluster`):
+
+| Analysis | Method | Output key |
+|----------|--------|-----------|
+| SVG pathway enrichment | `gseapy.prerank` on Moran's I ranking | `uns["svg_gsea"]` |
+
+**Analyses — Tier 2** (require deconvolution outputs):
+
+| Analysis | Method | Output key |
+|----------|--------|-----------|
+| Region clustering | Leiden on `obsm["q05_cell_abundance_w_sf"]` KNN graph | `obs["region_cluster"]`, `obsm["X_umap_celltype"]` |
+| Cell-type expression | Vectorised rank-based Spearman, all spots × all genes | `uns["celltype_marker_genes"]` |
+| Cell-type specific SVGs | Moran's I on above-median abundance spot subsets | `uns["celltype_svg"]` |
+| Co-occurrence | `sq.gr.co_occurrence` across distance intervals | `uns["{key}_co_occurrence"]` |
+| Neighbourhood enrichment | `sq.gr.nhood_enrichment`, 1000 permutations | `uns["{key}_nhood_enrichment"]` |
+| Ligand-receptor | `sq.gr.ligrec` via OmniPath database | `uns["{key}_ligrec"]` |
+
+`{key}` = `dominant_celltype_key` (default: `"dominant_cell_type"`), following squidpy's naming convention.
+
+**Graceful skip conditions:**
+
+| Analysis | Skips when |
+|----------|-----------|
+| Region clustering | `obsm["q05_cell_abundance_w_sf"]` absent |
+| Cell-type expression | `obsm["q05_cell_abundance_w_sf"]` absent, or no cell types resolved |
+| Cell-type SVGs | `uns["moranI"]` or `obsm["q05_cell_abundance_w_sf"]` absent |
+| Co-occurrence | `obs["dominant_cell_type"]` or `obsm["spatial"]` absent |
+| Neighbourhood enrichment | `obs["dominant_cell_type"]` absent |
+| Ligand-receptor | `obs["dominant_cell_type"]` absent, squidpy not installed, or `sq.gr.ligrec` unavailable |
+| SVG GSEA | `uns["moranI"]` absent, or gseapy not installed |
+
+**What it does — selected implementation notes:**
+
+1. **Region clustering** — builds a KNN graph in cell-type abundance space (`sc.pp.neighbors` with `key_added="neighbors_celltype"`) so it does not overwrite the gene-expression KNN graph from earlier steps. Leiden and UMAP run on that graph. UMAP result stored at `obsm["X_umap_celltype"]`; any pre-existing `obsm["X_umap"]` is saved and restored.
+
+2. **Cell-type expression** — vectorised rank-based Spearman computed as a matrix operation rather than per-gene scipy calls. Gene names are mapped from ENSEMBL IDs to symbols via `var["feature_name"]` before storage.
+
+3. **Cell-type SVGs** — each cell-type subset recomputes `sq.gr.spatial_neighbors(n_neighs=6)` because the original `obsp["spatial_connectivities"]` is invalid after subsetting. Uses `n_perms=None` (analytical p-values) for speed.
+
+4. **Ligand-receptor** — makes a temporary `adata.copy()` with `var_names` remapped from ENSEMBL IDs to `var["feature_name"]` symbols before calling `sq.gr.ligrec`. The result is copied back; the original `var_names` are never modified. Requires internet access to query OmniPath at runtime.
+
+5. **SVG GSEA** — `_sanitize_gsea_df()` casts the five known numeric columns (`ES`, `NES`, `NOM p-val`, `FDR q-val`, `FWER p-val`) to `float64` and all others to `str` before storing in `uns`. Without this, `adata.write_h5ad()` crashes because h5py cannot serialise Python floats as variable-length strings when columns have `object` dtype.
+
+**Provenance keys:** all `run_*` parameters, `timestamp`, `analyses` dict — one entry per analysis with `skipped`, `reason` (when skipped), and analysis-specific stats (e.g. `n_regions`, `n_cell_types`, `n_pathways`, `n_significant`).
+
+---
+
 ## 3. Report Templates
 
-All four reports follow the same structure as the RNA pipeline reports:
+All five reports follow the same structure as the RNA pipeline reports:
 - `_render_page(title, sections, timestamp)` → full HTML shell with `<header>`, `<main>`, `<footer>`
 - Content inside `<main>` is composed of `<section>` blocks
 - Sections use `.stat-grid`, `.stat-card`, `.fig-grid`, `.fig-wrap` CSS classes
@@ -447,11 +548,39 @@ warning note explaining that a paired scRNA-seq reference is required.
 
 ---
 
+### 3.5 `spatial_downstream_report.py`
+
+**Location:** `reports/templates/spatial/spatial_downstream_report.py`
+
+**Public API:**
+```python
+generate_spatial_downstream_report(
+    adata: AnnData,           # must have uns["omicsage_spatial_downstream"]
+    output_path: str,
+    dataset_id: str = "spatial",
+    dominant_celltype_key: str = "dominant_cell_type",
+) -> str
+```
+
+**Sections:**
+1. **Run Summary** — stat cards (region clusters, cell types profiled, cell types SVG-tested, SVG pathways); analysis status table showing run/skipped for all 7 analyses
+2. **Region Clustering** — spatial scatter coloured by `obs["region_cluster"]`; UMAP of cell type composition space (`obsm["X_umap_celltype"]`) if available
+3. **Cell-type Marker Genes** — table: top 10 Spearman-correlated genes per cell type
+4. **Cell-type Specific SVGs** — table: top 5 Moran's I SVGs per cell type subset
+5. **Spatial Co-occurrence** — `sq.pl.co_occurrence` line plot for most abundant cell type
+6. **Neighbourhood Enrichment** — `sq.pl.nhood_enrichment` z-score heatmap (`method="average"`)
+7. **Ligand-Receptor Communication** — `sq.pl.ligrec` dotplot at `alpha=0.001`; significant interaction count note
+8. **SVG Pathway Enrichment** — NES bar chart (top 10, red = positive / blue = negative); top 20 pathway table with FDR significance stars
+
+Every section renders a "not run / data not available" note when the corresponding analysis was skipped, so the report is always complete regardless of which analyses ran.
+
+---
+
 ## 4. Combined Report
 
 **Location:** `reports/spatial_combined_report.py`
 
-**Purpose:** Assembles all four step HTML reports into a single self-contained
+**Purpose:** Assembles all five step HTML reports into a single self-contained
 tabbed HTML file. Identical tab UI to `reports/combined_report.py` (RNA pipeline).
 
 **Public API:**
@@ -471,10 +600,11 @@ generate_spatial_combined_report(
 | `spatial_reduce_report.html` | Reduce | 🔭 |
 | `spatial_cluster_report.html` | Cluster | 🫧 |
 | `spatial_deconvolve_report.html` | Deconvolve | 🧬 |
+| `spatial_downstream_report.html` | Downstream | 🔗 |
 
 **Behaviour:**
 - Only tabs for reports that exist on disk are shown
-- Progress bar shows n_done / n_total steps complete
+- Progress bar shows n_done / 5 steps complete
 - Keyboard navigation: left/right arrow keys switch tabs
 - Supports both bare filenames and dataset-prefixed filenames (e.g. `kuppe_heart_spatial_qc_report.html`)
 
@@ -520,7 +650,7 @@ python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step clus
 python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step reduce --force
 ```
 
-**Step order:** `ingest → qc → reduce → cluster → deconvolve`
+**Step order:** `ingest → qc → reduce → cluster → deconvolve → downstream`
 
 **Checkpointing:** Every step writes its output to `output_dir/NN_<step>.h5ad`.
 If the file already exists, the step is skipped (cached). Use `--force` to
@@ -533,6 +663,9 @@ override, or `--from-step` to force re-execution from a given step onward.
 | reduce | `03_reduced.h5ad` |
 | cluster | `04_clustered.h5ad` |
 | deconvolve | `05_deconvolved.h5ad` |
+| downstream | `06_downstream.h5ad` |
+
+**Downstream step predecessor logic:** `STEP_PREDECESSOR["downstream"] = "cluster"` (minimum required). The runner's `resolve_input` upgrades to `05_deconvolved.h5ad` automatically if it exists on disk, so running deconvolution first always gives the richer result without any extra CLI flags.
 
 **Config lookup:** All step parameters are read from the YAML config under
 `spatial.<step>`. CLI overrides are not supported (use `--force` + config edits).
@@ -615,6 +748,29 @@ all step reports that exist in `output_dir`.
 | `max_epochs_ref` | `250` | Reference model training epochs |
 | `max_epochs_st` | `30000` | Spatial model training epochs |
 | `batch_size_ref` | `2500` | Reference model batch size |
+
+**`spatial.downstream` keys:**
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `run_region_clustering` | `true` | Cluster spots by cell type composition (requires deconvolution) |
+| `region_resolution` | `0.5` | Leiden resolution for region clusters |
+| `region_n_neighbors` | `15` | KNN neighbours in cell-type abundance space (capped at n_cell_types − 1) |
+| `run_celltype_expression` | `true` | Spearman correlation of cell type abundance vs gene expression |
+| `n_marker_genes` | `20` | Top N correlated genes stored per cell type |
+| `run_celltype_svg` | `true` | Moran's I on per-cell-type enriched spot subsets |
+| `svg_n_genes` | `null` | Genes to test per subset (`null` = all HVGs) |
+| `run_co_occurrence` | `true` | `sq.gr.co_occurrence` across distance intervals |
+| `run_nhood_enrichment` | `true` | `sq.gr.nhood_enrichment` permutation test |
+| `n_perms_nhood` | `1000` | Permutations for neighbourhood enrichment |
+| `run_ligrec` | `true` | `sq.gr.ligrec` via OmniPath (requires internet) |
+| `ligrec_n_perms` | `1000` | Permutations for ligrec |
+| `ligrec_organism` | `"human"` | `"human"` or `"mouse"` |
+| `run_svg_gsea` | `true` | `gseapy.prerank` on Moran's I ranked gene list |
+| `svg_gsea_gene_sets` | `"GO_Biological_Process_2023"` | Enrichr gene set collection name or path to .gmt |
+| `svg_gsea_organism` | `"Human"` | `"Human"` or `"Mouse"` |
+| `dominant_celltype_key` | `"dominant_cell_type"` | obs column with dominant cell type per spot |
+| `n_jobs` | `4` | Parallel workers for analyses that support it |
 
 ---
 
@@ -702,32 +858,65 @@ python -m pytest tests/test_spatial_deconvolve.py::test_full_deconvolution_kuppe
 
 ---
 
+### `test_spatial_downstream.py`
+**Location:** `tests/test_spatial_downstream.py`
+**Covers:** `spatial_downstream` + `generate_spatial_downstream_report`
+**Strategy:** All analyses run on a synthetic 60-spot AnnData fixture. Slow analyses (ligrec, GSEA) are tested as individual units; co-occurrence and nhood_enrichment use squidpy on the minimal graph.
+
+Key test groups:
+- Import smoke test (module + report callable)
+- `inplace=True/False` behaviour (object identity check)
+- `TypeError` on non-AnnData input
+- All analyses skip gracefully on bare AnnData (no deconvolution, no moranI)
+- Region clustering: `obs["region_cluster"]` present, dtype is category, `n_regions ≥ 1`
+- Cell-type expression: `uns["celltype_marker_genes"]` is dict, genes per cell type ≤ `n_marker_genes`
+- Neighbourhood enrichment: `uns["dominant_cell_type_nhood_enrichment"]` present with `"zscore"` key
+- Co-occurrence: `uns["dominant_cell_type_co_occurrence"]` present
+- Cell-type SVGs: `uns["celltype_svg"]` is dict (squidpy required; skipped if absent)
+- Provenance structure: `module`, `timestamp`, `params`, `analyses` all present
+- Report raises `ValueError` when `uns["omicsage_spatial_downstream"]` absent
+- Report generates valid HTML with expected section headings
+
+---
+
 ## 8. AnnData State Reference
 
 The table below shows the complete state of `adata` after each pipeline step.
 
-| Key | After ingest | After QC | After reduce | After cluster | After deconvolve |
-|-----|:---:|:---:|:---:|:---:|:---:|
-| `X` | raw counts | raw counts | normalized+log1p | normalized+log1p | normalized+log1p |
-| `layers["counts"]` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obsm["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `uns["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obs["total_counts"]` | — | ✅ | ✅ | ✅ | ✅ |
-| `obs["n_genes_by_counts"]` | — | ✅ | ✅ | ✅ | ✅ |
-| `obs["pct_counts_mt"]` | — | ✅ | ✅ | ✅ | ✅ |
-| `obs["qc_pass"]` | — | ✅ | ✅ | ✅ | ✅ |
-| `var["highly_variable"]` | — | — | ✅ | ✅ | ✅ |
-| `obsm["X_pca"]` | — | — | ✅ | ✅ | ✅ |
-| `obsp["spatial_connectivities"]` | — | — | ✅ | ✅ | ✅ |
-| `obs["spatial_cluster"]` | — | — | — | ✅ | ✅ |
-| `uns["moranI"]` | — | — | — | ✅ (if run_svg) | ✅ (if run_svg) |
-| `obsm["q05_cell_abundance_w_sf"]` | — | — | — | — | ✅ (if ref provided) |
-| `obs[cell_type columns]` | — | — | — | — | ✅ (if ref provided) |
-| `uns["omicsage_spatial_ingest"]` | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_qc"]` | — | ✅ | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_reduce"]` | — | — | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_cluster"]` | — | — | — | ✅ | ✅ |
-| `uns["omicsage_spatial_deconvolve"]` | — | — | — | — | ✅ |
+| Key | After ingest | After QC | After reduce | After cluster | After deconvolve | After downstream |
+|-----|:---:|:---:|:---:|:---:|:---:|:---:|
+| `X` | raw counts | raw counts | normalized+log1p | normalized+log1p | normalized+log1p | normalized+log1p |
+| `layers["counts"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obsm["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["total_counts"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["n_genes_by_counts"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["pct_counts_mt"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["qc_pass"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `var["highly_variable"]` | — | — | ✅ | ✅ | ✅ | ✅ |
+| `obsm["X_pca"]` | — | — | ✅ | ✅ | ✅ | ✅ |
+| `obsp["spatial_connectivities"]` | — | — | ✅ | ✅ | ✅ | ✅ |
+| `obs["spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ |
+| `uns["moranI"]` | — | — | — | ✅ (if run_svg) | ✅ | ✅ |
+| `obsm["q05_cell_abundance_w_sf"]` | — | — | — | — | ✅ (if ref) | ✅ (if ref) |
+| `obs[cell_type columns]` | — | — | — | — | ✅ (if ref) | ✅ (if ref) |
+| `obs["region_cluster"]` | — | — | — | — | — | ✅ (if ref) |
+| `obsm["X_umap_celltype"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["celltype_marker_genes"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["celltype_svg"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["*_nhood_enrichment"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["*_co_occurrence"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["*_ligrec"]` | — | — | — | — | — | ✅ (if ref) |
+| `uns["svg_gsea"]` | — | — | — | — | — | ✅ |
+| `uns["omicsage_spatial_ingest"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_qc"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_reduce"]` | — | — | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_deconvolve"]` | — | — | — | — | ✅ | ✅ |
+| `uns["omicsage_spatial_downstream"]` | — | — | — | — | — | ✅ |
+
+`*` = `dominant_celltype_key` prefix (default: `dominant_cell_type`).
+`if ref` = requires `ref_adata` to have been passed to `spatial_deconvolve`; all downstream deconvolution-dependent analyses skip gracefully if absent.
 
 ---
 
@@ -748,3 +937,10 @@ The table below shows the complete state of `adata` after each pipeline step.
 | Annotation map | Optional, no hardcoded cluster→celltype maps | Cluster numbering is non-deterministic across runs |
 | `inplace` default | `False` | Safe default; avoids unexpected mutation |
 | Report structure | `<header>/<main>/<footer>` with `<section>` blocks | Matches RNA pipeline exactly; required for combined report tab extraction |
+| Region clustering graph | `key_added="neighbors_celltype"` in `sc.pp.neighbors` | Prevents overwriting gene-expression KNN; Leiden and UMAP for region clusters read this graph explicitly |
+| UMAP key for region clusters | `obsm["X_umap_celltype"]` (not `X_umap`) | Avoids overwriting any gene-expression UMAP from earlier steps; original `X_umap` saved and restored |
+| Cell-type SVG spatial graph | Recomputed per subset with `sq.gr.spatial_neighbors` | The original `obsp["spatial_connectivities"]` is invalid after spot subsetting |
+| SVG GSEA p-values | `n_perms=None` (analytical) for per-subset Moran's I | Speed; running 1000 permutations × n_cell_types is prohibitive in a pipeline |
+| ligrec gene symbol swap | Temporary copy with `var_names = var["feature_name"]` | OmniPath matches gene symbols; ENSEMBL IDs in `var_names` after ingest would match nothing. Copy discarded after result is transferred back |
+| GSEA dtype sanitisation | `_sanitize_gsea_df()` before `uns["svg_gsea"]` assignment | gseapy returns numeric columns as `object` dtype; `write_h5ad` crashes trying to serialise floats as HDF5 variable-length strings |
+| Downstream predecessor | `"cluster"` (minimum); `resolve_input` upgrades to deconvolve if available | Allows downstream to run on any dataset, even without a scRNA-seq reference; Tier 2 analyses skip gracefully |

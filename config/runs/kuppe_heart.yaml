@@ -8,7 +8,9 @@
 #   snRNA:   https://figshare.com/ndownloader/files/39347573
 
 dataset_id: kuppe_heart
-output_dir: outputs/kuppe_heart
+paths:
+  output_dir: data/processed/kuppe_heart
+  reports_dir: reports/kuppe_heart
 
 spatial:
   source: data/benchmark/kuppe_visium_human_heart_2022_control.h5ad
@@ -50,8 +52,8 @@ spatial:
     ref_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
     
     # --- NEW: method selection ---
-    method: nnls                    # "nnls" (default, fast), "cell2location", or "none"
-    per_sample: false               # cell2location only — loop over library_key
+    method: cell2location           # "nnls" (default, fast), "cell2location", or "none"
+    per_sample: true               # cell2location only — loop over library_key
     library_key: null               # null = auto-detect from ingest provenance
     
     # --- Shared by both methods ---
@@ -69,14 +71,15 @@ spatial:
       - assay
     N_cells_per_location: 8
     detection_alpha: 20
-    max_epochs_ref: 50              # was 50 — kept as testing value
-    max_epochs_st: 50               # was 50 — production should be 30000
-    batch_size_ref: 2500
+    max_epochs_ref: 10              # was 50 — kept as testing value
+    max_epochs_st: 10               # was 50 — production should be 30000
+    batch_size_ref: 2000
     batch_size_st: null             # null = full data; set 2048 to save memory
-    num_samples_posterior: 200      # NEW: was 1000, reduced for memory
+    num_samples_posterior: 200      # was 1000, reduced for memory
     cell_count_cutoff: 5
     cell_percentage_cutoff2: 0.03
     nonz_mean_cutoff: 1.12
+    log_every_n_epochs: 5           # print more often for short runs (50 epochs)
 
 
   downstream:

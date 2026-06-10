@@ -186,6 +186,7 @@ def spatial_downstream(
     # 0. Region clustering from cell type abundance
     # ------------------------------------------------------------------ #
     if run_region_clustering:
+        print("  [downstream] 0/6 region clustering ...", flush=True)
         result = _run_region_clustering(
             adata, region_resolution, region_n_neighbors
         )
@@ -200,6 +201,7 @@ def spatial_downstream(
     # 1. Cell-type specific gene expression (Spearman correlation)
     # ------------------------------------------------------------------ #
     if run_celltype_expression:
+        print("  [downstream] 1/6 cell-type expression ...", flush=True)
         result = _run_celltype_expression(
             adata, cell_types, n_marker_genes
         )
@@ -214,6 +216,7 @@ def spatial_downstream(
     # 2. Cell-type specific SVGs
     # ------------------------------------------------------------------ #
     if run_celltype_svg:
+        print("  [downstream] 2/6 cell-type SVGs ...", flush=True)
         result = _run_celltype_svg(
             adata, cell_types, svg_n_genes, n_jobs
         )
@@ -228,6 +231,7 @@ def spatial_downstream(
     # 3. Co-occurrence
     # ------------------------------------------------------------------ #
     if run_co_occurrence:
+        print("  [downstream] 3/6 co-occurrence ...", flush=True)
         result = _run_co_occurrence(
             adata, dominant_celltype_key, co_occurrence_interval, n_jobs
         )
@@ -239,6 +243,7 @@ def spatial_downstream(
     # 4. Neighbourhood enrichment
     # ------------------------------------------------------------------ #
     if run_nhood_enrichment:
+        print("  [downstream] 4/6 neighbourhood enrichment ...", flush=True)
         result = _run_nhood_enrichment(
             adata, dominant_celltype_key, n_perms_nhood, n_jobs
         )
@@ -250,6 +255,7 @@ def spatial_downstream(
     # 5. Ligand-receptor communication
     # ------------------------------------------------------------------ #
     if run_ligrec:
+        print("  [downstream] 5/6 ligand-receptor ...", flush=True)
         result = _run_ligrec(
             adata, dominant_celltype_key, ligrec_n_perms, ligrec_organism, n_jobs
         )
@@ -261,6 +267,7 @@ def spatial_downstream(
     # 6. SVG pathway enrichment
     # ------------------------------------------------------------------ #
     if run_svg_gsea:
+        print("  [downstream] 6/6 SVG pathway enrichment ...", flush=True)
         result = _run_svg_gsea(
             adata, svg_gsea_gene_sets, svg_gsea_organism, n_jobs
         )
@@ -282,10 +289,14 @@ def spatial_downstream(
 
 
 def _get_cell_types(adata: ad.AnnData, dominant_celltype_key: str) -> list[str]:
-    """Return list of cell type names from deconvolution provenance."""
+    """Return list of cell type names from deconvolution provenance.
+
+    cell_type_names may be deserialized from h5ad as a numpy array — coerce to
+    list before any truth-value check to avoid the ambiguous array bool error.
+    """
     deconv_prov = adata.uns.get("omicsage_spatial_deconvolve", {})
-    cell_types = deconv_prov.get("outputs", {}).get("cell_type_names", [])
-    if cell_types:
+    cell_types = list(deconv_prov.get("outputs", {}).get("cell_type_names", []))
+    if len(cell_types) > 0:
         return [ct for ct in cell_types if ct in adata.obs.columns]
 
     # Fallback: numeric obs columns that are not standard QC / pipeline keys
@@ -601,6 +612,43 @@ def _run_nhood_enrichment(
 # ---------------------------------------------------------------------------
 
 
+def _serialize_ligrec_uns(adata: ad.AnnData, ligrec_key: str) -> None:
+    """Serialize squidpy ligrec uns entry to h5ad-compatible format.
+
+    sq.gr.ligrec stores three DataFrames under uns[ligrec_key]:
+        means     — mean expression per LR pair per cell-type pair
+        pvalues   — permutation p-values (same shape)
+        metadata  — LR pair metadata (gene names, categories)
+
+    Each DataFrame has a pd.MultiIndex on both axes (LR pairs × cell-type pairs)
+    which anndata cannot write to HDF5. We serialize each DataFrame as a dict:
+        {
+          "<key>_data":    df.to_json(orient="records"),   # row data
+          "<key>_columns": json.dumps([str(c) for c in df.columns]),
+          "<key>_index":   json.dumps([str(i) for i in df.index]),
+        }
+    This round-trips perfectly regardless of shape.
+    """
+    import json as _json
+    raw = adata.uns[ligrec_key]
+    serialized: dict = {}
+    for key, val in raw.items():
+        if isinstance(val, pd.DataFrame):
+            df = val.copy()
+            # Stringify both axes before serializing
+            df.index   = [str(i) for i in df.index]
+            df.columns = [str(c) for c in df.columns]
+            serialized[f"{key}_data"]    = df.to_json(orient="records")
+            serialized[f"{key}_columns"] = _json.dumps(list(df.columns))
+            serialized[f"{key}_index"]   = _json.dumps(list(df.index))
+        else:
+            try:
+                serialized[key] = val
+            except Exception:
+                serialized[key] = str(val)
+    adata.uns[ligrec_key] = serialized
+
+
 def _run_ligrec(
     adata: ad.AnnData,
     dominant_celltype_key: str,
@@ -652,6 +700,8 @@ def _run_ligrec(
 
         ligrec_key = f"{dominant_celltype_key}_ligrec"
         has_result = ligrec_key in adata.uns
+        if has_result:
+            _serialize_ligrec_uns(adata, ligrec_key)
         return {"skipped": not has_result, "reason": "no result stored" if not has_result else None}
 
     except Exception as e:
@@ -661,6 +711,28 @@ def _run_ligrec(
 # ---------------------------------------------------------------------------
 # Analysis 6 — SVG pathway enrichment
 # ---------------------------------------------------------------------------
+
+# gseapy.prerank returns these columns as object dtype in most versions;
+# they must be cast to float64 before anndata can serialise them to h5ad.
+_GSEA_FLOAT_COLS = {"ES", "NES", "NOM p-val", "FDR q-val", "FWER p-val"}
+
+
+def _sanitize_gsea_df(df: pd.DataFrame) -> pd.DataFrame:
+    """Coerce gseapy res2d to h5ad-serialisable dtypes.
+
+    Numeric columns (ES, NES, p-values) are cast to float64.
+    All other columns (Term, Tag %, Lead_genes, …) are cast to str.
+    This prevents the ``TypeError: Can't implicitly convert non-string
+    objects to strings`` crash when anndata writes object-dtype columns
+    to HDF5.
+    """
+    df = df.copy()
+    for col in df.columns:
+        if col in _GSEA_FLOAT_COLS:
+            df[col] = pd.to_numeric(df[col], errors="coerce").astype("float64")
+        else:
+            df[col] = df[col].astype(str)
+    return df
 
 
 def _run_svg_gsea(
@@ -704,14 +776,16 @@ def _run_svg_gsea(
             verbose=False,
         )
 
-        adata.uns["svg_gsea"] = enr.res2d
-        n_pathways = len(enr.res2d)
+        # Sanitise before storing: gseapy returns numeric cols as object dtype
+        # which anndata cannot write to HDF5 without explicit coercion.
+        gsea_df = _sanitize_gsea_df(enr.res2d)
+        adata.uns["svg_gsea"] = gsea_df
+
+        n_pathways = len(gsea_df)
         fdr_col = next(
-            (c for c in ["FDR q-val", "fdr"] if c in enr.res2d.columns), None
+            (c for c in ["FDR q-val", "fdr"] if c in gsea_df.columns), None
         )
-        n_sig = (
-            int((enr.res2d[fdr_col] < 0.05).sum()) if fdr_col else 0
-        )
+        n_sig = int((gsea_df[fdr_col] < 0.05).sum()) if fdr_col else 0
 
         return {
             "skipped": False,
