@@ -73,9 +73,9 @@ _PAGE_CSS = """
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #f8f9ff; }
     .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
-    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap { flex: 1 1 420px; max-width: 100%; }
     .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
-    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; cursor: zoom-in; display: block; }
     footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
     footer a { color: #0f3460; text-decoration: none; }
 """
@@ -108,6 +108,17 @@ def _render_page(title: str, header_subtitle: str, sections: list[str], timestam
 # ---------------------------------------------------------------------------
 # Figure helpers
 # ---------------------------------------------------------------------------
+
+
+def _squidpy_panel_figsize(adata, per_panel=(6, 6), max_total_w=18):
+    """Cap squidpy scatter figsize for multi-sample (library_key) layouts."""
+    library_key = _get_library_key(adata)
+    if library_key and library_key in adata.obs.columns:
+        n = adata.obs[library_key].nunique()
+    else:
+        n = 1
+    w = min(per_panel[0] * n, max_total_w)
+    return (w, per_panel[1])
 
 def _fig_to_b64(fig: plt.Figure) -> str:
     buf = BytesIO()
@@ -247,7 +258,7 @@ def _fig_clusters_on_tissue(
         return _squidpy_scatter_b64(
             adata, color=cluster_key,
             img_key=resolved, library_key=library_key,
-            title=f"Leiden clusters{suffix}", figsize=(6, 6),
+            title=f"Leiden clusters{suffix}", figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
         )
     except Exception as e:
         logger.warning("figure failed (%s): %s", __name__, e)
@@ -347,7 +358,7 @@ def _fig_top_svgs_on_tissue(
             b = _squidpy_scatter_b64(
                 adata, color=gene,
                 img_key=resolved, library_key=library_key,
-                title=title, figsize=(5, 5),
+                title=title, figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
             )
             if b:
                 b64s.append(b)
@@ -379,7 +390,11 @@ def _fig_top_svgs_on_tissue(
         rows = [_np.hstack(padded[r * ncols:(r + 1) * ncols]) for r in range(nrows)]
         grid = _np.vstack(rows)
 
-        fig2, ax2 = plt.subplots(figsize=(grid.shape[1] / 100, grid.shape[0] / 100))
+        TARGET_W = 1800
+        raw_w = grid.shape[1]
+        raw_h = grid.shape[0]
+        scale = min(1.0, TARGET_W / raw_w)
+        fig2, ax2 = plt.subplots(figsize=(raw_w * scale / 100, raw_h * scale / 100), dpi=100)
         ax2.imshow(grid)
         ax2.axis("off")
         suffix = " on H&E" if resolved else ""

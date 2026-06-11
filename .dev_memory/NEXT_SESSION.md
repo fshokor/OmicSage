@@ -1,328 +1,206 @@
-# NEXT_SESSION.md — Phase 7 Session 5
-# Spatial Transcriptomics: Downstream Analysis
-> Updated: June 2026
-> Previous session: Phase 7 Sessions 2–4 COMPLETE (reduce, cluster, deconvolve, reports, runner)
+# OmicSage — Next Session
+> Written: 2026-06-11
+> Phase: 7 extension — Spatial Imputation + New Format Support
 
 ---
 
 ## Session Context
 
-**Phase:** 7 — Spatial Transcriptomics
-**Session number:** 5 of 5 (final Phase 7 session)
-**Last things completed (Sessions 2–4):**
-  - `spatial_reduce.py`: normalize, HVG, PCA, spatial neighbours graph
-  - `spatial_cluster.py`: Leiden clustering + Moran's I SVGs
-  - `spatial_deconvolve.py`: cell2location deconvolution (graceful skip when no ref)
-  - `spatial_ingest.py` updated: ENSEMBL ID swap, layers["counts"] preservation, MT gene stripping
-  - All 4 spatial report files rewritten to match RNA `_render_page` / `<main>/<section>` pattern
-  - `spatial_combined_report.py`: tabbed combined report (identical UI to RNA combined_report.py)
-  - `run_spatial_pipeline.py`: full runner with --step / --from-step / --to-step / --force / checkpointing
-  - `config/runs/kuppe_heart.yaml`: Kuppe 2022 human heart config
-  - `tests/test_spatial_reduce.py`, `tests/test_spatial_cluster.py`, `tests/test_spatial_deconvolve.py`
+**Last thing completed this session:**
+- Fixed spatial combined report image presentation: lightbox click-to-expand,
+  `max-width: 100%` on `.fig-wrap`, `max-width: 1400px` tab panel, `cursor: zoom-in`
+  on all figures. Fixed `_stitch_panels` panoramic image bug (5582px wide → capped
+  at 1800px via `TARGET_W` scale factor). All 6 spatial report files updated.
+- Written `ai/manual_review/SPATIAL_MASTER_PROMPT.md` — 9-task spatial review
+  prompt following the same structure as RNA/CITE/Multiome master prompts.
 
-**Benchmark dataset:** Kuppe et al. 2022 human myocardial infarction (control samples)
-  - Visium: `data/benchmark/kuppe_visium_human_heart_2022_control.h5ad`
-  - snRNA-seq reference: `data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad`
-  - cell_type_key: `cell_type_original`, batch_key_ref: `donor_id`, batch_key_st: `patient`
+**Files modified this session:**
+```
+reports/templates/spatial/spatial_combined_report.py   ← lightbox + CSS fixes
+reports/templates/spatial/spatial_qc_report.py         ← CSS max-width fix
+reports/templates/spatial/spatial_reduce_report.py     ← CSS max-width fix
+reports/templates/spatial/spatial_cluster_report.py    ← CSS + stitch figsize fix
+reports/templates/spatial/spatial_deconvolve_report.py ← CSS + stitch figsize fix
+reports/templates/spatial/spatial_downstream_report.py ← CSS max-width fix
+ai/manual_review/SPATIAL_MASTER_PROMPT.md              ← NEW
+```
 
-**Current test count:** 1378 passed, 57 skipped (verified end of Session 4)
-
----
-
-## Baseline Verification
-
+**Verify last session works:**
 ```bash
 conda activate omicsage
-cd ~/OmicSage
-python -m pytest tests/ -q --tb=short 2>&1 | tail -5
+python -m pytest tests/test_spatial_*.py -q --tb=short
 ```
-
-Expected: 1378 passed, 57 skipped. Confirm before writing any new code.
-
-Also verify spatial imports:
-```bash
-python -c "
-from pipeline.modules.spatial.spatial_ingest import spatial_ingest
-from pipeline.modules.spatial.spatial_reduce import spatial_reduce
-from pipeline.modules.spatial.spatial_cluster import spatial_cluster
-from pipeline.modules.spatial.spatial_deconvolve import spatial_deconvolve
-print('all spatial imports OK')
-"
-```
+Confirm baseline test count before writing any new code.
 
 ---
 
-## Today's Goal — `spatial_downstream.py`
+## Two-Session Plan
 
-**Single deliverable:** one module covering all spatial downstream analyses,
-plus its report (`spatial_downstream_report.py`), tests, and runner update.
-
-This is the final Phase 7 session. After this, Phase 7 is complete.
+This is a two-session extension of Phase 7. Do ONE session at a time.
 
 ---
 
-## Analyses to implement (all in one file)
+## Session A (THIS SESSION) — Spatial Imputation
 
-### 1. Cell-type specific gene expression in spatial context
-- For each cell type from deconvolution, identify genes whose expression
-  correlates with that cell type's abundance across spots
-- Method: Spearman correlation between `obs[cell_type]` abundance and
-  gene expression across spots
-- Output: `uns["celltype_marker_genes"]` — dict of cell_type → top 20 correlated genes
-- Requires: `obsm["q05_cell_abundance_w_sf"]` (from deconvolution)
-- Graceful skip if deconvolution was skipped
+### Goal
+Build `spatial_impute.py` — impute full transcriptome onto Visium spots using
+a paired scRNA-seq reference. This is the missing chapter from sc-best-practices.
 
-### 2. Spatially variable genes per cell type (cell-type-specific SVGs)
-- Filter Moran's I results to spots enriched for each cell type
-  (spots where cell type abundance > median abundance for that cell type)
-- Run `sq.gr.spatial_autocorr(mode="moran")` on the enriched subset
-- Output: `uns["celltype_svg"]` — dict of cell_type → DataFrame of SVGs
-- Requires: `uns["moranI"]` (from clustering) + deconvolution abundances
-- Graceful skip if either is absent
+### Deliverables (all three together, in one session)
+1. `pipeline/modules/spatial/spatial_impute.py`
+2. `reports/templates/spatial/spatial_impute_report.py`
+3. `tests/test_spatial_impute.py`
+4. Update `run_spatial_pipeline.py` — add `"impute"` step
+5. Update `reports/spatial_combined_report.py` — add Impute tab to TAB_REGISTRY
+6. Update `config/runs/kuppe_heart.yaml` — add impute block
 
-### 3. Spatial co-occurrence (`sq.gr.co_occurrence`)
-- Which cell types tend to co-localise spatially at different distance ranges
-- Output: stored in `uns["co_occurrence"]` by squidpy
-- Report: heatmap of co-occurrence scores at a reference distance
-- Requires: deconvolution cell type labels in `obs["dominant_cell_type"]`
-- Graceful skip if dominant_cell_type absent
+### Method Stack
+- **Primary: Tangram** (`tangram-sc` on PyPI) — optimal transport sc→spatial mapping
+- **Opt-in: gimVI** via `scvi-tools` — deep generative model, slower, higher memory
+- Install: `pip install tangram-sc` (add to `environment.yml` + `requirements-ci.txt`)
 
-### 4. Cell type neighbourhood enrichment (`sq.gr.nhood_enrichment`)
-- Which cell types are enriched in each other's neighbourhoods
-- Method: permutation test on spatial adjacency graph
-- Output: stored in `uns["nhood_enrichment"]` by squidpy
-- Report: heatmap of enrichment z-scores
-- Requires: `obs["dominant_cell_type"]` + `obsp["spatial_connectivities"]`
-
-### 5. Ligand-receptor communication (`sq.gr.ligrec`)
-- Which cell type pairs are likely communicating based on proximity + expression
-- Uses CellChatDB (human) via squidpy's built-in database
-- Output: stored in `uns["ligrec"]` by squidpy
-- Report: dot plot of top LR pairs by cell type pair
-- Requires: deconvolution cell type labels
-- Graceful skip if cell types absent
-
-### 6. Pathway enrichment on top SVGs (reuse gseapy)
-- Run GSEA on the ranked SVG list from Moran's I
-- Gene sets: GO Biological Process (human) via gseapy
-- Output: `uns["svg_gsea"]` — top enriched pathways
-- Requires: `uns["moranI"]`
-- Graceful skip if moranI absent
-
----
-
-## Function signature
-
+### Module API
 ```python
-def spatial_downstream(
-    adata: AnnData,
-    # Cell-type specific expression
-    run_celltype_expression: bool = True,
-    n_marker_genes: int = 20,
-    # Cell-type specific SVGs
-    run_celltype_svg: bool = True,
-    svg_n_genes: Optional[int] = None,
-    # Co-occurrence
-    run_co_occurrence: bool = True,
-    co_occurrence_interval: Optional[list] = None,  # default: squidpy auto
-    # Neighbourhood enrichment
-    run_nhood_enrichment: bool = True,
-    n_perms_nhood: int = 1000,
-    # Ligand-receptor
-    run_ligrec: bool = True,
-    ligrec_n_perms: int = 1000,
-    ligrec_organism: str = "human",      # "human" or "mouse"
-    # Pathway enrichment on SVGs
-    run_svg_gsea: bool = True,
-    svg_gsea_gene_sets: str = "GO_Biological_Process_2023",
-    svg_gsea_organism: str = "Human",
-    # Cell type column (from deconvolution)
-    dominant_celltype_key: str = "dominant_cell_type",
-    # General
-    n_jobs: int = 1,
+def spatial_impute(
+    adata_spatial: AnnData,      # Visium AnnData — post cluster checkpoint
+    adata_sc: AnnData,           # paired scRNA-seq reference (annotated)
+    method: str = "tangram",     # "tangram" | "gimvi"
+    cell_type_key: str = "cell_type",
+    n_top_genes: int = 2000,
+    device: str = "cpu",
     inplace: bool = False,
 ) -> tuple[AnnData, dict]:
+    # Output:
+    #   adata.obsm["imputed_expression"]  — DataFrame (spots × n_top_genes)
+    #   adata.uns["omicsage_impute"]      — provenance dict
 ```
 
-All `run_*` flags are True by default but each analysis gracefully skips
-if its required inputs are absent (moranI, deconvolution abundances, etc.)
-and records `skipped=True` in provenance.
-
----
-
-## Output keys written to AnnData
-
-```
-uns["celltype_marker_genes"]     dict: cell_type → list of top correlated genes
-uns["celltype_svg"]              dict: cell_type → DataFrame (Moran's I per subset)
-uns["co_occurrence"]             set by sq.gr.co_occurrence
-uns["nhood_enrichment"]          set by sq.gr.nhood_enrichment
-uns["ligrec"]                    set by sq.gr.ligrec
-uns["svg_gsea"]                  DataFrame: top enriched pathways from SVG list
-uns["omicsage_spatial_downstream"]  provenance dict
-```
-
----
-
-## Report content (`spatial_downstream_report.py`)
-
-Sections using the standard `_render_page` / `<main>/<section>` pattern:
-
-1. **Run Summary** — stat cards: n analyses run, n cell types, n SVGs tested
-2. **Cell-type marker genes** — table: top 10 correlated genes per cell type
-3. **Cell-type specific SVGs** — table: top 5 SVGs per cell type
-4. **Co-occurrence** — heatmap: cell type co-occurrence at reference distance
-5. **Neighbourhood enrichment** — heatmap: enrichment z-scores between cell types
-6. **Ligand-receptor interactions** — dot plot: top LR pairs
-7. **SVG pathway enrichment** — bar chart: top 10 enriched GO terms
-
-All sections gracefully show "not run / data not available" when skipped.
-
----
-
-## Files to create this session
-
-```
-pipeline/modules/spatial/spatial_downstream.py          ← new
-reports/templates/spatial/spatial_downstream_report.py  ← new
-tests/test_spatial_downstream.py                        ← new
-```
-
-Update:
-```
-run_spatial_pipeline.py   ← add step 6: downstream
-reports/spatial_combined_report.py  ← add tab for downstream report
-config/runs/kuppe_heart.yaml        ← add downstream section
-```
-
----
-
-## Pre-implementation research required
-
-Before writing any code, fetch and read:
-
-1. **sq.gr.co_occurrence API**
-   https://squidpy.readthedocs.io/en/stable/api/squidpy.gr.co_occurrence.html
-
-2. **sq.gr.nhood_enrichment API**
-   https://squidpy.readthedocs.io/en/stable/api/squidpy.gr.nhood_enrichment.html
-
-3. **sq.gr.ligrec API**
-   https://squidpy.readthedocs.io/en/stable/api/squidpy.gr.ligrec.html
-
-4. **sc-best-practices spatial downstream chapter**
-   https://www.sc-best-practices.org/spatial/spatially_variable_genes.html
-
----
-
-## Runner update
-
-Add step 6 to `run_spatial_pipeline.py`:
-
-```
-STEP_ORDER = ["ingest", "qc", "reduce", "cluster", "deconvolve", "downstream"]
-STEP_OUTPUT["downstream"] = "06_downstream.h5ad"
-STEP_REPORT["downstream"] = "spatial_downstream_report.html"
-STEP_PREDECESSOR["downstream"] = "deconvolve"
-```
-
-Config section to add to `kuppe_heart.yaml`:
+### Config block to add
 ```yaml
-  downstream:
-    run_celltype_expression: true
-    n_marker_genes: 20
-    run_celltype_svg: true
-    run_co_occurrence: true
-    run_nhood_enrichment: true
-    run_ligrec: true
-    ligrec_organism: "human"
-    run_svg_gsea: true
-    svg_gsea_gene_sets: "GO_Biological_Process_2023"
-    svg_gsea_organism: "Human"
-    n_jobs: 4
+spatial:
+  impute:
+    enabled: true
+    method: tangram            # tangram | gimvi
+    sc_reference_path: ""      # path to paired scRNA-seq .h5ad
+    n_top_genes: 2000
+    cell_type_key: "cell_type"
+    device: cpu
 ```
 
+### Report sections (`spatial_impute_report.py`)
+1. **Run Summary** — stat cards: n_genes_imputed, method, mapping_score (mean),
+   n_spots, sc_reference (filename)
+2. **Mapping Score Distribution** — histogram of per-spot Tangram mapping scores
+   (quality metric: spots with score < 0.1 are poorly mapped)
+3. **Top Imputed Genes on H&E** — spatial scatter of top 5 imputed genes by
+   variance (the visual payoff — genes not in the original HVG set)
+4. **Imputation Validation** — scatter plot: measured vs imputed expression for
+   the genes present in both datasets (Spearman r in title)
+
+### Runner step to add in `run_spatial_pipeline.py`
+- Step name: `"impute"`
+- Predecessor: `"cluster"` (does not require deconvolution)
+- Skip condition: `config.get("spatial", {}).get("impute", {}).get("enabled", False) is False`
+  OR `sc_reference_path` is empty/null
+- Input checkpoint: cluster h5ad
+- Output checkpoint: impute h5ad
+
+### Test strategy (`test_spatial_impute.py`)
+- Mock tangram import for unit tests (avoid requiring GPU/heavy install in CI)
+- Test with tiny synthetic spatial AnnData (20 spots × 50 genes) +
+  tiny sc reference (100 cells × 50 genes, 3 cell types)
+- Test: output contract — `obsm["imputed_expression"]` present, correct shape
+- Test: provenance in `uns["omicsage_impute"]`
+- Test: `inplace=False` does not mutate input
+- Test: `method="gimvi"` raises `ImportError` gracefully when scvi-tools absent
+- Test: skips cleanly when `sc_reference_path` is null in config
+- Test: report renders without error on mock data
+- **Do NOT require real Tangram install for CI** — use `pytest.importorskip`
+  pattern or mock
+
+### Benchmark dataset note
+The Kuppe heart dataset has a paired snRNA-seq reference:
+`data/benchmark/kuppe_heart/snrna_ref.h5ad` (or equivalent).
+Use this for manual end-to-end validation after tests pass.
+If the paired reference is not yet downloaded, download it before starting:
+- Kuppe et al. 2022 supplementary data — snRNA-seq processed h5ad
+- GEO accession: GSE183852
+
 ---
 
-## Combined report update
+## Session B (NEXT SESSION AFTER A) — New Format Support
 
-Add to `TAB_REGISTRY` in `spatial_combined_report.py`:
-```python
-("spatial_downstream_report.html", "Downstream", "🔗"),
+### Goal
+Activate the Xenium and Visium HD stubs already in `spatial_ingest.py`.
+MERFISH and CODEX remain as `NotImplementedError` stubs.
+
+### Why these two formats
+- Visium HD: same 10x ecosystem, `sq.read.visium_hd()` reader exists, natural
+  upgrade from Visium, public benchmark datasets available
+- Xenium: most common new imaging-based platform, `sq.read.xenium()` reader
+  exists in squidpy, cell-level (not spot-level) data model
+
+### What changes per format
+
+| Format | Key difference | Pipeline impact |
+|--------|---------------|-----------------|
+| Visium HD | No H&E by default; binned 2/8/16µm | `bin_size` config param; QC min_counts threshold lower |
+| Xenium | Cell-level not spot-level; segmentation mask; transcripts.parquet | Cell-level QC; no `in_tissue` flag; different n_genes range |
+
+**Everything downstream of ingest is format-agnostic** — QC, reduce, cluster,
+deconvolve, impute all operate on the AnnData contract and need no changes.
+
+### Files to change (Session B only)
+```
+pipeline/modules/spatial/spatial_ingest.py   ← implement _load_visium_hd + _load_xenium
+tests/test_spatial_ingest_qc.py              ← stub tests → real tests
+config/runs/                                 ← new yaml per format
+SPATIAL_MODULE_DOCS.md                       ← format section updated
 ```
 
----
-
-## Key implementation notes
-
-- **sq.gr.co_occurrence** requires a cluster key (not continuous abundances).
-  Use `obs["dominant_cell_type"]` — the argmax cell type per spot written
-  by `spatial_deconvolve_report.py`. If absent, skip gracefully.
-
-- **sq.gr.nhood_enrichment** also requires a cluster key — same key.
-
-- **sq.gr.ligrec** requires gene symbols in var_names but after ingest
-  we swap var_names to ENSEMBL IDs. Use `var["feature_name"]` as the
-  gene symbol source and temporarily rename before ligrec call,
-  or check if `var["feature_name"]` exists and swap back.
-
-- **Cell-type-specific SVGs**: create a boolean mask per cell type
-  (`adata.obs[ct] > adata.obs[ct].median()`), subset adata to those spots,
-  run `sq.gr.spatial_autocorr` on the subset. The spatial neighbours graph
-  must be recomputed for the subset (smaller graph). Use n_perms=None
-  (analytical p-values) for speed.
-
-- **GSEA on SVGs**: the SVG gene list from `uns["moranI"]` is already
-  ranked by Moran's I score. Use `gseapy.prerank` with the ranked gene
-  list. Gene names must be symbols — same ENSEMBL/symbol swap issue as ligrec.
-
-- **Never densify** large sparse matrices. Cell-type expression correlation
-  uses column slicing on CSC format.
-
----
-
-## DECISIONS.md entries to add this session
-
-```markdown
-### Downstream: dominant_cell_type key
-- sq.gr.co_occurrence and sq.gr.nhood_enrichment require a categorical
-  cluster key, not continuous abundances.
-- We use obs["dominant_cell_type"] = argmax of q05_cell_abundance_w_sf.
-- This is written during spatial_deconvolve_report figure generation
-  (side effect). We promote it to a first-class output of spatial_deconvolve.py.
-
-### Downstream: gene symbol vs ENSEMBL ID
-- After ingest, var_names are ENSEMBL IDs; var["feature_name"] has symbols.
-- ligrec and GSEA require gene symbols.
-- Solution: pass genes=adata.var["feature_name"].tolist() to ligrec,
-  and build the GSEA ranked dict using feature_name as index.
-
-### Downstream: cell-type SVGs use analytical Moran's I
-- n_perms=None (analytical p-values) for speed.
-- Permutation testing available but slow; documented in config.
+### Config additions for Session B
+```yaml
+spatial:
+  source: "/path/to/data"
+  spatial_type: "auto"     # auto | visium | visium_hd | xenium | h5ad | benchmark
+  bin_size: 16             # Visium HD only: 2 | 8 | 16 µm
 ```
 
+### Benchmark datasets for Session B (download before starting)
+- **Visium HD:** 10x Genomics public dataset — Human Colorectal Cancer
+  https://www.10xgenomics.com/datasets (search "Visium HD")
+- **Xenium:** 10x Genomics public dataset — Human Breast Cancer
+  https://www.10xgenomics.com/datasets (search "Xenium")
+Both are free to download without account.
+
+### Pre-Session B research step (mandatory)
+Before writing any code for Xenium or Visium HD loaders, fetch the squidpy
+source for both readers:
+- `sq.read.visium_hd` — https://github.com/scverse/squidpy/blob/main/src/squidpy/read/_read.py
+- `sq.read.xenium` — same file
+Read the actual parameter names. Do NOT guess. This is the same rule that
+caused bugs in Phase 7 Session 5 with `img_res_key` vs `img_key`.
+
 ---
 
-## Phase 7 completion checklist
+## Known Issues / Watch Out For
 
-After this session, Phase 7 is complete. Tick these off before moving to Phase 8:
-
-- [ ] All 6 spatial steps run end-to-end on Kuppe data
-- [ ] Combined report shows all 5 tabs (QC, Reduce, Cluster, Deconvolve, Downstream)
-- [ ] cell2location full run completed (250 epochs ref + 30k epochs spatial)
-- [ ] Test count: expected ~1378 + ~45 new = ~1423 passed
-- [ ] `PROGRESS.md` updated: Phase 7 complete
-- [ ] `CURRENT_STATUS.md` updated
-- [ ] `DECISIONS.md` updated with all Phase 7 decisions
+- Tangram requires `torch` — confirm it is in `environment.yml` (it should be,
+  scvi-tools depends on it). If not, add before starting.
+- Tangram's `tg.pp_adatas()` mutates both input AnnData objects in place —
+  work on copies inside the module.
+- The Kuppe heart snRNA-seq reference may use `cell_type` or `cell_type_vote`
+  as the annotation column — check before passing `cell_type_key`.
+- `obsm["imputed_expression"]` is a DataFrame (genes as columns) — serialize
+  to checkpoint as JSON string (same pattern as other DataFrame obsm keys in
+  the spatial pipeline) to avoid h5py mixed-type errors.
 
 ---
 
-## Phase 8 preview (Streamlit no-code UI)
-
-After Phase 7, the next phase is the Streamlit interface. Key deliverables:
-- File upload (h5ad, Visium directory)
-- Config builder (guided form)
-- Pipeline progress tracking
-- Report viewer (embedded HTML)
-- Reference: `ui/app.py` stub already exists in repo
+## Memory Files to Update at End of Session A
+```
+.dev_memory/NEXT_SESSION.md    ← replace with Session B content
+.dev_memory/CURRENT_STATUS.md  ← add impute to spatial pipeline complete list
+.dev_memory/PROGRESS.md        ← tick spatial_impute.py
+SPATIAL_MODULE_DOCS.md         ← add imputation section
+```

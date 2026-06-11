@@ -206,7 +206,7 @@ def _spatial_scatter(adata, color_key, img_key: Optional[str] = None):
         return _squidpy_scatter_b64(
             adata, color=color_key,
             img_key=resolved, library_key=library_key,
-            title=title, figsize=(5, 5),
+            title=title, figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
         )
     except Exception as e:
         logger.warning("figure failed (%s): %s", __name__, e)
@@ -248,7 +248,7 @@ def _tissue_overview(adata, img_key: Optional[str]) -> Optional[str]:
             b64 = _squidpy_scatter_b64(
                 adata, color=col,
                 img_key=resolved, library_key=library_key,
-                title=title, figsize=(5, 5),
+                title=title, figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
             )
             if b64:
                 b64s.append(b64)
@@ -274,8 +274,11 @@ def _tissue_overview(adata, img_key: Optional[str]) -> Optional[str]:
                 a = _np.vstack([a, pad])
             padded.append(a)
         combined = _np.hstack(padded)
-        fig2, ax2 = plt.subplots(figsize=(combined.shape[1] / 100,
-                                          combined.shape[0] / 100))
+        TARGET_W = 1800
+        raw_w = combined.shape[1]
+        raw_h = combined.shape[0]
+        scale = min(1.0, TARGET_W / raw_w)
+        fig2, ax2 = plt.subplots(figsize=(raw_w * scale / 100, raw_h * scale / 100), dpi=100)
         ax2.imshow(combined)
         ax2.axis("off")
         fig2.tight_layout(pad=0)
@@ -286,6 +289,54 @@ def _tissue_overview(adata, img_key: Optional[str]) -> Optional[str]:
 
 
 def _threshold_bar(outputs):
+    categories = [
+        ("Low counts",  outputs.get("removed_low_counts",  0)),
+        ("High counts", outputs.get("removed_high_counts", 0)),
+        ("Low genes",   outputs.get("removed_low_genes",   0)),
+        ("High genes",  outputs.get("removed_high_genes",  0)),
+        ("High MT%",    outputs.get("removed_high_mt",     0)),
+    ]
+    labels, values = zip(*categories)
+    fig, ax = plt.subplots(figsize=(6, 3))
+    colors = ["#e05252" if v > 0 else "#95a5a6" for v in values]
+    bars = ax.bar(labels, values, color=colors, edgecolor="white")
+    ax.set_ylabel("Spots removed")
+    ax.set_title("Spots removed per filter criterion", fontsize=10, fontweight="bold")
+    for bar, val in zip(bars, values):
+        if val > 0:
+            ax.text(bar.get_x() + bar.get_width() / 2,
+                    bar.get_height() + 0.5, str(val),
+                    ha="center", va="bottom", fontsize=9)
+    ax.tick_params(axis="x", labelsize=8)
+    ax.spines[["top", "right"]].set_visible(False)
+    fig.tight_layout()
+    return _fig_to_b64(fig)
+
+
+def _squidpy_panel_figsize(adata, per_panel=(6, 6), max_total_w=18):
+    """Return figsize for sq.pl.spatial_scatter accounting for multi-sample layouts.
+
+    When ``library_key`` is set squidpy creates one subplot per sample
+    side-by-side.  This helper caps the total figure width so the image
+    never becomes too wide to render usefully.
+
+    Parameters
+    ----------
+    adata : AnnData
+        Used to count distinct library keys if present.
+    per_panel : (float, float)
+        Desired (w, h) for a single panel, in inches.
+    max_total_w : float
+        Hard cap on total figure width in inches.
+    """
+    library_key = _get_library_key(adata)
+    if library_key and library_key in adata.obs.columns:
+        n = adata.obs[library_key].nunique()
+    else:
+        n = 1
+    w = min(per_panel[0] * n, max_total_w)
+    h = per_panel[1]
+    return (w, h)
     categories = [
         ("Low counts",  outputs.get("removed_low_counts",  0)),
         ("High counts", outputs.get("removed_high_counts", 0)),
@@ -505,9 +556,9 @@ _PAGE_CSS = """
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #f8f9ff; }
     .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
-    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap { flex: 1 1 420px; max-width: 100%; }
     .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
-    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; cursor: zoom-in; display: block; }
     footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
     footer a { color: #0f3460; text-decoration: none; }
 """

@@ -1,0 +1,92 @@
+# visium_hd_colorectal.yaml — OmicSage Phase 7 extension (Session B)
+# 10x Genomics Visium HD — Human Colorectal Cancer (public dataset)
+# https://www.10xgenomics.com/datasets (search "Visium HD Colorectal")
+#
+# Download instructions:
+#   - Navigate to the dataset page above
+#   - Download the "Space Ranger output" folder
+#   - Place the unzipped directory at the path below
+
+dataset_id: visium_hd_colorectal
+dataset_name: "Visium HD Human Colorectal Cancer"
+paths:
+  output_dir: data/processed/visium_hd_colorectal
+  reports_dir: reports/visium_hd_colorectal
+
+spatial:
+  source: data/benchmark/visium_hd_colorectal          # Space Ranger output dir
+  spatial_type: visium_hd                               # explicit — no auto-detect needed
+  load_images: true
+
+  ingest:
+    bin_size: 8              # 2 | 8 (default) | 16 µm — select binned resolution
+    library_key: null        # single-sample; no library_key needed
+
+  qc:
+    min_counts: 50           # Visium HD bins are smaller → lower count threshold
+    max_counts: 50000
+    min_genes: 50
+    max_genes: 8000
+    max_mt_pct: 25.0
+    mt_prefix: "MT-"
+    filter_spots: true
+
+  reduce:
+    n_top_genes: 3000
+    n_comps: 50
+    n_neighbors: 6
+    coord_type: null          # auto-detect (grid for Visium HD)
+    normalize_total: true
+    target_sum: 10000
+    log1p: true
+    flavor: seurat
+
+  cluster:
+    resolution: 0.5
+    n_neighbors: 15
+    n_pcs: 30
+    random_state: 0
+    run_svg: true
+    svg_n_genes: 3000
+    annotation_map: null
+
+  deconvolve:
+    ref_path: null            # set to a matched scRNA-seq .h5ad if available
+    method: nnls
+    per_sample: false
+    library_key: null
+    cell_type_key: cell_type
+    layer_ref: counts
+    n_jobs: 4
+    target_sum: 10000
+
+  downstream:
+    enabled: true
+    run_region_clustering: true
+    region_resolution: 0.5
+    region_n_neighbors: 15
+    run_celltype_expression: false  # disabled until deconvolve ref is set
+    n_marker_genes: 20
+    run_celltype_svg: false         # disabled until deconvolve ref is set
+    svg_n_genes: null
+    run_co_occurrence: true
+    run_nhood_enrichment: true
+    n_perms_nhood: 1000
+    run_ligrec: true
+    ligrec_n_perms: 1000
+    ligrec_organism: "human"
+    run_svg_gsea: true
+    svg_gsea_gene_sets: "GO_Biological_Process_2023"
+    svg_gsea_organism: "Human"
+    dominant_celltype_key: "dominant_cell_type"
+    n_jobs: 4
+
+  impute:
+    enabled: false            # set sc_reference_path and enabled: true when ref available
+    method: tangram
+    sc_reference_path: ""
+    n_top_genes: 2000
+    cell_type_key: "cell_type"
+    device: cpu
+    tangram_mode: clusters
+    max_cells_per_type: 500

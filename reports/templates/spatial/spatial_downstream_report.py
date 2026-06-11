@@ -545,6 +545,110 @@ def _deserialize_ligrec(raw: dict) -> dict:
     return result
 
 
+def _lr_bar_chart(means_df: "pd.DataFrame", pvals_df: "pd.DataFrame",
+                  n_top: int = 20, alpha: float = 0.001) -> Optional[str]:
+    """Option 2 — ranked horizontal bar chart of top LR pairs by -log10(p).
+
+    Rows = LR pairs (ligand_receptor label).
+    Colour = mean expression (viridis).
+    X-axis = -log10(min p-value across all cell type pairs).
+    Only pairs significant in at least one cell type combination are shown.
+    """
+    try:
+        import numpy as _np
+
+        # Flatten MultiIndex columns → per LR pair: min p-value and max mean
+        min_p  = pvals_df.min(axis=1)          # Series indexed by (ligand, receptor)
+        max_mu = means_df.max(axis=1)
+
+        sig = min_p[min_p < alpha].nsmallest(n_top)
+        if sig.empty:
+            return None
+
+        labels   = [f"{a} → {b}" for a, b in sig.index]
+        neg_logp = -_np.log10(sig.values.clip(1e-300))
+        colours  = max_mu.loc[sig.index].values
+
+        fig, ax = plt.subplots(figsize=(8, max(4, len(labels) * 0.32)))
+        sc = ax.barh(
+            range(len(labels)), neg_logp,
+            color=plt.cm.viridis(colours / (colours.max() or 1)),
+            edgecolor="none", height=0.7,
+        )
+        ax.set_yticks(range(len(labels)))
+        ax.set_yticklabels(labels, fontsize=8)
+        ax.invert_yaxis()
+        ax.set_xlabel(r"$-\log_{10}(p)$", fontsize=9)
+        ax.set_title(
+            f"Top {len(labels)} LR pairs  (p < {alpha})", fontsize=10, fontweight="bold"
+        )
+        ax.axvline(-_np.log10(alpha), color="#c0392b", lw=1, ls="--", alpha=0.6)
+        ax.spines[["top", "right"]].set_visible(False)
+
+        # Colorbar for mean expression
+        sm = plt.cm.ScalarMappable(
+            cmap="viridis",
+            norm=plt.Normalize(vmin=0, vmax=float(colours.max() or 1)),
+        )
+        sm.set_array([])
+        cbar = fig.colorbar(sm, ax=ax, shrink=0.5, pad=0.02)
+        cbar.set_label("max mean expr", fontsize=8)
+        cbar.ax.tick_params(labelsize=7)
+
+        fig.tight_layout()
+        return _fig_to_b64(fig)
+    except Exception as e:
+        logger.warning("[downstream_report] LR bar chart failed: %s", e)
+        return None
+
+
+def _lr_focused_dotplot(adata: "ad.AnnData", ligrec_key: str,
+                        dominant_celltype_key: str,
+                        pvals_df: "pd.DataFrame",
+                        n_cell_types: int = 6,
+                        alpha: float = 0.001) -> Optional[str]:
+    """Option 1 — focused squidpy dotplot restricted to the top N cell type pairs.
+
+    Selects the source and target cell types that participate in the most
+    significant interactions, then passes source_groups / target_groups to
+    sq.pl.ligrec so the column count stays manageable.
+    """
+    if not _SQUIDPY_AVAILABLE:
+        return None
+    try:
+        import numpy as _np
+
+        # Count significant interactions per source / target cell type
+        sig_mask = pvals_df < alpha                       # bool DataFrame, cols = (src, tgt)
+        src_counts = sig_mask.sum(axis=0).groupby(level=0).sum()
+        tgt_counts = sig_mask.sum(axis=0).groupby(level=1).sum()
+
+        top_src = src_counts.nlargest(n_cell_types).index.tolist()
+        top_tgt = tgt_counts.nlargest(n_cell_types).index.tolist()
+
+        if not top_src or not top_tgt:
+            return None
+
+        # Estimate a sensible figsize: ~1.2in per cell type column pair + 4in for labels
+        n_cols = min(len(top_src) * len(top_tgt), n_cell_types ** 2)
+        fig_w  = min(4 + n_cols * 0.9, 18)
+        fig_h  = min(4 + len(pvals_df) * 0.18, 14)
+
+        return _squidpy_fig_b64(
+            adata,
+            "ligrec",
+            figsize=(fig_w, fig_h),
+            cluster_key=dominant_celltype_key,
+            source_groups=top_src,
+            target_groups=top_tgt,
+            pvalue_threshold=0.05,
+            alpha=alpha,
+        )
+    except Exception as e:
+        logger.warning("[downstream_report] LR focused dotplot failed: %s", e)
+        return None
+
+
 def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -> str:
     info = prov.get("analyses", {}).get("ligrec", {})
     if info.get("skipped"):
@@ -554,65 +658,73 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
     if ligrec_key not in adata.uns:
         return _skip_section("Ligand-Receptor Communication", f"uns['{ligrec_key}'] not found")
 
-    # Deserialize ligrec into a temporary local copy so adata.uns is never
-    # mutated — the serialized format must be preserved for write_h5ad().
+    # Deserialize into a temporary local copy — never mutate adata.uns.
     raw = adata.uns[ligrec_key]
     if any(k.endswith("_data") for k in raw):
         import copy as _copy
-        adata = _copy.copy(adata)                  # shallow copy of AnnData
-        adata.uns = dict(adata.uns)                # detach uns dict
+        adata = _copy.copy(adata)
+        adata.uns = dict(adata.uns)
         adata.uns[ligrec_key] = _deserialize_ligrec(raw)
 
-    # Attempt to render the squidpy dotplot
-    b64 = None
-    if _SQUIDPY_AVAILABLE:
-        try:
-            b64 = _squidpy_fig_b64(
-                adata,
-                "ligrec",
-                figsize=(10, 6),
-                cluster_key=dominant_celltype_key,
-                pvalue_threshold=0.05,
-                alpha=0.0001,
-            )
-        except Exception as e:
-            logger.warning("[downstream_report] ligrec dotplot failed: %s", e)
+    ligrec_data = adata.uns[ligrec_key]
+    means_df = ligrec_data.get("means")
+    pvals_df = ligrec_data.get("pvalues")
 
-    # Fallback: summary table from raw means/pvalues
-    table_html = ""
-    try:
-        ligrec_data = adata.uns[ligrec_key]
-        means_df = ligrec_data.get("means")
-        pvals_df = ligrec_data.get("pvalues")
-
-        if means_df is not None and pvals_df is not None:
-            # Multi-index columns: (source_cluster, target_cluster)
-            # Flatten to find top significant interactions
-            n_sig = int((pvals_df < 0.05).values.sum())
-            table_html = (
-                f'<p class="note">'
-                f'{n_sig:,} significant ligand-receptor interactions at p &lt; 0.05 '
-                f'across {pvals_df.shape[1]} cell type pairs.</p>'
-            )
-    except Exception as e:
-        logger.warning("[downstream_report] ligrec table failed: %s", e)
-
-    fig_html = ""
-    if b64:
-        fig_html = (
-            '<div class="fig-grid">'
-            '<div class="fig-wrap" style="max-width:900px;"><h3>Significant LR pairs (p &lt; 0.001)</h3>'
-            + _img_tag(b64, "ligand-receptor dotplot")
-            + "</div></div>"
+    # ── Summary note ──────────────────────────────────────────────────────────
+    summary_html = ""
+    if means_df is not None and pvals_df is not None:
+        n_sig_001 = int((pvals_df < 0.001).values.sum())
+        n_sig_005 = int((pvals_df < 0.05).values.sum())
+        n_pairs   = pvals_df.shape[1]
+        summary_html = (
+            f'<p class="note">'
+            f'{n_sig_001:,} interactions at p&nbsp;&lt;&nbsp;0.001 '
+            f'({n_sig_005:,} at p&nbsp;&lt;&nbsp;0.05) '
+            f'across {n_pairs} cell-type pairs.</p>'
         )
+
+    # ── Plot 1: ranked bar chart (primary, always shown) ──────────────────────
+    bar_b64 = None
+    if means_df is not None and pvals_df is not None:
+        bar_b64 = _lr_bar_chart(means_df, pvals_df, n_top=20, alpha=0.001)
+
+    # ── Plot 2: focused squidpy dotplot (detail, lightbox-friendly) ───────────
+    dot_b64 = None
+    if means_df is not None and pvals_df is not None and _SQUIDPY_AVAILABLE:
+        dot_b64 = _lr_focused_dotplot(
+            adata, ligrec_key, dominant_celltype_key,
+            pvals_df, n_cell_types=6, alpha=0.001,
+        )
+
+    # ── Assemble HTML ─────────────────────────────────────────────────────────
+    figs_html = ""
+    if bar_b64 or dot_b64:
+        bar_wrap = dot_wrap = ""
+        if bar_b64:
+            bar_wrap = (
+                '<div class="fig-wrap">'
+                '<h3>Top 20 LR pairs by significance</h3>'
+                + _img_tag(bar_b64, "LR ranked bar chart")
+                + "</div>"
+            )
+        if dot_b64:
+            dot_wrap = (
+                '<div class="fig-wrap">'
+                '<h3>Focused dotplot — top 6 cell types (click to expand)</h3>'
+                + _img_tag(dot_b64, "LR focused dotplot")
+                + "</div>"
+            )
+        figs_html = f'<div class="fig-grid">{bar_wrap}{dot_wrap}</div>'
 
     return f"""
     <section>
       <h2>Ligand-Receptor Communication</h2>
       <p>Permutation test (CellPhoneDB-like) for ligand-receptor interactions between
-         spatially co-localised cell types, using the OmniPath database.</p>
-      {table_html}
-      {fig_html if fig_html else ""}
+         spatially co-localised cell types, using the OmniPath database.
+         Bar chart shows the top 20 pairs ranked by &minus;log&#8321;&#8320;(p).
+         Dotplot is restricted to the 6 cell types with the most significant interactions.</p>
+      {summary_html}
+      {figs_html}
     </section>
     """
 

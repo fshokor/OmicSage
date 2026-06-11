@@ -65,8 +65,8 @@ _AUTO_FINGERPRINTS: list[tuple] = []       # populated after function defs
 # Human-readable notes stored in provenance per technology
 _TECHNOLOGY_NOTES = {
     "visium":    "10x Visium — spot-based, ~55µm, whole transcriptome, multi-cell resolution",
-    "visium_hd": "10x Visium HD — spot-based, ~8µm, whole transcriptome, near single-cell",
-    "xenium":    "10x Xenium — imaging-based, single-cell resolution, targeted panel",
+    "visium_hd": "10x Visium HD — binned spot-based, 2/8/16µm, whole transcriptome, near single-cell resolution; loaded via spatialdata-io",
+    "xenium":    "10x Xenium — imaging-based, single-cell resolution, targeted gene panel; loaded via spatialdata-io",
     "merfish":   "Vizgen MERSCOPE/MERFISH — imaging-based, single-cell resolution, targeted panel",
     "codex":     "Akoya CODEX / IMC — imaging-based, single-cell resolution, protein markers",
     "h5ad":      "Pre-built AnnData loaded from disk (raw counts preserved; ENSEMBL IDs swapped if var['gene_ids'] present; MT genes stripped)",
@@ -118,6 +118,7 @@ def spatial_ingest(
     library_id: Optional[str] = None,
     library_key: Optional[str] = None,
     load_images: bool = True,
+    bin_size: int = 8,
     inplace: bool = False,
 ) -> tuple[ad.AnnData, dict]:
     """Load spatial transcriptomics data into a standard AnnData.
@@ -156,6 +157,9 @@ def spatial_ingest(
         renamed during concatenation).
     load_images
         Whether to load tissue images (Visium only).
+    bin_size
+        Bin size in µm for Visium HD. One of ``2``, ``8`` (default), or ``16``.
+        Selects the binned output resolution. Ignored for all other formats.
     inplace
         Ignored — always returns a new object. Present for API consistency.
 
@@ -202,6 +206,7 @@ def spatial_ingest(
         counts_file=counts_file,
         library_id=library_id,
         load_images=load_images,
+        bin_size=bin_size,
     )
 
     _validate_spatial_adata(adata, source_repr)
@@ -219,6 +224,7 @@ def spatial_ingest(
         "library_id": effective_library_id,
         "library_key": resolved_library_key,
         "load_images": load_images,
+        "bin_size": bin_size,
         "n_obs": int(adata.n_obs),
         "n_vars": int(adata.n_vars),
         "timestamp": datetime.now().isoformat(),
@@ -347,14 +353,14 @@ def _is_codex(src: str) -> bool:
 
 
 def _load_benchmark(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
     adata = sq.datasets.visium_hne_adata()
     return adata, library_id or "benchmark", "squidpy:visium_hne_adata"
 
 
 def _load_h5ad(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
     path = str(source)
     if not os.path.isfile(path):
@@ -409,7 +415,7 @@ def _load_h5ad(
 
 
 def _load_visium(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
     path = str(source)
     if not os.path.isdir(path):
@@ -428,27 +434,188 @@ def _load_visium(
 
 
 def _load_visium_hd(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=8
 ) -> tuple[ad.AnnData, str, str]:
-    raise NotImplementedError(
-        "Visium HD support is planned for a future OmicSage phase. "
-        "To load manually: use squidpy.read.visium_hd() (squidpy >= 1.5), "
-        "then save as .h5ad and reload with spatial_type='h5ad'."
-    )
+    """Load 10x Visium HD data via spatialdata-io.
+
+    Visium HD outputs a directory with binned_outputs/<square_NNNum>/
+    sub-directories for 2, 8, and 16 µm bins.  spatialdata-io reads the
+    whole directory and returns a SpatialData object whose tables dict is
+    keyed by bin-size string (e.g. ``"square_008um"``).
+
+    The AnnData table already has ``obsm["spatial"]`` set from the
+    ``pxl_col_in_fullres`` / ``pxl_row_in_fullres`` columns — no extra
+    coordinate extraction needed.
+
+    Parameters verified from:
+    https://github.com/scverse/spatialdata-io/blob/main/src/spatialdata_io/readers/visium_hd.py
+    """
+    try:
+        from spatialdata_io import visium_hd as _sio_visium_hd
+    except ImportError:
+        raise ImportError(
+            "spatialdata-io is required for Visium HD support. "
+            "Install with: pip install spatialdata-io"
+        )
+
+    path = str(source)
+    if not os.path.isdir(path):
+        raise NotADirectoryError(
+            f"Visium HD directory not found: {path!r}"
+        )
+
+    _bin = int(bin_size) if bin_size is not None else 8
+    # spatialdata-io table keys use zero-padded 3-digit µm: 002um, 008um, 016um
+    table_key = f"square_{_bin:03d}um"
+
+    import warnings
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore", FutureWarning)
+        sdata = _sio_visium_hd(
+            path,
+            bin_size=_bin,
+            load_segmentations_only=False,
+        )
+
+    if table_key not in sdata.tables:
+        available = list(sdata.tables.keys())
+        raise KeyError(
+            f"Visium HD: table for bin_size={_bin}µm (key={table_key!r}) not found. "
+            f"Available tables: {available}. "
+            f"Check that the binned_outputs/ directory contains this bin size."
+        )
+
+    adata = sdata.tables[table_key].copy()
+
+    # Ensure obsm["spatial"] is present — spatialdata-io sets it from
+    # pxl_col_in_fullres / pxl_row_in_fullres during table construction.
+    if "spatial" not in adata.obsm:
+        raise ValueError(
+            f"Visium HD AnnData table is missing obsm['spatial']. "
+            "This is unexpected — please file an issue at github.com/fshokor/OmicSage."
+        )
+
+    # Build a minimal uns["spatial"] contract so downstream spatial tools
+    # (squidpy, our reports) find what they expect.  Visium HD has a
+    # CytAssist + high-res image stored in sdata.images, but accessing them
+    # requires SpatialData image transforms.  We store a lightweight stub
+    # with just the scalefactors so spatial_scatter can still run.
+    lib_id = library_id or Path(path).name
+    if "spatial" not in adata.uns:
+        adata.uns["spatial"] = {}
+    if lib_id not in adata.uns["spatial"]:
+        adata.uns["spatial"][lib_id] = {
+            "images": {},       # no H&E image extracted (SpatialData format)
+            "scalefactors": {
+                "spot_diameter_fullres": _bin,
+                "tissue_hires_scalef": 1.0,
+                "tissue_lowres_scalef": 1.0,
+                "fiducial_diameter_fullres": _bin,
+            },
+            "metadata": {"bin_size_um": _bin},
+        }
+
+    if "counts" not in adata.layers:
+        adata.layers["counts"] = adata.X.copy()
+
+    _strip_alpha_from_images(adata)
+    return adata, lib_id, path
 
 
 def _load_xenium(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
-    raise NotImplementedError(
-        "Xenium support is planned for a future OmicSage phase. "
-        "To load manually: use squidpy.read.xenium(), "
-        "then save as .h5ad and reload with spatial_type='h5ad'."
+    """Load 10x Xenium data via spatialdata-io.
+
+    Xenium is a cell-level (not spot-level) imaging-based platform.
+    spatialdata-io reads the output directory and returns a SpatialData
+    object.  The AnnData table (key ``"table"``) already has
+    ``obsm["spatial"]`` populated from ``x_centroid`` / ``y_centroid``.
+
+    Key differences from Visium:
+    - Cell-level resolution (no ``in_tissue`` flag needed)
+    - No H&E image by default — DAPI morphology image is available
+    - Targeted gene panel (hundreds of genes, not whole transcriptome)
+    - No ``uns["spatial"][sample]["scalefactors"]`` in Visium format
+
+    Parameters verified from:
+    https://github.com/scverse/spatialdata-io/blob/main/src/spatialdata_io/readers/xenium.py
+    """
+    try:
+        from spatialdata_io import xenium as _sio_xenium
+    except ImportError:
+        raise ImportError(
+            "spatialdata-io is required for Xenium support. "
+            "Install with: pip install spatialdata-io"
+        )
+
+    path = str(source)
+    if not os.path.isdir(path):
+        raise NotADirectoryError(
+            f"Xenium directory not found: {path!r}"
+        )
+
+    sdata = _sio_xenium(
+        path,
+        cells_table=True,
+        # Load only the minimum needed: skip heavy segmentation masks
+        # and morphology images by default to keep memory usage low.
+        # Users who need them should load via spatialdata-io directly.
+        cells_boundaries=False,
+        nucleus_boundaries=False,
+        cells_labels=False,
+        nucleus_labels=False,
+        transcripts=False,
+        morphology_mip=False,
+        morphology_focus=False,
+        aligned_images=False,
     )
+
+    # The cells AnnData table is always keyed "table" in spatialdata-io xenium
+    table_key = "table"
+    if table_key not in sdata.tables:
+        available = list(sdata.tables.keys())
+        raise KeyError(
+            f"Xenium: expected table key {table_key!r} not found. "
+            f"Available: {available}."
+        )
+
+    adata = sdata.tables[table_key].copy()
+
+    # obsm["spatial"] is set by spatialdata-io from x_centroid / y_centroid.
+    # Verify it is present.
+    if "spatial" not in adata.obsm:
+        raise ValueError(
+            "Xenium AnnData table is missing obsm['spatial']. "
+            "This is unexpected — please file an issue at github.com/fshokor/OmicSage."
+        )
+
+    # Build a minimal uns["spatial"] contract.  Xenium has no scalefactors
+    # in the Visium sense, but downstream code (spatial_scatter, reports)
+    # checks for uns["spatial"].  We build a stub so validation passes.
+    lib_id = library_id or Path(path).name
+    if "spatial" not in adata.uns:
+        adata.uns["spatial"] = {}
+    if lib_id not in adata.uns["spatial"]:
+        adata.uns["spatial"][lib_id] = {
+            "images": {},           # morphology images not loaded by default
+            "scalefactors": {
+                "spot_diameter_fullres": 15.0,  # approx cell diameter in pixels
+                "tissue_hires_scalef": 1.0,
+                "tissue_lowres_scalef": 1.0,
+                "fiducial_diameter_fullres": 15.0,
+            },
+            "metadata": {"platform": "xenium"},
+        }
+
+    if "counts" not in adata.layers:
+        adata.layers["counts"] = adata.X.copy()
+
+    return adata, lib_id, path
 
 
 def _load_merfish(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
     raise NotImplementedError(
         "MERFISH/Vizgen support is planned for a future OmicSage phase. "
@@ -458,7 +625,7 @@ def _load_merfish(
 
 
 def _load_codex(
-    source: str, *, counts_file, library_id, load_images
+    source: str, *, counts_file, library_id, load_images, bin_size=None
 ) -> tuple[ad.AnnData, str, str]:
     raise NotImplementedError(
         "CODEX/IMC support is planned for a future OmicSage phase. "
@@ -475,8 +642,8 @@ _LOADER_REGISTRY = {
     "benchmark": (_load_benchmark, True),
     "h5ad":      (_load_h5ad,      True),
     "visium":    (_load_visium,    True),
-    "visium_hd": (_load_visium_hd, False),   # planned
-    "xenium":    (_load_xenium,    False),   # planned
+    "visium_hd": (_load_visium_hd, True),    # implemented (spatialdata-io)
+    "xenium":    (_load_xenium,    True),    # implemented (spatialdata-io)
     "merfish":   (_load_merfish,   False),   # planned
     "codex":     (_load_codex,     False),   # planned
 }

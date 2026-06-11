@@ -75,9 +75,9 @@ _PAGE_CSS = """
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #f8f9ff; }
     .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
-    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap { flex: 1 1 420px; max-width: 100%; }
     .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
-    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; cursor: zoom-in; display: block; }
     footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
     footer a { color: #0f3460; text-decoration: none; }
 """
@@ -110,6 +110,17 @@ def _render_page(title: str, header_subtitle: str, sections: list[str], timestam
 # ---------------------------------------------------------------------------
 # Figure helpers
 # ---------------------------------------------------------------------------
+
+
+def _squidpy_panel_figsize(adata, per_panel=(6, 6), max_total_w=18):
+    """Cap squidpy scatter figsize for multi-sample (library_key) layouts."""
+    library_key = _get_library_key(adata)
+    if library_key and library_key in adata.obs.columns:
+        n = adata.obs[library_key].nunique()
+    else:
+        n = 1
+    w = min(per_panel[0] * n, max_total_w)
+    return (w, per_panel[1])
 
 def _fig_to_b64(fig: plt.Figure) -> str:
     buf = BytesIO()
@@ -324,7 +335,7 @@ def _fig_top_hvg_on_tissue(adata: ad.AnnData, img_key: Optional[str]) -> Optiona
         return _squidpy_scatter_b64(
             adata, color=top_gene,
             img_key=resolved_img_key, library_key=library_key,
-            title=f"Top HVG: {top_gene}", figsize=(6, 6),
+            title=f"Top HVG: {top_gene}", figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
         )
     except Exception as e:
         logger.warning("figure failed (%s): %s", __name__, e)

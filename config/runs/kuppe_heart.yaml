@@ -52,7 +52,7 @@ spatial:
     ref_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
     
     # --- NEW: method selection ---
-    method: cell2location           # "nnls" (default, fast), "cell2location", or "none"
+    method: nnls           # "nnls" (default, fast), "cell2location", or "none"
     per_sample: true               # cell2location only — loop over library_key
     library_key: null               # null = auto-detect from ingest provenance
     
@@ -110,3 +110,13 @@ spatial:
     # General
     dominant_celltype_key: "dominant_cell_type"
     n_jobs: 4
+
+  impute:
+    enabled: true
+    method: tangram                     # tangram | gimvi
+    sc_reference_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
+    n_top_genes: 2000
+    cell_type_key: "cell_type_original"  # matches deconvolve.cell_type_key
+    device: cpu
+    tangram_mode: clusters              # clusters (memory-safe, default) | cells (GPU recommended)
+    max_cells_per_type: 500             # only used when tangram_mode: cells

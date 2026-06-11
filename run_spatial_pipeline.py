@@ -11,7 +11,7 @@ Usage
   python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step cluster
   python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step reduce --force
 
-Step order: ingest -> qc -> reduce -> cluster -> deconvolve -> downstream
+Step order: ingest -> qc -> reduce -> cluster -> deconvolve -> downstream -> impute
 
 Checkpointing: every step writes output_dir/NN_<step>.h5ad.
 If the file exists the step is skipped. Use --force to override.
@@ -47,7 +47,7 @@ os.chdir(root)
 sys.path.insert(0, str(root))
 
 
-STEP_ORDER = ["ingest", "qc", "reduce", "cluster", "deconvolve", "downstream"]
+STEP_ORDER = ["ingest", "qc", "reduce", "cluster", "deconvolve", "downstream", "impute"]
 
 STEP_OUTPUT = {
     "ingest":     "01_ingested.h5ad",
@@ -56,6 +56,7 @@ STEP_OUTPUT = {
     "cluster":    "04_clustered.h5ad",
     "deconvolve": "05_deconvolved.h5ad",
     "downstream": "06_downstream.h5ad",
+    "impute":     "07_imputed.h5ad",
 }
 
 STEP_PREDECESSOR = {
@@ -68,6 +69,8 @@ STEP_PREDECESSOR = {
     # columns); falls back to cluster checkpoint when deconvolve was skipped.
     # resolve_input() implements the fallback logic.
     "downstream": "deconvolve",
+    # impute reads from cluster checkpoint (does not require deconvolution).
+    "impute":     "cluster",
 }
 
 STEP_REPORT = {
@@ -76,6 +79,7 @@ STEP_REPORT = {
     "cluster":    "spatial_cluster_report.html",
     "deconvolve": "spatial_deconvolve_report.html",
     "downstream": "spatial_downstream_report.html",
+    "impute":     "spatial_impute_report.html",
 }
 
 
@@ -392,6 +396,94 @@ def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
     return out_path
 
 
+def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
+    import scanpy as sc
+    from pipeline.modules.spatial.spatial_impute import spatial_impute
+    from reports.templates.spatial.spatial_impute_report import generate_spatial_impute_report
+    out_path    = output_dir / STEP_OUTPUT["impute"]
+    report_path = reports_dir / STEP_REPORT["impute"]
+    dataset_id  = cfg.get("dataset_id", "spatial")
+
+    if out_path.exists() and not force:
+        print(f"  [impute] cached -> {out_path}")
+        return out_path
+
+    impute_cfg   = cfg.get("spatial", {}).get("impute", {})
+    sc_ref_path  = impute_cfg.get("sc_reference_path", None)
+    enabled      = impute_cfg.get("enabled", False)
+
+    # Skip cleanly when disabled or no reference path configured
+    if not enabled or not sc_ref_path:
+        reason = "disabled in config" if not enabled else "sc_reference_path not set"
+        print(f"  [impute] skipped: {reason}")
+        # Passthrough: copy cluster checkpoint as impute checkpoint so
+        # downstream steps can still resolve their predecessor.
+        adata = sc.read_h5ad(input_path)
+        adata.uns["omicsage_spatial_impute"] = {
+            "module":      "spatial_impute",
+            "timestamp":   "",
+            "method":      impute_cfg.get("method", "tangram"),
+            "skipped":     True,
+            "skip_reason": reason,
+            "outputs":     {},
+        }
+        generate_spatial_impute_report(
+            adata, str(report_path), dataset_id=dataset_id, sc_ref_label=""
+        )
+        adata.write_h5ad(out_path)
+        return out_path
+
+    print(f"  [impute] loading spatial: {input_path.name}")
+    adata = sc.read_h5ad(input_path)
+
+    print(f"  [impute] loading sc reference: {sc_ref_path!r}")
+    sc_adata = sc.read_h5ad(sc_ref_path)
+    print(f"  [impute] sc reference: {sc_adata.n_obs:,} cells x {sc_adata.n_vars:,} genes")
+
+    method            = impute_cfg.get("method", "tangram")
+    n_top_genes       = impute_cfg.get("n_top_genes", 2000)
+    cell_type_key     = impute_cfg.get("cell_type_key", "cell_type")
+    device            = impute_cfg.get("device", "cpu")
+    tangram_mode      = impute_cfg.get("tangram_mode", "clusters")
+    max_cells_per_type = impute_cfg.get("max_cells_per_type", 500)
+
+    print(f"  [impute] method: {method}, mode: {tangram_mode}, "
+          f"n_top_genes: {n_top_genes}, device: {device}")
+    adata, params = spatial_impute(
+        adata,
+        adata_sc=sc_adata,
+        method=method,
+        cell_type_key=cell_type_key,
+        n_top_genes=n_top_genes,
+        device=device,
+        tangram_mode=tangram_mode,
+        max_cells_per_type=max_cells_per_type,
+        inplace=True,
+    )
+
+    out = params.get("outputs", {})
+    if params.get("skipped"):
+        print(f"  [impute] skipped: {params.get('skip_reason')}")
+    else:
+        print(
+            f"  [impute] {out.get('n_genes_imputed', 0):,} genes imputed, "
+            f"{out.get('n_spots', 0):,} spots, "
+            f"mean mapping score: {out.get('mean_mapping_score', float('nan')):.3f}"
+        )
+
+    sc_ref_label = Path(sc_ref_path).name
+    generate_spatial_impute_report(
+        adata, str(report_path), dataset_id=dataset_id, sc_ref_label=sc_ref_label
+    )
+    print(f"  [impute] report -> {report_path}")
+
+    # obsm["imputed_expression"] is already a float32 numpy array —
+    # no extra serialization needed before h5ad checkpoint.
+    adata.write_h5ad(out_path)
+    print(f"  [impute] -> {out_path}")
+    return out_path
+
+
 STEP_RUNNERS = {
     "ingest":     lambda inp, out, cfg, force: run_ingest(cfg, out, force),
     "qc":         run_qc,
@@ -399,6 +491,7 @@ STEP_RUNNERS = {
     "cluster":    run_cluster,
     "deconvolve": run_deconvolve,
     "downstream": run_downstream,
+    "impute":     run_impute,
 }
 
 

@@ -45,6 +45,17 @@ except ImportError:
 # ---------------------------------------------------------------------------
 
 
+
+def _squidpy_panel_figsize(adata, per_panel=(6, 6), max_total_w=18):
+    """Cap squidpy scatter figsize for multi-sample (library_key) layouts."""
+    library_key = _get_library_key(adata)
+    if library_key and library_key in adata.obs.columns:
+        n = adata.obs[library_key].nunique()
+    else:
+        n = 1
+    w = min(per_panel[0] * n, max_total_w)
+    return (w, per_panel[1])
+
 def _fig_to_b64(fig):
     buf = BytesIO()
     fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
@@ -143,7 +154,11 @@ def _squidpy_scatter_b64(
 
 
 def _stitch_panels(b64_panels: list, ncols: int = 3) -> Optional[str]:
-    """Combine N base64 PNGs into one image grid. Returns the stitched base64."""
+    """Combine N base64 PNGs into one image grid. Returns the stitched base64.
+
+    Output is capped at 1800px wide so the combined report renders at a
+    readable size (the lightbox lets the user zoom to full resolution).
+    """
     if not b64_panels:
         return None
     if len(b64_panels) == 1:
@@ -167,7 +182,16 @@ def _stitch_panels(b64_panels: list, ncols: int = 3) -> Optional[str]:
 
     rows = [np.hstack(padded[r * ncols:(r + 1) * ncols]) for r in range(nrows)]
     grid = np.vstack(rows)
-    fig, ax = plt.subplots(figsize=(grid.shape[1] / 100, grid.shape[0] / 100))
+
+    # Cap the output width at 1800px; keep aspect ratio.
+    TARGET_W = 1800
+    raw_w = grid.shape[1]
+    raw_h = grid.shape[0]
+    scale = min(1.0, TARGET_W / raw_w)
+    fig_w = raw_w * scale / 100
+    fig_h = raw_h * scale / 100
+
+    fig, ax = plt.subplots(figsize=(fig_w, fig_h), dpi=100)
     ax.imshow(grid); ax.axis("off")
     fig.tight_layout(pad=0)
     return _fig_to_b64(fig)
@@ -223,7 +247,7 @@ def _fig_dominant_celltype(
             img_key=resolved,
             library_key=library_key,
             title=f"Dominant cell type per spot{suffix}",
-            figsize=(6, 6),
+            figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
         )
     except Exception as e:
         logger.warning("dominant cell type figure failed: %s", e)
@@ -261,7 +285,7 @@ def _fig_top_celltypes_spatial(
                 library_key=library_key,
                 cmap="magma",
                 title=ct,
-                figsize=(5, 5),
+                figsize=_squidpy_panel_figsize(adata, per_panel=(7, 7)),
             )
             if b:
                 b64_panels.append(b)
@@ -460,9 +484,9 @@ _PAGE_CSS = """
     tr:last-child td { border-bottom: none; }
     tr:hover td { background: #f8f9ff; }
     .fig-grid { display: flex; flex-wrap: wrap; gap: 18px; margin-top: 12px; }
-    .fig-wrap { flex: 1 1 300px; max-width: 560px; }
+    .fig-wrap { flex: 1 1 420px; max-width: 100%; }
     .fig-wrap h3 { font-size: 0.9rem; margin-bottom: 6px; color: #16213e; }
-    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; }
+    .fig-wrap img { width: 100%; border-radius: 6px; border: 1px solid #e8eaf6; cursor: zoom-in; display: block; }
     footer { text-align: center; font-size: 0.78rem; color: #aaa; padding: 24px 0 32px; }
     footer a { color: #0f3460; text-decoration: none; }
 """
