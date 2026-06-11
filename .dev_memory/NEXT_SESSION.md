@@ -1,206 +1,225 @@
 # OmicSage — Next Session
 > Written: 2026-06-11
-> Phase: 7 extension — Spatial Imputation + New Format Support
+> Phase: 8 — Docker Containerization
 
 ---
 
 ## Session Context
 
-**Last thing completed this session:**
-- Fixed spatial combined report image presentation: lightbox click-to-expand,
-  `max-width: 100%` on `.fig-wrap`, `max-width: 1400px` tab panel, `cursor: zoom-in`
-  on all figures. Fixed `_stitch_panels` panoramic image bug (5582px wide → capped
-  at 1800px via `TARGET_W` scale factor). All 6 spatial report files updated.
-- Written `ai/manual_review/SPATIAL_MASTER_PROMPT.md` — 9-task spatial review
-  prompt following the same structure as RNA/CITE/Multiome master prompts.
+**Last thing completed:**
+- Phase 7 fully complete (Sessions 1–5 + Session A + Session B extensions)
+- Session A: `spatial_impute.py` + `spatial_impute_report.py` + `test_spatial_impute.py`
+  + runner + combined report + kuppe config updated. Multiple bug fixes:
+  OOM fix (Tangram clusters mode), `project_genes` API fix, numpy array
+  storage, log-normalisation in validation scatter, library_key multi-sample fix.
+- Session B: `spatial_ingest.py` Visium HD + Xenium loaders (spatialdata-io),
+  `test_spatial_ingest_formats.py` (27 tests), `visium_hd_mouse_brain.yaml`,
+  `xenium_breast.yaml`, `scripts/download_spatial_benchmark.py`.
+- Docs: `SPATIAL_MASTER_PROMPT.md` v1.1, `SPATIAL_MODULE_DOCS.md` fully updated.
+- Tests fixed: `test_spatial_ingest_qc.py` (5 stub tests updated),
+  `test_spatial_impute.py` (mock project_genes return value fixed).
 
-**Files modified this session:**
-```
-reports/templates/spatial/spatial_combined_report.py   ← lightbox + CSS fixes
-reports/templates/spatial/spatial_qc_report.py         ← CSS max-width fix
-reports/templates/spatial/spatial_reduce_report.py     ← CSS max-width fix
-reports/templates/spatial/spatial_cluster_report.py    ← CSS + stitch figsize fix
-reports/templates/spatial/spatial_deconvolve_report.py ← CSS + stitch figsize fix
-reports/templates/spatial/spatial_downstream_report.py ← CSS max-width fix
-ai/manual_review/SPATIAL_MASTER_PROMPT.md              ← NEW
-```
-
-**Verify last session works:**
+**Current test count:**
 ```bash
 conda activate omicsage
-python -m pytest tests/test_spatial_*.py -q --tb=short
+python -m pytest tests/ -q --tb=short
 ```
-Confirm baseline test count before writing any new code.
+Confirm baseline before writing any new code. Expected: ~1476 passing.
+
+**Files modified last session block:**
+```
+pipeline/modules/spatial/spatial_impute.py         ← NEW
+reports/templates/spatial/spatial_impute_report.py ← NEW
+reports/spatial_combined_report.py                 ← Impute tab added
+run_spatial_pipeline.py                            ← impute step added
+tests/test_spatial_impute.py                       ← NEW
+tests/test_spatial_ingest_qc.py                    ← stub tests updated
+tests/test_spatial_ingest_formats.py               ← NEW
+pipeline/modules/spatial/spatial_ingest.py         ← Visium HD + Xenium loaders
+config/runs/kuppe_heart.yaml                       ← impute block added
+config/runs/visium_hd_mouse_brain.yaml             ← NEW
+config/runs/xenium_breast.yaml                     ← NEW
+scripts/download_spatial_benchmark.py              ← NEW
+ai/manual_review/SPATIAL_MASTER_PROMPT.md          ← v1.1
+SPATIAL_MODULE_DOCS.md                             ← fully updated
+```
 
 ---
 
-## Two-Session Plan
+## Today's Goal
 
-This is a two-session extension of Phase 7. Do ONE session at a time.
+**Single deliverable: Docker containerization of the OmicSage pipeline.**
+
+A working `docker-compose up` that runs the full spatial pipeline end-to-end
+on the Kuppe benchmark dataset inside a container, with results written to the
+host filesystem.
 
 ---
 
-## Session A (THIS SESSION) — Spatial Imputation
+## Deliverables
 
-### Goal
-Build `spatial_impute.py` — impute full transcriptome onto Visium spots using
-a paired scRNA-seq reference. This is the missing chapter from sc-best-practices.
-
-### Deliverables (all three together, in one session)
-1. `pipeline/modules/spatial/spatial_impute.py`
-2. `reports/templates/spatial/spatial_impute_report.py`
-3. `tests/test_spatial_impute.py`
-4. Update `run_spatial_pipeline.py` — add `"impute"` step
-5. Update `reports/spatial_combined_report.py` — add Impute tab to TAB_REGISTRY
-6. Update `config/runs/kuppe_heart.yaml` — add impute block
-
-### Method Stack
-- **Primary: Tangram** (`tangram-sc` on PyPI) — optimal transport sc→spatial mapping
-- **Opt-in: gimVI** via `scvi-tools` — deep generative model, slower, higher memory
-- Install: `pip install tangram-sc` (add to `environment.yml` + `requirements-ci.txt`)
-
-### Module API
-```python
-def spatial_impute(
-    adata_spatial: AnnData,      # Visium AnnData — post cluster checkpoint
-    adata_sc: AnnData,           # paired scRNA-seq reference (annotated)
-    method: str = "tangram",     # "tangram" | "gimvi"
-    cell_type_key: str = "cell_type",
-    n_top_genes: int = 2000,
-    device: str = "cpu",
-    inplace: bool = False,
-) -> tuple[AnnData, dict]:
-    # Output:
-    #   adata.obsm["imputed_expression"]  — DataFrame (spots × n_top_genes)
-    #   adata.uns["omicsage_impute"]      — provenance dict
+```
+docker/
+  Dockerfile.pipeline       ← Python analysis environment (conda-based)
+  Dockerfile.dev            ← development image with Jupyter + hot-reload
+docker-compose.yml          ← orchestrates pipeline + volume mounts
+.dockerignore               ← exclude data/, checkpoints/, __pycache__ etc.
+scripts/run_docker.sh       ← convenience wrapper: docker run with correct mounts
 ```
 
-### Config block to add
+Optional but useful this session:
+```
+docker/entrypoint.sh        ← flexible entrypoint: run pipeline step or shell
+```
+
+---
+
+## Design Decisions to Make Before Coding
+
+**1. Base image**
+Use `continuumio/miniconda3` as the base — matches your WSL2 conda environment
+exactly. Alternative is `python:3.11-slim` + pip-only, but conda is safer given
+the heavy bioinformatics dependency stack (scanpy, squidpy, tangram-sc, etc.).
+
+**2. Dependency installation strategy**
+Two-stage build:
+- Stage 1: install `environment.yml` into conda env `omicsage`
+  (`conda env create -f environment.yml`)
+- Stage 2: copy source code
+This keeps the layer cache efficient — a code change doesn't invalidate
+the 3 GB dependency layer.
+
+**3. Volume mounts (critical)**
+```
+data/benchmark/   → read-only input
+data/processed/   → read-write output (checkpoints)
+reports/          → read-write output (HTML reports)
+config/           → read-only config
+pipeline/         → read-write during dev (hot-reload)
+```
+Never bake data into the image.
+
+**4. Entrypoint**
+```bash
+conda run -n omicsage python run_spatial_pipeline.py \
+  --config config/runs/kuppe_heart.yaml \
+  "$@"          # pass --step, --from-step, --force etc. through
+```
+
+**5. GPU support**
+Add `--gpus all` flag to `docker run` in the convenience script,
+guarded by `OMICSAGE_GPU=1` env var. Default is CPU-only.
+
+---
+
+## Dockerfile.pipeline skeleton
+
+```dockerfile
+FROM continuumio/miniconda3:latest
+
+# System deps needed by some bio packages
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential gcc g++ libhdf5-dev git \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# Layer 1: dependencies (cached unless environment.yml changes)
+COPY environment.yml .
+RUN conda env create -f environment.yml \
+    && conda clean -afy
+
+# Layer 2: source code
+COPY . .
+
+# Ensure conda env is on PATH
+ENV PATH /opt/conda/envs/omicsage/bin:$PATH
+
+ENTRYPOINT ["python", "run_spatial_pipeline.py"]
+CMD ["--help"]
+```
+
+---
+
+## docker-compose.yml skeleton
+
 ```yaml
-spatial:
-  impute:
-    enabled: true
-    method: tangram            # tangram | gimvi
-    sc_reference_path: ""      # path to paired scRNA-seq .h5ad
-    n_top_genes: 2000
-    cell_type_key: "cell_type"
-    device: cpu
+version: "3.9"
+services:
+  pipeline:
+    build:
+      context: .
+      dockerfile: docker/Dockerfile.pipeline
+    volumes:
+      - ./data:/app/data
+      - ./reports:/app/reports
+      - ./config:/app/config
+      - ./pipeline:/app/pipeline     # hot-reload during dev
+    environment:
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+    command: ["--config", "config/runs/kuppe_heart.yaml"]
 ```
-
-### Report sections (`spatial_impute_report.py`)
-1. **Run Summary** — stat cards: n_genes_imputed, method, mapping_score (mean),
-   n_spots, sc_reference (filename)
-2. **Mapping Score Distribution** — histogram of per-spot Tangram mapping scores
-   (quality metric: spots with score < 0.1 are poorly mapped)
-3. **Top Imputed Genes on H&E** — spatial scatter of top 5 imputed genes by
-   variance (the visual payoff — genes not in the original HVG set)
-4. **Imputation Validation** — scatter plot: measured vs imputed expression for
-   the genes present in both datasets (Spearman r in title)
-
-### Runner step to add in `run_spatial_pipeline.py`
-- Step name: `"impute"`
-- Predecessor: `"cluster"` (does not require deconvolution)
-- Skip condition: `config.get("spatial", {}).get("impute", {}).get("enabled", False) is False`
-  OR `sc_reference_path` is empty/null
-- Input checkpoint: cluster h5ad
-- Output checkpoint: impute h5ad
-
-### Test strategy (`test_spatial_impute.py`)
-- Mock tangram import for unit tests (avoid requiring GPU/heavy install in CI)
-- Test with tiny synthetic spatial AnnData (20 spots × 50 genes) +
-  tiny sc reference (100 cells × 50 genes, 3 cell types)
-- Test: output contract — `obsm["imputed_expression"]` present, correct shape
-- Test: provenance in `uns["omicsage_impute"]`
-- Test: `inplace=False` does not mutate input
-- Test: `method="gimvi"` raises `ImportError` gracefully when scvi-tools absent
-- Test: skips cleanly when `sc_reference_path` is null in config
-- Test: report renders without error on mock data
-- **Do NOT require real Tangram install for CI** — use `pytest.importorskip`
-  pattern or mock
-
-### Benchmark dataset note
-The Kuppe heart dataset has a paired snRNA-seq reference:
-`data/benchmark/kuppe_heart/snrna_ref.h5ad` (or equivalent).
-Use this for manual end-to-end validation after tests pass.
-If the paired reference is not yet downloaded, download it before starting:
-- Kuppe et al. 2022 supplementary data — snRNA-seq processed h5ad
-- GEO accession: GSE183852
 
 ---
 
-## Session B (NEXT SESSION AFTER A) — New Format Support
+## Pre-session checklist
 
-### Goal
-Activate the Xenium and Visium HD stubs already in `spatial_ingest.py`.
-MERFISH and CODEX remain as `NotImplementedError` stubs.
-
-### Why these two formats
-- Visium HD: same 10x ecosystem, `sq.read.visium_hd()` reader exists, natural
-  upgrade from Visium, public benchmark datasets available
-- Xenium: most common new imaging-based platform, `sq.read.xenium()` reader
-  exists in squidpy, cell-level (not spot-level) data model
-
-### What changes per format
-
-| Format | Key difference | Pipeline impact |
-|--------|---------------|-----------------|
-| Visium HD | No H&E by default; binned 2/8/16µm | `bin_size` config param; QC min_counts threshold lower |
-| Xenium | Cell-level not spot-level; segmentation mask; transcripts.parquet | Cell-level QC; no `in_tissue` flag; different n_genes range |
-
-**Everything downstream of ingest is format-agnostic** — QC, reduce, cluster,
-deconvolve, impute all operate on the AnnData contract and need no changes.
-
-### Files to change (Session B only)
-```
-pipeline/modules/spatial/spatial_ingest.py   ← implement _load_visium_hd + _load_xenium
-tests/test_spatial_ingest_qc.py              ← stub tests → real tests
-config/runs/                                 ← new yaml per format
-SPATIAL_MODULE_DOCS.md                       ← format section updated
-```
-
-### Config additions for Session B
-```yaml
-spatial:
-  source: "/path/to/data"
-  spatial_type: "auto"     # auto | visium | visium_hd | xenium | h5ad | benchmark
-  bin_size: 16             # Visium HD only: 2 | 8 | 16 µm
-```
-
-### Benchmark datasets for Session B (download before starting)
-- **Visium HD:** 10x Genomics public dataset — Human Colorectal Cancer
-  https://www.10xgenomics.com/datasets (search "Visium HD")
-- **Xenium:** 10x Genomics public dataset — Human Breast Cancer
-  https://www.10xgenomics.com/datasets (search "Xenium")
-Both are free to download without account.
-
-### Pre-Session B research step (mandatory)
-Before writing any code for Xenium or Visium HD loaders, fetch the squidpy
-source for both readers:
-- `sq.read.visium_hd` — https://github.com/scverse/squidpy/blob/main/src/squidpy/read/_read.py
-- `sq.read.xenium` — same file
-Read the actual parameter names. Do NOT guess. This is the same rule that
-caused bugs in Phase 7 Session 5 with `img_res_key` vs `img_key`.
+Before starting:
+- [ ] Run baseline test count and record it here
+- [ ] Confirm Docker Desktop is running in WSL2
+      (`docker info` should return without error)
+- [ ] Confirm `environment.yml` is up to date — check that these are present:
+      `tangram-sc`, `spatialdata-io`, `squidpy`, `scvi-tools`, `cell2location`
+      (they should be, but verify before baking into the image)
+- [ ] Note the size of the conda env:
+      `du -sh ~/miniconda3/envs/omicsage/`
+      This is roughly the Docker image size — plan for a 4–8 GB image
 
 ---
 
 ## Known Issues / Watch Out For
 
-- Tangram requires `torch` — confirm it is in `environment.yml` (it should be,
-  scvi-tools depends on it). If not, add before starting.
-- Tangram's `tg.pp_adatas()` mutates both input AnnData objects in place —
-  work on copies inside the module.
-- The Kuppe heart snRNA-seq reference may use `cell_type` or `cell_type_vote`
-  as the annotation column — check before passing `cell_type_key`.
-- `obsm["imputed_expression"]` is a DataFrame (genes as columns) — serialize
-  to checkpoint as JSON string (same pattern as other DataFrame obsm keys in
-  the spatial pipeline) to avoid h5py mixed-type errors.
+- `continuumio/miniconda3` base images can be slow to pull (~150 MB).
+  Build once, iterate on the source layer.
+- `conda env create` inside Docker can hit memory limits on WSL2.
+  If it OOMs, add `--memory 8g` to the Docker build command.
+- Some packages (cell2location, tangram-sc) compile C extensions — the
+  `build-essential` apt layer is required.
+- `hdf5` headers (`libhdf5-dev`) are needed for `h5py` native compilation.
+- On WSL2, Docker Desktop must have "Use WSL 2 based engine" enabled
+  (Docker Desktop → Settings → General).
+- `.dockerignore` must exclude `data/` to keep the build context small —
+  benchmark datasets are several GB and must never be baked into the image.
+- `conda run -n omicsage` vs activating the env: inside Docker, activation
+  doesn't work in non-interactive shells. Use the full path
+  `/opt/conda/envs/omicsage/bin/python` or `ENV PATH` in the Dockerfile.
 
 ---
 
-## Memory Files to Update at End of Session A
+## Verify at End of Session
+
+```bash
+# Build the image
+docker build -f docker/Dockerfile.pipeline -t omicsage:latest .
+
+# Run one pipeline step on Kuppe (fast — ingest only)
+docker run --rm \
+  -v $(pwd)/data:/app/data \
+  -v $(pwd)/reports:/app/reports \
+  -v $(pwd)/config:/app/config \
+  omicsage:latest \
+  --config config/runs/kuppe_heart.yaml --step ingest
+
+# Confirm checkpoint written to host filesystem
+ls data/processed/kuppe_heart/01_ingested.h5ad
 ```
-.dev_memory/NEXT_SESSION.md    ← replace with Session B content
-.dev_memory/CURRENT_STATUS.md  ← add impute to spatial pipeline complete list
-.dev_memory/PROGRESS.md        ← tick spatial_impute.py
-SPATIAL_MODULE_DOCS.md         ← add imputation section
+
+---
+
+## Memory Files to Update at End of This Session
+
+```
+.dev_memory/NEXT_SESSION.md    ← replace with Streamlit phase content
+.dev_memory/CURRENT_STATUS.md  ← add Docker to completed infrastructure
+.dev_memory/PROGRESS.md        ← tick Docker phase
 ```
