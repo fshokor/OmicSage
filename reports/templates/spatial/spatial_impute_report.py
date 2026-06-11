@@ -201,11 +201,23 @@ def _section_run_summary(
 
 
 def _section_mapping_score_hist(adata: ad.AnnData, prov: dict) -> str:
-    method = prov.get("method", "tangram")
+    method       = prov.get("method", "tangram")
+    tangram_mode = prov.get("outputs", {}).get("tangram_mode", "clusters")
+
     if method != "tangram":
         return _skip_section(
             "2. Mapping Score Distribution",
             "Not available for gimVI (no per-spot score).",
+        )
+
+    if tangram_mode == "clusters":
+        return (
+            "<section><h2>2. Mapping Score Distribution</h2>"
+            "<p>Per-spot mapping scores are not available in <code>clusters</code> mode. "
+            "In clusters mode Tangram maps per-cell-type signatures onto spots rather than "
+            "individual cells, so there is no per-spot quality score. "
+            "To obtain per-spot mapping scores, set <code>tangram_mode: cells</code> in your config "
+            "(note: cells mode requires significantly more memory).</p></section>"
         )
 
     if "tangram_mapping_score" not in adata.obs.columns:
@@ -245,7 +257,7 @@ def _section_mapping_score_hist(adata: ad.AnnData, prov: dict) -> str:
     )
 
 
-def _section_top_imputed_genes(adata: ad.AnnData, prov: dict) -> str:
+def _section_top_imputed_genes(adata: ad.AnnData, prov: dict, library_key: str = None) -> str:
     """Spatial scatter of top 5 imputed genes by variance."""
     if "imputed_expression" not in adata.obsm:
         return _skip_section(
@@ -294,8 +306,7 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict) -> str:
         try:
             fig, ax = plt.subplots(figsize=(5, 5))
             import squidpy as sq
-            sq.pl.spatial_scatter(
-                adata,
+            scatter_kwargs = dict(
                 color=key,
                 ax=ax,
                 title=f"Imputed: {gene}",
@@ -303,6 +314,9 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict) -> str:
                 size=1.2,
                 show=False,
             )
+            if library_key:
+                scatter_kwargs["library_key"] = library_key
+            sq.pl.spatial_scatter(adata, **scatter_kwargs)
             ax.set_title(f"Imputed: {gene}", fontsize=10, fontweight="bold")
             b64 = _fig_to_b64(fig)
             figs_html += (
@@ -310,7 +324,8 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict) -> str:
                 f'{_img_tag(b64, gene)}</div>'
             )
         except Exception as exc:
-            logger.warning(f"Could not plot imputed gene {gene}: {exc}")
+            logger.warning(f"Could not plot imputed gene {gene}: {exc}", exc_info=True)
+            plt.close("all")
         finally:
             if key in adata.obs.columns:
                 del adata.obs[key]
@@ -376,11 +391,19 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
         np.random.choice(overlap, 50, replace=False)
     )
 
-    # Mean expression per gene across spots
+    # Log-normalise measured counts before comparing to imputed values.
+    # Tangram imputed expression is already on a normalised scale, so
+    # comparing raw counts vs normalised imputed causes artificially low
+    # Spearman r. We use log1p(counts / sum * 10000) to match the typical
+    # normalisation applied before Tangram training.
     x_arr = adata[:, sample_genes].X
     if sp.issparse(x_arr):
         x_arr = x_arr.toarray()
-    measured_mean = np.asarray(x_arr).mean(axis=0)
+    x_arr = np.asarray(x_arr, dtype=np.float64)
+    lib_sizes = x_arr.sum(axis=1, keepdims=True)
+    lib_sizes[lib_sizes == 0] = 1  # avoid divide-by-zero
+    x_norm = np.log1p(x_arr / lib_sizes * 10000)
+    measured_mean = x_norm.mean(axis=0)
     imputed_mean  = imputed[sample_genes].values.mean(axis=0)
 
     rho, pval = spearmanr(measured_mean, imputed_mean)
@@ -388,7 +411,7 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
     fig, ax = plt.subplots(figsize=(5.5, 5))
     ax.scatter(measured_mean, imputed_mean, alpha=0.65, s=22,
                color="#4C78A8", edgecolors="none")
-    ax.set_xlabel("Mean measured expression (counts)", fontsize=11)
+    ax.set_xlabel("Mean measured expression (log-normalised)", fontsize=11)
     ax.set_ylabel("Mean imputed expression", fontsize=11)
     ax.set_title(
         f"Measured vs imputed (n={len(sample_genes)} genes)\n"
@@ -486,10 +509,18 @@ def generate_spatial_impute_report(
         Path(output_path).write_text(html, encoding="utf-8")
         return str(Path(output_path).resolve())
 
+    # Extract library_key from ingest provenance — required by squidpy
+    # sq.pl.spatial_scatter when the AnnData contains multiple library IDs.
+    library_key = (
+        adata.uns
+        .get("omicsage_spatial_ingest", {})
+        .get("library_key", None)
+    )
+
     sections = [
         _section_run_summary(prov, sc_ref_label, timestamp),
         _section_mapping_score_hist(adata, prov),
-        _section_top_imputed_genes(adata, prov),
+        _section_top_imputed_genes(adata, prov, library_key=library_key),
         _section_validation(adata, prov),
     ]
 

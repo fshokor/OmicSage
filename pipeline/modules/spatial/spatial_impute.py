@@ -228,16 +228,25 @@ def _run_tangram(
         **map_kwargs,
     )
 
-    # Project sc expression onto spatial spots
-    tg.project_genes(adata_map=ad_map, adata_sc=sc_sub)
+    # Project sc expression onto spatial spots.
+    # project_genes requires cluster_label when mode="clusters" so it can
+    # collapse adata_sc to cluster-level before the obs index check.
+    # It RETURNS a new AnnData (spots × genes) — it does not mutate ad_map.
+    _pg_kwargs = {}
+    if tangram_mode == "clusters" and cell_type_key in sc_sub.obs.columns:
+        _pg_kwargs["cluster_label"] = cell_type_key
+    adata_ge = tg.project_genes(adata_map=ad_map, adata_sc=sc_sub, **_pg_kwargs)
 
-    # ad_map now has imputed expression (spots × shared_genes)
-    imputed = ad_map.to_df()  # DataFrame: spots × genes
-    # Align index to spatial obs_names (Tangram returns RangeIndex)
+    # adata_ge is spots × genes — obs = spots, var = genes
+    imputed = adata_ge.to_df()  # DataFrame: spots × genes
+    # Align index to spatial obs_names (Tangram returns spot barcodes here,
+    # but we normalise to our obs_names to guarantee consistency)
     imputed.index = adata_st.obs_names
 
-    # Mapping scores — stored by Tangram in ad_map.obs["tg_score"]
-    if "tg_score" in ad_map.obs.columns:
+    # Mapping scores — only meaningful in "cells" mode.
+    # In "clusters" mode ad_map.obs rows are cell types, not spots,
+    # so tg_score cannot be mapped back to individual spots.
+    if tangram_mode == "cells" and "tg_score" in ad_map.obs.columns:
         adata_st.obs["tangram_mapping_score"] = ad_map.obs["tg_score"].values
         mean_score = float(ad_map.obs["tg_score"].mean())
         n_poor = int((ad_map.obs["tg_score"] < 0.1).sum())
@@ -264,6 +273,7 @@ def _run_tangram(
             "genes_imputed":      list(shared_genes),
             "cell_type_key":      cell_type_key,
             "device":             device,
+            "tangram_mode":       tangram_mode,
         },
     }
     adata_st.uns["omicsage_spatial_impute"] = prov

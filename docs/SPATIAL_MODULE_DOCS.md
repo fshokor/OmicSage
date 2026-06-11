@@ -1,9 +1,10 @@
 # OmicSage — Spatial Transcriptomics Module Documentation
-> Phase 7 — Spatial Transcriptomics (Sessions 1–5)
+> Phase 7 — Spatial Transcriptomics (Sessions 1–5) + Session B extensions (Session B)
 > Last updated: June 2026
 
-This document covers every script produced in Phase 7: pipeline modules,
-report generators, the combined report, the runner, the config, and the tests.
+This document covers every script produced in Phase 7 and the Session B
+extension: pipeline modules, report generators, the combined report, the runner,
+the config, the tests, and the benchmark download script.
 
 ---
 
@@ -17,18 +18,21 @@ report generators, the combined report, the runner, the config, and the tests.
    - [spatial_cluster.py](#24-spatial_clusterpy)
    - [spatial_deconvolve.py](#25-spatial_deconvolvepy)
    - [spatial_downstream.py](#26-spatial_downstreampy)
+   - [spatial_impute.py](#27-spatial_imputepy)
 3. [Report Templates](#3-report-templates)
    - [spatial_qc_report.py](#31-spatial_qc_reportpy)
    - [spatial_reduce_report.py](#32-spatial_reduce_reportpy)
    - [spatial_cluster_report.py](#33-spatial_cluster_reportpy)
    - [spatial_deconvolve_report.py](#34-spatial_deconvolve_reportpy)
    - [spatial_downstream_report.py](#35-spatial_downstream_reportpy)
+   - [spatial_impute_report.py](#36-spatial_impute_reportpy)
 4. [Combined Report](#4-combined-report)
 5. [Pipeline Runner](#5-pipeline-runner)
-6. [Config File](#6-config-file)
+6. [Config Files](#6-config-files)
 7. [Tests](#7-tests)
-8. [AnnData State Reference](#8-anndata-state-reference)
-9. [Key Decisions](#9-key-decisions)
+8. [Benchmark Data Download](#8-benchmark-data-download)
+9. [AnnData State Reference](#9-anndata-state-reference)
+10. [Key Decisions](#10-key-decisions)
 
 ---
 
@@ -37,6 +41,7 @@ report generators, the combined report, the runner, the config, and the tests.
 ```
 spatial_ingest.py
       │  standard AnnData: obsm["spatial"], uns["spatial"], layers["counts"]
+      │  Supported: visium | h5ad | benchmark | visium_hd | xenium
       ▼
 spatial_qc.py
       │  obs QC columns, qc_pass mask, filtered spots
@@ -56,6 +61,11 @@ spatial_downstream.py
       │  obs["region_cluster"], uns["celltype_marker_genes"],
       │  uns["celltype_svg"], uns["*_nhood_enrichment"],
       │  uns["*_co_occurrence"], uns["*_ligrec"], uns["svg_gsea"]
+      ▼
+spatial_impute.py          ← Session B addition
+      │  obsm["imputed_expression"] (float32 array, spots × n_genes)
+      │  uns["omicsage_spatial_impute"] with genes_imputed list
+      │  (graceful skip when sc_reference_path absent or enabled=false)
 ```
 
 Every module follows the same contract:
@@ -71,7 +81,7 @@ Every module follows the same contract:
 ### 2.1 `spatial_ingest.py`
 
 **Location:** `pipeline/modules/spatial/spatial_ingest.py`
-**Phase 7 Session:** 1 (updated Session 4)
+**Phase 7 Session:** 1 (updated Session 4, updated Session B)
 
 **Purpose:** Unified entry point for loading spatial transcriptomics data
 from any supported technology into a standard AnnData object. Technology
@@ -86,7 +96,9 @@ spatial_ingest(
                                          # | "visium_hd" | "xenium" | "merfish" | "codex"
     counts_file: str = "filtered_feature_bc_matrix.h5",
     library_id: Optional[str] = None,
+    library_key: Optional[str] = None,
     load_images: bool = True,
+    bin_size: int = 8,                   # Visium HD only: 2 | 8 | 16 µm
     inplace: bool = False,
 ) -> tuple[AnnData, dict]
 
@@ -95,24 +107,47 @@ list_supported_types() -> dict[str, str]  # maps type → "implemented"|"planned
 
 **Supported technologies:**
 
-| Type | Status | Source format |
-|------|--------|---------------|
-| `visium` | ✅ Implemented | Space Ranger output directory |
-| `h5ad` | ✅ Implemented | Pre-built `.h5ad` file |
-| `benchmark` | ✅ Implemented | `squidpy.datasets.visium_hne_adata()` |
-| `visium_hd` | 🔲 Planned | `binned_outputs/` directory |
-| `xenium` | 🔲 Planned | `transcripts.parquet` |
-| `merfish` | 🔲 Planned | `cell_by_gene.csv` |
-| `codex` | 🔲 Planned | `.csv` protein markers |
+| Type | Status | Source format | Loader |
+|------|--------|---------------|--------|
+| `visium` | ✅ Implemented | Space Ranger output directory | `sq.read.visium` |
+| `h5ad` | ✅ Implemented | Pre-built `.h5ad` file | `sc.read_h5ad` |
+| `benchmark` | ✅ Implemented | `squidpy.datasets.visium_hne_adata()` | squidpy datasets |
+| `visium_hd` | ✅ Implemented | `binned_outputs/` directory | `spatialdata_io.visium_hd` |
+| `xenium` | ✅ Implemented | Xenium output directory | `spatialdata_io.xenium` |
+| `merfish` | 🔲 Planned | `cell_by_gene.csv` | — |
+| `codex` | 🔲 Planned | `.csv` protein markers | — |
 
 **Auto-detection fingerprints** (checked in order):
 1. `source == "benchmark"` → benchmark
 2. `source.endswith(".h5ad")` → h5ad
-3. Directory contains `transcripts.parquet` → xenium
+3. Directory contains `transcripts.parquet` → **xenium**
 4. Directory contains `cell_by_gene.csv` → merfish
-5. Directory contains `binned_outputs/` → visium_hd
+5. Directory contains `binned_outputs/` → **visium_hd**
 6. Directory contains `spatial/` subfolder → visium
 7. File ends with `.csv` → codex
+
+**Visium HD loader (`_load_visium_hd`)** — *Session B*:
+- Requires `pip install spatialdata-io`; raises `ImportError` with install
+  instructions when absent
+- Calls `spatialdata_io.visium_hd(path, bin_size=N, load_segmentations_only=False)`
+- Table key is `f"square_{bin_size:03d}um"` (e.g. `"square_008um"`)
+- `obsm["spatial"]` is already set by spatialdata-io from `pxl_col_in_fullres`
+  / `pxl_row_in_fullres` — no extra extraction needed
+- Builds minimal `uns["spatial"][lib_id]` stub so downstream squidpy tools pass
+  validation; includes `scalefactors["spot_diameter_fullres"] = bin_size`
+- `KeyError` raised with useful message when the requested bin_size table is absent
+
+**Xenium loader (`_load_xenium`)** — *Session B*:
+- Requires `pip install spatialdata-io`
+- Calls `spatialdata_io.xenium(path, cells_table=True, cells_boundaries=False,
+  nucleus_boundaries=False, transcripts=False, morphology_mip=False, ...)`
+  — heavy assets (segmentation masks, morphology images, transcripts) are
+  deliberately skipped by default to keep memory usage low
+- Table key is always `"table"`
+- `obsm["spatial"]` already set from `x_centroid` / `y_centroid`
+- Builds minimal `uns["spatial"][lib_id]` stub with `"platform": "xenium"` in
+  `metadata`
+- Key difference from Visium: cell-level (not spot-level), targeted gene panel
 
 **h5ad loading contract** (updated Session 4 for Kuppe data):
 - If `layers["counts"]` absent → saves `X.copy()` to `layers["counts"]`
@@ -122,13 +157,14 @@ list_supported_types() -> dict[str, str]  # maps type → "implemented"|"planned
 **Output AnnData contract** (all implemented types):
 ```
 obsm["spatial"]                             coordinates (n_obs, 2)
-uns["spatial"][library_id]["images"]        tissue images
+uns["spatial"][library_id]["images"]        tissue images (empty dict for Visium HD / Xenium by default)
 uns["spatial"][library_id]["scalefactors"]  scale factors
 layers["counts"]                            raw integer counts
 uns["omicsage_spatial_ingest"]              provenance dict
 ```
 
-**Provenance keys:** `source`, `spatial_type`, `technology_notes`, `counts_file`, `library_id`, `load_images`, `n_obs`, `n_vars`, `timestamp`
+**Provenance keys:** `source`, `spatial_type`, `technology_notes`, `counts_file`,
+`library_id`, `library_key`, `load_images`, `bin_size`, `n_obs`, `n_vars`, `timestamp`
 
 ---
 
@@ -137,8 +173,8 @@ uns["omicsage_spatial_ingest"]              provenance dict
 **Location:** `pipeline/modules/spatial/spatial_qc.py`
 **Phase 7 Session:** 1
 
-**Purpose:** Compute QC metrics for Visium spots and optionally filter
-low-quality spots based on count/gene/MT% thresholds.
+**Purpose:** Compute QC metrics for Visium spots / Xenium cells and optionally
+filter low-quality observations based on count/gene/MT% thresholds.
 
 **Public API:**
 
@@ -156,6 +192,11 @@ spatial_qc(
 ) -> tuple[AnnData, dict]
 ```
 
+**Technology-specific threshold guidance:**
+- **Visium:** `min_counts 500`, `min_genes 200` — standard
+- **Visium HD 8µm:** `min_counts 50–200`, `min_genes 50` — smaller bins
+- **Xenium:** `min_counts 5–50`, `min_genes 5–20` — panel-limited
+
 **What it does:**
 1. Annotates `var["mt"]` using `mt_prefix`
 2. Runs `sc.pp.calculate_qc_metrics` → adds `total_counts`, `n_genes_by_counts`, `pct_counts_mt` to `obs`
@@ -168,15 +209,18 @@ spatial_qc(
 
 **Output obs columns added:**
 ```
-total_counts          total UMI counts per spot
-n_genes_by_counts     number of detected genes per spot
+total_counts          total UMI counts per spot/cell
+n_genes_by_counts     number of detected genes per spot/cell
 pct_counts_mt         mitochondrial gene percentage
 qc_pass               bool — True if spot passes all thresholds
 ```
 
-**Provenance keys:** all threshold parameters, `n_spots_before`, `n_spots_after`, `n_spots_removed`, per-filter removal counts, summary stats per metric.
+**Provenance keys:** all threshold parameters, `n_spots_before`, `n_spots_after`,
+`n_spots_removed`, per-filter removal counts, summary stats per metric.
 
-**Note on Kuppe Visium data:** After `spatial_ingest` strips MT genes into `obsm["MT"]`, `pct_counts_mt` will be 0 for all spots. The `max_mt_pct` threshold is vacuously satisfied — this is correct behaviour.
+**Note on Kuppe Visium data:** After `spatial_ingest` strips MT genes into
+`obsm["MT"]`, `pct_counts_mt` will be 0 for all spots. The `max_mt_pct`
+threshold is vacuously satisfied — this is correct behaviour.
 
 ---
 
@@ -186,8 +230,7 @@ qc_pass               bool — True if spot passes all thresholds
 **Phase 7 Session:** 2
 
 **Purpose:** Normalize counts, select highly variable genes, compute PCA,
-and build the spatial neighbours graph. This is the bridge between raw
-QC-filtered counts and Leiden clustering.
+and build the spatial neighbours graph.
 
 **Public API:**
 
@@ -196,7 +239,7 @@ spatial_reduce(
     adata: AnnData,
     n_top_genes: int = 3000,
     n_comps: int = 50,
-    n_neighbors: int = 6,                # 6 = Visium hex grid
+    n_neighbors: int = 6,                # 6 = Visium hex grid; use ~10 for Xenium
     coord_type: Optional[str] = None,    # None = auto-detect grid
     normalize_total: bool = True,
     target_sum: float = 1e4,
@@ -206,22 +249,23 @@ spatial_reduce(
 ) -> tuple[AnnData, dict]
 ```
 
+**Technology-specific guidance:**
+- **Visium / Visium HD:** `n_top_genes 3000`, `n_neighbors 6` (hex grid)
+- **Xenium:** `n_top_genes` should equal or approach panel size; `n_neighbors 10`
+
 **What it does:**
 1. **Raw count restoration** — if `layers["counts"]` present, resets `X` to raw before normalizing
-2. **Benchmark detection** — if `spatial_type == "benchmark"` and no `layers["counts"]`, skips normalization (data already processed)
-3. **Normalization** — `sc.pp.normalize_total` → `sc.pp.log1p` (skipped if `normalize_total=False`)
-4. **HVG selection** — `sc.pp.highly_variable_genes(flavor="seurat", n_top_genes=3000)`
-5. **PCA** — `sc.pp.pca(use_highly_variable=True, svd_solver="arpack")`; `n_comps` capped at `min(n_comps, n_hvgs-1, n_obs-1)`
-6. **Spatial neighbours** — `sq.gr.spatial_neighbors(coord_type=None)` — auto-detects grid when `uns["spatial"]` present
-
-**Key decision — `coord_type=None`:** squidpy auto-selects `"grid"` when `uns["spatial"]` is present (standard Visium). Safer than hardcoding `"grid"` as it will auto-adapt for future technology types.
+2. **Benchmark detection** — skips normalization when data already processed
+3. **Normalization** — `sc.pp.normalize_total` → `sc.pp.log1p`
+4. **HVG selection** — `sc.pp.highly_variable_genes(flavor="seurat", n_top_genes=...)`
+5. **PCA** — `sc.pp.pca(use_highly_variable=True, svd_solver="arpack")`
+6. **Spatial neighbours** — `sq.gr.spatial_neighbors(coord_type=None)` — auto-detects grid
 
 **Output keys added:**
 ```
 X                              normalized + log1p counts
 layers["counts"]               raw counts (preserved)
 var["highly_variable"]         HVG boolean mask
-var["means"], var["dispersions_norm"]
 obsm["X_pca"]                  PCA embedding (n_obs × n_comps)
 uns["pca"]["variance_ratio"]   explained variance per PC
 obsp["spatial_connectivities"] spatial adjacency matrix
@@ -230,7 +274,9 @@ uns["spatial_neighbors"]       spatial graph metadata
 uns["omicsage_spatial_reduce"] provenance dict
 ```
 
-**Provenance keys:** all parameters, `skipped_normalization`, `n_hvgs`, `n_comps_computed`, `pca_variance_ratio_top10`, `pca_cumulative_variance_top10`, `spatial_graph_n_edges`, `spatial_graph_mean_neighbors`.
+**Provenance keys:** all parameters, `skipped_normalization`, `n_hvgs`,
+`n_comps_computed`, `pca_variance_ratio_top10`, `pca_cumulative_variance_top10`,
+`spatial_graph_n_edges`, `spatial_graph_mean_neighbors`.
 
 ---
 
@@ -248,36 +294,28 @@ PCA), plus Moran's I spatially variable gene detection on the spatial graph.
 spatial_cluster(
     adata: AnnData,
     resolution: float = 0.5,
-    n_neighbors: int = 15,               # KNN graph for Leiden (NOT spatial graph)
+    n_neighbors: int = 15,
     n_pcs: int = 30,
     random_state: int = 0,
     cluster_key: str = "spatial_cluster",
-    annotation_map: Optional[dict] = None,  # cluster_id → label
+    annotation_map: Optional[dict] = None,
     run_svg: bool = True,
-    svg_n_genes: Optional[int] = None,   # None = all HVGs
+    svg_n_genes: Optional[int] = None,
     svg_n_jobs: int = 1,
     inplace: bool = False,
 ) -> tuple[AnnData, dict]
 ```
 
-**What it does:**
-1. **KNN graph** — `sc.pp.neighbors(use_rep="X_pca")` — transcriptomic similarity graph (NOT the spatial graph)
-2. **Leiden clustering** — `sc.tl.leiden(resolution=...)` → `obs[cluster_key]`
-3. **Optional annotation** — maps cluster IDs to human-readable labels via `annotation_map`; writes `obs[cluster_key + "_label"]`
-4. **Moran's I SVGs** — `sq.gr.spatial_autocorr(mode="moran", n_perms=None)` on HVGs only; uses analytical p-values for speed; results sorted descending by I score
-
-**Key design decision:** Leiden uses the transcriptomic KNN graph, NOT the spatial graph. The spatial graph (`obsp["spatial_connectivities"]`) is reserved for Moran's I. This mirrors sc-best-practices: cluster by gene expression similarity, detect spatial patterns separately.
+**Key design decision:** Leiden uses the transcriptomic KNN graph, NOT the
+spatial graph. The spatial graph is reserved for Moran's I.
 
 **Output keys added:**
 ```
-obs[cluster_key]               Leiden cluster labels (str)
-obs[cluster_key + "_label"]    human-readable labels (if annotation_map provided)
-uns["moranI"]                  DataFrame: genes × (I, pval_norm, pval_norm_fdr_bh)
-                                sorted descending by I score
+obs[cluster_key]                Leiden cluster labels (str)
+obs[cluster_key + "_label"]     human-readable labels (if annotation_map provided)
+uns["moranI"]                   DataFrame: genes × (I, pval_norm, pval_norm_fdr_bh)
 uns["omicsage_spatial_cluster"] provenance dict
 ```
-
-**Provenance keys:** all parameters, `n_clusters`, `cluster_sizes` (dict), `n_annotated_spots`, `n_genes_tested`, `n_significant_fdr05`, `top5_svg`.
 
 ---
 
@@ -286,12 +324,9 @@ uns["omicsage_spatial_cluster"] provenance dict
 **Location:** `pipeline/modules/spatial/spatial_deconvolve.py`
 **Phase 7 Session:** 4
 
-**Purpose:** Deconvolve Visium spots into cell type abundances using
-cell2location. Each ~55µm Visium spot contains multiple cells — deconvolution
-estimates what proportion of each cell type is present in each spot.
-
-**Requires:** A paired scRNA-seq reference AnnData from the same tissue type.
-When `ref_adata=None`, the module skips gracefully and records `skipped=True`.
+**Purpose:** Deconvolve Visium spots into cell type abundances. Two methods
+available: NNLS (default, fast, ~200 MB RAM) and cell2location (opt-in, deep
+generative model, GPU recommended).
 
 **Public API:**
 
@@ -299,55 +334,38 @@ When `ref_adata=None`, the module skips gracefully and records `skipped=True`.
 spatial_deconvolve(
     adata: AnnData,
     ref_adata: Optional[AnnData] = None,
-    cell_type_key: str = "cell_type_original",  # obs col in ref
-    batch_key_ref: Optional[str] = "donor_id",  # batch key in ref
-    batch_key_st: Optional[str] = "patient",    # batch key in spatial
-    covariate_keys: Optional[list] = None,      # e.g. ["assay"]
-    layer_ref: str = "counts",                  # raw counts layer in ref
-    N_cells_per_location: int = 8,              # expected cells per spot
+    method: str = "nnls",                # "nnls" | "cell2location" | "none"
+    cell_type_key: str = "cell_type_original",
+    layer_ref: str = "counts",
+    # NNLS-specific
+    n_jobs: int = 4,
+    target_sum: float = 10000,
+    # cell2location-specific (ignored when method=nnls)
+    batch_key_ref: Optional[str] = "donor_id",
+    batch_key_st: Optional[str] = "patient",
+    covariate_keys: Optional[list] = None,
+    N_cells_per_location: int = 8,
     detection_alpha: int = 20,
     max_epochs_ref: int = 250,
     max_epochs_st: int = 30000,
-    batch_size_ref: int = 2500,
-    cell_count_cutoff: int = 5,
-    cell_percentage_cutoff2: float = 0.03,
-    nonz_mean_cutoff: float = 1.12,
+    ...
     inplace: bool = False,
 ) -> tuple[AnnData, dict]
 ```
 
-All cell2location parameters are arguments — different tissues require
-different values. Defaults are tuned for the Kuppe human heart dataset.
-
-**What it does (when `ref_adata` provided):**
-1. **Prepare reference** — resets `ref.X` to raw counts from `layers[layer_ref]`
-2. **Gene selection** — `c2l.utils.filtering.filter_genes` with permissive thresholds
-3. **Subset to shared genes** — intersects spatial and reference gene sets; raises if empty
-4. **Reference model** — fits `RegressionModel` → learns cell type expression signatures (`inf_aver`)
-5. **Spatial model** — fits `Cell2location` with `N_cells_per_location` and `detection_alpha`
-6. **Export posterior** — 1000 posterior samples → `obsm["q05_cell_abundance_w_sf"]`
-7. **Write per-cell-type columns** — `obs[cell_type]` for each cell type (5% quantile abundance)
-
-**Device:** GPU if available, CPU fallback — handled automatically by PyTorch/scvi-tools. No explicit `use_gpu` parameter needed.
-
-**Benchmark note:** The squidpy benchmark dataset (`visium_hne_adata`) has no paired scRNA-seq reference. Pass `ref_adata=None` for benchmark runs — deconvolution is skipped, all other pipeline steps complete normally.
+**Method selection:**
+- `"nnls"` — default; non-negative least squares; fast, CPU-only, no GPU needed
+- `"cell2location"` — opt-in; higher accuracy; requires GPU for large datasets
+- `"none"` — explicit skip; appropriate for Xenium (cell-level data)
+- `ref_adata=None` — always skips regardless of method
 
 **Output keys added:**
 ```
 obsm["q05_cell_abundance_w_sf"]      cell type abundances (n_spots × n_cell_types)
-obs[cell_type]                       per-cell-type 5% quantile abundance (one column per type)
-uns["cell2location_mod"]             cell2location model metadata
+obsm["cell_type_abundances"]         canonical alias (same array)
+obs[cell_type]                       per-cell-type abundance (one column per type)
 uns["omicsage_spatial_deconvolve"]   provenance dict
 ```
-
-**Provenance keys:** `skipped`, `skip_reason` (when skipped), all parameters, `n_cell_types`, `cell_type_names`, `n_shared_genes`, `n_genes_after_selection`, `n_spots`.
-
-**Kuppe dataset specifics:**
-- `cell_type_key = "cell_type_original"` (11 cell types)
-- `batch_key_ref = "donor_id"`
-- `batch_key_st = "patient"` (4 patients: P1, P7, P8, P17)
-- `covariate_keys = ["assay"]`
-- `N_cells_per_location = 8`
 
 ---
 
@@ -356,223 +374,150 @@ uns["omicsage_spatial_deconvolve"]   provenance dict
 **Location:** `pipeline/modules/spatial/spatial_downstream.py`
 **Phase 7 Session:** 5
 
-**Purpose:** All spatial downstream analyses in a single module — seven analyses
+**Purpose:** All spatial downstream analyses in a single module — eight analyses
 covering tissue niche identification, cell-type-resolved gene expression,
 spatially variable gene characterisation, spatial interaction statistics,
-ligand-receptor communication, and pathway enrichment. Every analysis is
-independently gated: if its required inputs are absent, it records
-`skipped=True` in provenance and the pipeline continues without error.
+ligand-receptor communication, and pathway enrichment.
+
+*(Full API and analysis table unchanged — see previous version. Key parameters
+and graceful skip conditions are the same.)*
+
+**Provenance keys:** all `run_*` parameters, `timestamp`, `analyses` dict.
+
+---
+
+### 2.7 `spatial_impute.py`
+
+**Location:** `pipeline/modules/spatial/spatial_impute.py`
+**Phase 7 Session B** — *new*
+
+**Purpose:** Impute full-transcriptome expression onto Visium/Visium HD spots
+using a paired scRNA-seq reference. Fills the "missing genes" chapter: genes
+not in the spatial panel are predicted from co-expression patterns in the
+reference. Skips gracefully when no reference is configured.
 
 **Public API:**
 
 ```python
-spatial_downstream(
-    adata: AnnData,
-    # Region clustering (sc-best-practices §32.3.4.2)
-    run_region_clustering: bool = True,
-    region_resolution: float = 0.5,
-    region_n_neighbors: int = 15,
-    # Cell-type specific gene expression
-    run_celltype_expression: bool = True,
-    n_marker_genes: int = 20,
-    # Cell-type specific SVGs
-    run_celltype_svg: bool = True,
-    svg_n_genes: Optional[int] = None,    # None = all HVGs
-    # Co-occurrence
-    run_co_occurrence: bool = True,
-    co_occurrence_interval: Optional[list] = None,
-    # Neighbourhood enrichment
-    run_nhood_enrichment: bool = True,
-    n_perms_nhood: int = 1000,
-    # Ligand-receptor
-    run_ligrec: bool = True,
-    ligrec_n_perms: int = 1000,
-    ligrec_organism: str = "human",       # "human" or "mouse"
-    # SVG pathway enrichment
-    run_svg_gsea: bool = True,
-    svg_gsea_gene_sets: str = "GO_Biological_Process_2023",
-    svg_gsea_organism: str = "Human",     # "Human" or "Mouse"
-    # Shared
-    dominant_celltype_key: str = "dominant_cell_type",
-    n_jobs: int = 1,
+spatial_impute(
+    adata_spatial: AnnData,      # post-cluster checkpoint
+    adata_sc: Optional[AnnData] = None,  # paired scRNA-seq reference
+    method: str = "tangram",     # "tangram" | "gimvi"
+    cell_type_key: str = "cell_type",
+    n_top_genes: int = 2000,
+    device: str = "cpu",
+    tangram_mode: str = "clusters",   # "clusters" (memory-safe) | "cells" (GPU)
+    max_cells_per_type: int = 500,    # subsample guard for cells mode only
     inplace: bool = False,
 ) -> tuple[AnnData, dict]
 ```
 
-**Analyses — Tier 1** (require only `uns["moranI"]`, available after `spatial_cluster`):
+**Methods:**
 
-| Analysis | Method | Output key |
-|----------|--------|-----------|
-| SVG pathway enrichment | `gseapy.prerank` on Moran's I ranking | `uns["svg_gsea"]` |
+| Method | Mode | RAM | Per-spot score | Notes |
+|--------|------|-----|----------------|-------|
+| `tangram` | `clusters` | ~100 MB | ✗ (not available) | Default; maps cell-type signatures |
+| `tangram` | `cells` | ~2 GB+ | ✅ | Requires subsampling for large refs |
+| `gimvi` | — | High, GPU rec | ✗ | Deep generative model via scvi-tools |
 
-**Analyses — Tier 2** (require deconvolution outputs):
+**Memory note — clusters mode:** In clusters mode, Tangram maps per-cell-type
+mean signatures onto spots rather than individual cells. The mapping tensor is
+`(n_cell_types × n_spots)` instead of `(n_cells × n_spots)` — memory is
+negligible regardless of reference size. This is the recommended default for
+production runs.
 
-| Analysis | Method | Output key |
-|----------|--------|-----------|
-| Region clustering | Leiden on `obsm["q05_cell_abundance_w_sf"]` KNN graph | `obs["region_cluster"]`, `obsm["X_umap_celltype"]` |
-| Cell-type expression | Vectorised rank-based Spearman, all spots × all genes | `uns["celltype_marker_genes"]` |
-| Cell-type specific SVGs | Moran's I on above-median abundance spot subsets | `uns["celltype_svg"]` |
-| Co-occurrence | `sq.gr.co_occurrence` across distance intervals | `uns["{key}_co_occurrence"]` |
-| Neighbourhood enrichment | `sq.gr.nhood_enrichment`, 1000 permutations | `uns["{key}_nhood_enrichment"]` |
-| Ligand-receptor | `sq.gr.ligrec` via OmniPath database | `uns["{key}_ligrec"]` |
+**Memory note — cells mode:** With 41k cells and 3k spots, the mapping tensor
+is ~500 M float32 = ~2 GB before gradients. OOM-prone on WSL2. Use
+`max_cells_per_type` to subsample (default 500 per type) if cells mode is needed.
 
-`{key}` = `dominant_celltype_key` (default: `"dominant_cell_type"`), following squidpy's naming convention.
+**Tangram API notes** (verified from source):
+- `tg.pp_adatas()` **mutates** both input objects — the module always works on copies
+- `tg.map_cells_to_space(..., mode="clusters", cluster_label=cell_type_key)`
+- `tg.project_genes(adata_map, adata_sc, cluster_label=cell_type_key)` — must pass
+  `cluster_label` in clusters mode; the function collapses `adata_sc` to cluster-level
+  internally before the obs-index check
+- `project_genes` **returns** a new `AnnData` (spots × genes) — it does not
+  mutate `ad_map`; the return value must be captured
 
-**Graceful skip conditions:**
+**Storage contract:**
+```
+obsm["imputed_expression"]             float32 numpy array (n_spots × n_genes)
+                                       h5py-safe; no DataFrame in obsm
+obs["tangram_mapping_score"]           per-spot mapping score (cells mode only)
+uns["omicsage_spatial_impute"]         provenance dict including "genes_imputed" list
+```
 
-| Analysis | Skips when |
-|----------|-----------|
-| Region clustering | `obsm["q05_cell_abundance_w_sf"]` absent |
-| Cell-type expression | `obsm["q05_cell_abundance_w_sf"]` absent, or no cell types resolved |
-| Cell-type SVGs | `uns["moranI"]` or `obsm["q05_cell_abundance_w_sf"]` absent |
-| Co-occurrence | `obs["dominant_cell_type"]` or `obsm["spatial"]` absent |
-| Neighbourhood enrichment | `obs["dominant_cell_type"]` absent |
-| Ligand-receptor | `obs["dominant_cell_type"]` absent, squidpy not installed, or `sq.gr.ligrec` unavailable |
-| SVG GSEA | `uns["moranI"]` absent, or gseapy not installed |
+Gene names are stored in `uns["omicsage_spatial_impute"]["outputs"]["genes_imputed"]`
+and used by the report to reconstruct the DataFrame for visualization.
 
-**What it does — selected implementation notes:**
+**Skip behaviour:**
+- `adata_sc=None` → `skipped=True`, passthrough checkpoint written, report
+  renders a skip notice
+- `enabled: false` in config → same passthrough behaviour
+- `sc_reference_path` empty/null in config → same
 
-1. **Region clustering** — builds a KNN graph in cell-type abundance space (`sc.pp.neighbors` with `key_added="neighbors_celltype"`) so it does not overwrite the gene-expression KNN graph from earlier steps. Leiden and UMAP run on that graph. UMAP result stored at `obsm["X_umap_celltype"]`; any pre-existing `obsm["X_umap"]` is saved and restored.
-
-2. **Cell-type expression** — vectorised rank-based Spearman computed as a matrix operation rather than per-gene scipy calls. Gene names are mapped from ENSEMBL IDs to symbols via `var["feature_name"]` before storage.
-
-3. **Cell-type SVGs** — each cell-type subset recomputes `sq.gr.spatial_neighbors(n_neighs=6)` because the original `obsp["spatial_connectivities"]` is invalid after subsetting. Uses `n_perms=None` (analytical p-values) for speed.
-
-4. **Ligand-receptor** — makes a temporary `adata.copy()` with `var_names` remapped from ENSEMBL IDs to `var["feature_name"]` symbols before calling `sq.gr.ligrec`. The result is copied back; the original `var_names` are never modified. Requires internet access to query OmniPath at runtime.
-
-5. **SVG GSEA** — `_sanitize_gsea_df()` casts the five known numeric columns (`ES`, `NES`, `NOM p-val`, `FDR q-val`, `FWER p-val`) to `float64` and all others to `str` before storing in `uns`. Without this, `adata.write_h5ad()` crashes because h5py cannot serialise Python floats as variable-length strings when columns have `object` dtype.
-
-**Provenance keys:** all `run_*` parameters, `timestamp`, `analyses` dict — one entry per analysis with `skipped`, `reason` (when skipped), and analysis-specific stats (e.g. `n_regions`, `n_cell_types`, `n_pathways`, `n_significant`).
+**Provenance keys:** `module`, `timestamp`, `method`, `skipped`, `skip_reason`,
+`outputs.n_genes_imputed`, `outputs.n_spots`, `outputs.mean_mapping_score`,
+`outputs.n_poor_spots`, `outputs.genes_imputed`, `outputs.cell_type_key`,
+`outputs.device`, `outputs.tangram_mode`
 
 ---
 
 ## 3. Report Templates
 
-All five reports follow the same structure as the RNA pipeline reports:
-- `_render_page(title, sections, timestamp)` → full HTML shell with `<header>`, `<main>`, `<footer>`
-- Content inside `<main>` is composed of `<section>` blocks
-- Sections use `.stat-grid`, `.stat-card`, `.fig-grid`, `.fig-wrap` CSS classes
-- All figures are base64-encoded PNG strings embedded directly in the HTML
-- Reports are self-contained single files — no external dependencies
-
-**Why this pattern?** The `generate_spatial_combined_report()` function
-extracts content from `<main>` tags to assemble the tabbed combined report.
-All spatial reports must use `<main>` for this to work correctly.
+All six reports follow the same structure:
+- `_render_page(title, sections, timestamp)` → full HTML shell
+- Content composed of `<section>` blocks inside `<main>`
+- `.stat-grid`, `.stat-card`, `.fig-grid`, `.fig-wrap` CSS classes
+- All figures base64-encoded PNG strings — fully self-contained
+- Reports embeddable in the combined report via `<main>` extraction
 
 ---
 
-### 3.1 `spatial_qc_report.py`
+### 3.1–3.5 (unchanged)
 
-**Location:** `reports/templates/spatial/spatial_qc_report.py`
+`spatial_qc_report.py`, `spatial_reduce_report.py`, `spatial_cluster_report.py`,
+`spatial_deconvolve_report.py`, `spatial_downstream_report.py` — all unchanged
+from Phase 7 Sessions 1–5. See previous version for section-level detail.
+
+---
+
+### 3.6 `spatial_impute_report.py`
+
+**Location:** `reports/templates/spatial/spatial_impute_report.py`
+**Phase 7 Session B** — *new*
 
 **Public API:**
 ```python
-generate_spatial_qc_report(
-    adata: AnnData,           # must have uns["omicsage_spatial_qc"]
+generate_spatial_impute_report(
+    adata: AnnData,           # must have uns["omicsage_spatial_impute"]
     output_path: str,
     dataset_id: str = "spatial",
+    sc_ref_label: str = "",   # filename shown in Run Summary
 ) -> str                      # absolute path to written HTML
 ```
 
 **Sections:**
-1. **Run Summary** — stat cards (spots in/kept/removed, pass rate, genes); QC metric summary table (mean/median/std/min/max); filter thresholds applied table
-2. **QC Metric Distributions** — violin plots: total_counts, n_genes_by_counts, pct_counts_mt with threshold lines
-3. **Spatial Distribution of QC Metrics** — `sq.pl.spatial_scatter` for total_counts and pct_counts_mt overlaid on tissue image
-4. **Filter Breakdown** — bar chart of spots removed per filter criterion
+1. **Run Summary** — stat cards: n_genes_imputed, method, mean mapping score
+   (N/A in clusters mode — this is correct), n_spots, SC reference filename;
+   explanatory note on mapping score interpretation
+2. **Mapping Score Distribution** — histogram of per-spot Tangram mapping scores
+   with red threshold line at 0.1 (cells mode only). In clusters mode, renders
+   an explanatory paragraph instead of a skip note, explaining why scores are
+   not available and how to get them
+3. **Top Imputed Genes on Tissue** — `sq.pl.spatial_scatter` for top 5 genes by
+   variance in imputed expression; squidpy-optional (skips gracefully if absent)
+4. **Imputation Validation** — scatter of mean measured (log-normalised) vs mean
+   imputed expression across up to 50 shared genes; Spearman r with colour-coded
+   quality note (green ≥ 0.7, amber ≥ 0.4, red < 0.4). **Measured values are
+   log-normalised** (`log1p(counts/lib_size × 10000)`) before computing Spearman
+   to match the normalised scale of Tangram's imputed output
 
----
-
-### 3.2 `spatial_reduce_report.py`
-
-**Location:** `reports/templates/spatial/spatial_reduce_report.py`
-
-**Public API:**
-```python
-generate_spatial_reduce_report(
-    adata: AnnData,           # must have uns["omicsage_spatial_reduce"]
-    output_path: str,
-    dataset_id: str = "spatial",
-) -> str
-```
-
-**Sections:**
-1. **Run Summary** — stat cards (spots, total genes, HVGs, PCA components, variance explained, spatial edges, mean neighbours); parameters table; normalization-skipped note if applicable
-2. **Highly Variable Genes** — scatter: mean expression vs normalized dispersion, HVGs highlighted in orange
-3. **PCA** — elbow plot (per-PC + cumulative variance); PCA scatter coloured by total_counts
-4. **Spatial Neighbours Graph** — histogram of neighbours per spot (expected ~6 for Visium grid)
-
----
-
-### 3.3 `spatial_cluster_report.py`
-
-**Location:** `reports/templates/spatial/spatial_cluster_report.py`
-
-**Public API:**
-```python
-generate_spatial_cluster_report(
-    adata: AnnData,           # must have uns["omicsage_spatial_cluster"]
-    output_path: str,
-    dataset_id: str = "spatial",
-) -> str
-```
-
-**Sections:**
-1. **Run Summary** — stat cards (spots, clusters, resolution, SVGs if run); top 5 SVG gene badges; parameters table
-2. **Clustering** — spatial scatter coloured by Leiden cluster; horizontal bar chart of spots per cluster
-3. **Spatially Variable Genes (Moran's I)** — horizontal bar chart of top 20 SVG scores (red = FDR < 0.05); spatial scatter of top 3 SVG genes; table of top 20 SVGs with I score, p-value, FDR-adjusted p-value
-
-The SVG section is omitted entirely when `run_svg=False`.
-
----
-
-### 3.4 `spatial_deconvolve_report.py`
-
-**Location:** `reports/templates/spatial/spatial_deconvolve_report.py`
-
-**Public API:**
-```python
-generate_spatial_deconvolve_report(
-    adata: AnnData,           # must have uns["omicsage_spatial_deconvolve"]
-    output_path: str,
-    dataset_id: str = "spatial",
-) -> str
-```
-
-**Sections:**
-1. **Run Summary** — stat cards (spots, cell types or "Skipped", shared genes); skipped notice with reason if applicable; cell type badges
-2. **Cell Type Abundances** *(only when not skipped)* — mean abundance bar chart; dominant cell type per spot (spatial scatter); top 6 cell types spatial distribution (2×3 grid)
-3. **Parameters Used** *(only when not skipped)* — full parameters table
-
-When `skipped=True`, only the Run Summary section is shown with a yellow
-warning note explaining that a paired scRNA-seq reference is required.
-
----
-
-### 3.5 `spatial_downstream_report.py`
-
-**Location:** `reports/templates/spatial/spatial_downstream_report.py`
-
-**Public API:**
-```python
-generate_spatial_downstream_report(
-    adata: AnnData,           # must have uns["omicsage_spatial_downstream"]
-    output_path: str,
-    dataset_id: str = "spatial",
-    dominant_celltype_key: str = "dominant_cell_type",
-) -> str
-```
-
-**Sections:**
-1. **Run Summary** — stat cards (region clusters, cell types profiled, cell types SVG-tested, SVG pathways); analysis status table showing run/skipped for all 7 analyses
-2. **Region Clustering** — spatial scatter coloured by `obs["region_cluster"]`; UMAP of cell type composition space (`obsm["X_umap_celltype"]`) if available
-3. **Cell-type Marker Genes** — table: top 10 Spearman-correlated genes per cell type
-4. **Cell-type Specific SVGs** — table: top 5 Moran's I SVGs per cell type subset
-5. **Spatial Co-occurrence** — `sq.pl.co_occurrence` line plot for most abundant cell type
-6. **Neighbourhood Enrichment** — `sq.pl.nhood_enrichment` z-score heatmap (`method="average"`)
-7. **Ligand-Receptor Communication** — `sq.pl.ligrec` dotplot at `alpha=0.001`; significant interaction count note
-8. **SVG Pathway Enrichment** — NES bar chart (top 10, red = positive / blue = negative); top 20 pathway table with FDR significance stars
-
-Every section renders a "not run / data not available" note when the corresponding analysis was skipped, so the report is always complete regardless of which analyses ran.
+**Report DataFrame reconstruction:** The report reads
+`obsm["imputed_expression"]` (numpy array) and
+`uns["omicsage_spatial_impute"]["outputs"]["genes_imputed"]` (gene name list)
+and reconstructs a DataFrame internally. Handles both live-run DataFrames
+(if obsm still holds a DataFrame in memory) and checkpoint-reloaded numpy arrays.
 
 ---
 
@@ -580,19 +525,7 @@ Every section renders a "not run / data not available" note when the correspondi
 
 **Location:** `reports/spatial_combined_report.py`
 
-**Purpose:** Assembles all five step HTML reports into a single self-contained
-tabbed HTML file. Identical tab UI to `reports/combined_report.py` (RNA pipeline).
-
-**Public API:**
-```python
-generate_spatial_combined_report(
-    reports_dir: Path,
-    dataset_name: str = "OmicSage Spatial Analysis",
-    output_path: Optional[Path] = None,   # default: reports_dir/00_spatial_combined_report.html
-) -> str                                  # absolute path to written file
-```
-
-**Tab registry:**
+**Tab registry** (updated Session B):
 
 | Filename | Tab label | Icon |
 |----------|-----------|------|
@@ -601,20 +534,12 @@ generate_spatial_combined_report(
 | `spatial_cluster_report.html` | Cluster | 🫧 |
 | `spatial_deconvolve_report.html` | Deconvolve | 🧬 |
 | `spatial_downstream_report.html` | Downstream | 🔗 |
+| `spatial_impute_report.html` | Impute | 🧩 |
 
-**Behaviour:**
-- Only tabs for reports that exist on disk are shown
-- Progress bar shows n_done / 5 steps complete
-- Keyboard navigation: left/right arrow keys switch tabs
-- Supports both bare filenames and dataset-prefixed filenames (e.g. `kuppe_heart_spatial_qc_report.html`)
+Progress bar now shows n_done / **6** steps complete.
 
-**Standalone CLI:**
-```bash
-python -m reports.spatial_combined_report \
-  --reports-dir outputs/kuppe_heart \
-  --dataset-name "Kuppe Heart 2022" \
-  --output outputs/kuppe_heart/00_spatial_combined_report.html
-```
+All other combined report behaviour unchanged (tab extraction, keyboard nav,
+lightbox, partial tab support).
 
 ---
 
@@ -622,39 +547,9 @@ python -m reports.spatial_combined_report \
 
 **Location:** `run_spatial_pipeline.py`
 
-**Purpose:** Orchestrates all spatial pipeline steps with checkpointing,
-step selection, and combined report generation. Matches the RNA
-`run_pipeline.py` pattern exactly.
+**Step order:** `ingest → qc → reduce → cluster → deconvolve → downstream → impute`
 
-**Usage:**
-```bash
-# Run all steps
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml
-
-# Run all steps (explicit)
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step all
-
-# Stop at a checkpoint (inclusive)
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --to-step cluster
-
-# Resume from a checkpoint (inclusive)
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step reduce
-
-# Run a specific range
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step qc --to-step cluster
-
-# Run exactly one step
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step cluster
-
-# Force re-run even if checkpoint exists
-python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step reduce --force
-```
-
-**Step order:** `ingest → qc → reduce → cluster → deconvolve → downstream`
-
-**Checkpointing:** Every step writes its output to `output_dir/NN_<step>.h5ad`.
-If the file already exists, the step is skipped (cached). Use `--force` to
-override, or `--from-step` to force re-execution from a given step onward.
+**Checkpoints:**
 
 | Step | Checkpoint file |
 |------|----------------|
@@ -664,283 +559,295 @@ override, or `--from-step` to force re-execution from a given step onward.
 | cluster | `04_clustered.h5ad` |
 | deconvolve | `05_deconvolved.h5ad` |
 | downstream | `06_downstream.h5ad` |
+| impute | `07_imputed.h5ad` |
 
-**Downstream step predecessor logic:** `STEP_PREDECESSOR["downstream"] = "cluster"` (minimum required). The runner's `resolve_input` upgrades to `05_deconvolved.h5ad` automatically if it exists on disk, so running deconvolution first always gives the richer result without any extra CLI flags.
+**Impute step predecessor:** `"cluster"` (does not require deconvolution).
+The runner loads the cluster checkpoint, runs imputation, generates the report,
+and writes the imputed checkpoint. Writes a passthrough checkpoint (cluster
+checkpoint copied + skip provenance) when imputation is disabled or no reference
+is configured.
 
-**Config lookup:** All step parameters are read from the YAML config under
-`spatial.<step>`. CLI overrides are not supported (use `--force` + config edits).
+**Impute skip conditions** (checked in runner, not module):
+- `config.spatial.impute.enabled: false`
+- `config.spatial.impute.sc_reference_path` is null or empty string
 
-**Combined report:** Generated automatically at the end of every run, covering
-all step reports that exist in `output_dir`.
+**Runner reads from config:**
+```yaml
+spatial:
+  impute:
+    enabled: true
+    method: tangram
+    sc_reference_path: <path>
+    n_top_genes: 2000
+    cell_type_key: cell_type
+    device: cpu
+    tangram_mode: clusters      # "clusters" | "cells"
+    max_cells_per_type: 500     # cells mode subsampling guard
+```
+
+**Usage (unchanged pattern):**
+```bash
+python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml
+python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --step impute
+python run_spatial_pipeline.py --config config/runs/kuppe_heart.yaml --from-step impute --force
+```
 
 ---
 
-## 6. Config File
+## 6. Config Files
+
+### `kuppe_heart.yaml` (updated Session B)
 
 **Location:** `config/runs/kuppe_heart.yaml`
-**Dataset:** Kuppe et al. 2022 human myocardial infarction (control samples)
 
-**Top-level keys:**
+Added `spatial.impute` block:
 
-| Key | Value | Description |
-|-----|-------|-------------|
-| `dataset_id` | `kuppe_heart` | Used in output paths and report titles |
-| `dataset_name` | *(optional)* | Human-readable name for combined report header |
-| `output_dir` | `outputs/kuppe_heart` | All checkpoints and reports written here |
+```yaml
+spatial:
+  impute:
+    enabled: true
+    method: tangram
+    sc_reference_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
+    n_top_genes: 2000
+    cell_type_key: "cell_type_original"   # matches deconvolve.cell_type_key
+    device: cpu
+    tangram_mode: clusters
+    max_cells_per_type: 500
+```
 
-**`spatial` section keys:**
+### `visium_hd_mouse_brain.yaml` (new — Session B)
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `source` | *(required)* | Path to h5ad file or `"benchmark"` |
-| `spatial_type` | `"auto"` | `"h5ad"`, `"visium"`, `"benchmark"`, etc. |
-| `load_images` | `true` | Load tissue images from h5ad |
+**Location:** `config/runs/visium_hd_mouse_brain.yaml`
 
-**`spatial.qc` keys:**
+Configuration for 10x Visium HD Mouse Brain public dataset (used in the
+Seurat Visium HD vignette). Key differences from Kuppe:
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `min_counts` | `500` | Minimum total UMI per spot |
-| `max_counts` | `100000` | Maximum total UMI per spot |
-| `min_genes` | `200` | Minimum genes detected per spot |
-| `max_genes` | `10000` | Maximum genes detected per spot |
-| `max_mt_pct` | `20.0` | Maximum mitochondrial % |
-| `mt_prefix` | `"MT-"` | `"MT-"` human, `"mt-"` mouse |
-| `filter_spots` | `true` | Whether to remove failing spots |
+```yaml
+spatial:
+  source: data/benchmark/visium_hd_mouse_brain   # Space Ranger output dir
+  spatial_type: visium_hd
+  ingest:
+    bin_size: 8             # 8µm bins (10x recommendation)
+  qc:
+    min_counts: 50          # lower threshold for smaller HD bins
+    min_genes: 50
+    mt_prefix: "mt-"        # mouse uses lowercase
+```
 
-**`spatial.reduce` keys:**
+**Download:** `https://www.10xgenomics.com/datasets/visium-hd-cytassist-gene-expression-libraries-of-mouse-brain`
+(free, no account required — direct download via `cf.10xgenomics.com`).
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `n_top_genes` | `3000` | HVGs to select |
-| `n_comps` | `50` | PCA components |
-| `n_neighbors` | `6` | Spatial graph neighbours (6 = Visium hex grid) |
-| `coord_type` | `null` | `null` = auto-detect; `"grid"` or `"generic"` to override |
-| `normalize_total` | `true` | Apply normalize_total |
-| `target_sum` | `10000` | Normalization target (CPM-like) |
-| `log1p` | `true` | Apply log1p after normalization |
-| `flavor` | `"seurat"` | HVG flavor: `"seurat"` or `"cell_ranger"` |
+### `xenium_breast.yaml` (new — Session B)
 
-**`spatial.cluster` keys:**
+**Location:** `config/runs/xenium_breast.yaml`
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `resolution` | `0.5` | Leiden resolution |
-| `n_neighbors` | `15` | KNN graph neighbours (for Leiden, NOT spatial) |
-| `n_pcs` | `30` | PCA components to use for KNN |
-| `random_state` | `0` | Random seed |
-| `run_svg` | `true` | Run Moran's I SVG detection |
-| `svg_n_genes` | `null` | Genes to test (`null` = all HVGs) |
-| `annotation_map` | `null` | `cluster_id: label` dict or `null` |
+Configuration for 10x Xenium Human Breast Cancer public dataset. Key
+differences from Visium:
 
-**`spatial.deconvolve` keys:**
+```yaml
+spatial:
+  source: data/benchmark/xenium_breast
+  spatial_type: xenium
+  load_images: false          # morphology images not loaded by default
+  qc:
+    min_counts: 5             # panel-limited UMI
+    min_genes: 5
+    max_genes: 500            # targeted panel ceiling
+  reduce:
+    n_top_genes: 400          # <= panel size
+    n_comps: 30               # fewer effective dimensions
+  deconvolve:
+    method: none              # cell-level data; deconvolution not applicable
+  impute:
+    enabled: false            # targeted panel; imputation less meaningful
+```
 
-| Key | Default | Description |
-|-----|---------|-------------|
-| `ref_path` | *(optional)* | Path to scRNA-seq reference h5ad |
-| `cell_type_key` | `"cell_type_original"` | obs column in reference with cell types |
-| `batch_key_ref` | `"donor_id"` | Batch key in reference |
-| `batch_key_st` | `"patient"` | Batch key in spatial data |
-| `covariate_keys` | `["assay"]` | Categorical covariates in reference |
-| `layer_ref` | `"counts"` | Raw counts layer in reference |
-| `N_cells_per_location` | `8` | Expected cells per Visium spot |
-| `detection_alpha` | `20` | Technical variability parameter |
-| `max_epochs_ref` | `250` | Reference model training epochs |
-| `max_epochs_st` | `30000` | Spatial model training epochs |
-| `batch_size_ref` | `2500` | Reference model batch size |
-
-**`spatial.downstream` keys:**
-
-| Key | Default | Description |
-|-----|---------|-------------|
-| `run_region_clustering` | `true` | Cluster spots by cell type composition (requires deconvolution) |
-| `region_resolution` | `0.5` | Leiden resolution for region clusters |
-| `region_n_neighbors` | `15` | KNN neighbours in cell-type abundance space (capped at n_cell_types − 1) |
-| `run_celltype_expression` | `true` | Spearman correlation of cell type abundance vs gene expression |
-| `n_marker_genes` | `20` | Top N correlated genes stored per cell type |
-| `run_celltype_svg` | `true` | Moran's I on per-cell-type enriched spot subsets |
-| `svg_n_genes` | `null` | Genes to test per subset (`null` = all HVGs) |
-| `run_co_occurrence` | `true` | `sq.gr.co_occurrence` across distance intervals |
-| `run_nhood_enrichment` | `true` | `sq.gr.nhood_enrichment` permutation test |
-| `n_perms_nhood` | `1000` | Permutations for neighbourhood enrichment |
-| `run_ligrec` | `true` | `sq.gr.ligrec` via OmniPath (requires internet) |
-| `ligrec_n_perms` | `1000` | Permutations for ligrec |
-| `ligrec_organism` | `"human"` | `"human"` or `"mouse"` |
-| `run_svg_gsea` | `true` | `gseapy.prerank` on Moran's I ranked gene list |
-| `svg_gsea_gene_sets` | `"GO_Biological_Process_2023"` | Enrichr gene set collection name or path to .gmt |
-| `svg_gsea_organism` | `"Human"` | `"Human"` or `"Mouse"` |
-| `dominant_celltype_key` | `"dominant_cell_type"` | obs column with dominant cell type per spot |
-| `n_jobs` | `4` | Parallel workers for analyses that support it |
+**Download:** `https://www.10xgenomics.com/datasets/xenium-prime-5k-human-breast-cancer-ffpe`
+(free, account registration required).
 
 ---
 
 ## 7. Tests
 
-### `test_spatial_ingest_qc.py`
+### `test_spatial_ingest_qc.py` (updated Session B)
 **Location:** `tests/test_spatial_ingest_qc.py`
-**Covers:** `spatial_ingest` + `spatial_qc`
 
-Key test groups:
-- Auto-detection fingerprints for all 7 spatial types
-- Benchmark loading via squidpy
-- h5ad loading contract (layers["counts"], ENSEMBL swap, MT stripping)
-- QC metric computation
-- Per-threshold removal counts
-- `filter_spots=True/False` behaviour
-- `inplace=True/False`
-- Input validation (missing obsm["spatial"], empty obs/vars)
-- Summary statistics correctness
+New test groups added in Session B:
+- Auto-detection: `visium_hd` detected from `binned_outputs/` directory
+- Auto-detection: `xenium` detected from `transcripts.parquet`
+- Auto-detection priority: `visium_hd` wins over `visium` when both `spatial/`
+  and `binned_outputs/` present
+- Auto-detection priority: `xenium` wins over `visium` when both `spatial/`
+  and `transcripts.parquet` present
+
+For full Session B ingest format tests see `test_spatial_ingest_formats.py`.
 
 ---
 
-### `test_spatial_reduce.py`
-**Location:** `tests/test_spatial_reduce.py`
-**Covers:** `spatial_reduce` + `generate_spatial_reduce_report`
+### `test_spatial_ingest_formats.py` (new — Session B)
+
+**Location:** `tests/test_spatial_ingest_formats.py`
+**Covers:** Visium HD and Xenium loaders in `spatial_ingest.py`
+**Strategy:** All tests mock `spatialdata-io` via `patch.dict(sys.modules, ...)` —
+no real spatialdata-io install required in CI.
 
 Key test groups:
-- Contract (return type, provenance keys)
-- `inplace=True/False`
-- AnnData output state (all 10 expected keys present)
-- Normalization logic: raw path vs benchmark path vs `normalize_total=False`
-- Parameter passthrough (`n_top_genes`, `n_comps`, `flavor`)
-- `n_comps` capped at min(n_obs, n_vars) - 1
-- Input validation (4 error paths)
-- Provenance value correctness
-- Report: file generated, valid HTML, contains dataset_id and HVG count, benchmark normalization-skipped note
+- **Auto-detection:** all four new fingerprint tests (visium_hd, xenium, priority)
+- **Visium HD loader:** output contract (obsm/uns/layers), bin_size 8 and 16 routing,
+  missing table key → `KeyError` with message, `ImportError` without spatialdata-io
+- **Xenium loader:** output contract, `metadata["platform"] == "xenium"`, missing
+  table key → `KeyError`, `ImportError` without spatialdata-io
+- **Registry:** `visium_hd` and `xenium` now show `"implemented"`;
+  `merfish` and `codex` still `"planned"`
+- **Still-planned formats:** `NotImplementedError` for merfish and codex
+- **Public API routing:** `spatial_ingest(..., spatial_type="visium_hd")` and
+  `spatial_ingest(..., spatial_type="xenium")` route correctly end-to-end
+
+Total: 27 tests.
 
 ---
 
-### `test_spatial_cluster.py`
-**Location:** `tests/test_spatial_cluster.py`
-**Covers:** `spatial_cluster` + `generate_spatial_cluster_report`
+### `test_spatial_reduce.py`, `test_spatial_cluster.py`, `test_spatial_deconvolve.py`, `test_spatial_downstream.py`
 
-Key test groups:
-- Contract (return type, provenance keys)
-- `inplace=True/False`
-- Clustering output state (cluster key in obs, all spots assigned, shape preserved)
-- Cluster count and size consistency
-- Higher resolution → more clusters (soft check)
-- Annotation map: label key written, Unknown for unmapped clusters
-- Custom `cluster_key`
-- SVG path: `uns["moranI"]` present, DataFrame with required columns, sorted descending
-- `run_svg=False`: moranI absent, no SVG provenance keys
-- `svg_n_genes` caps tested genes
-- Input validation (missing X_pca, missing spatial_connectivities when run_svg=True, empty obs/vars)
-- Report: valid HTML, contains n_clusters, skipped-SVG section absent when run_svg=False
+Unchanged from Phase 7 Sessions 2–5. See previous version for detail.
 
 ---
 
-### `test_spatial_deconvolve.py`
-**Location:** `tests/test_spatial_deconvolve.py`
-**Covers:** `spatial_deconvolve` + `generate_spatial_deconvolve_report`
-**Strategy:** cell2location training is NOT run in unit tests (too slow).
-Tests cover the skip path (ref_adata=None) and a synthetic post-deconvolution state.
+### `test_spatial_impute.py` (new — Session B)
+
+**Location:** `tests/test_spatial_impute.py`
+**Covers:** `spatial_impute.py` + `spatial_impute_report.py`
+**Strategy:** All Tangram calls mocked via `patch.object(m, "_TANGRAM_AVAILABLE", True)`
++ `patch.dict(sys.modules, {"tangram": mock_tg})`. No real Tangram install
+required in CI. gimVI tested only for its `ImportError` guard.
 
 Key test groups:
-- Skip path: all contract tests with `ref_adata=None`
-- `inplace=True/False`
-- Skip path: `skipped=True`, `skip_reason` present, no `q05_cell_abundance_w_sf`
-- Input validation: non-AnnData, missing `layers["counts"]`, empty adata, non-AnnData ref, missing ref layer, missing cell_type_key, empty ref
-- Simulated post-deconvolution state: abundance shape, non-negative values, cell type columns in obs
-- `ingest._load_h5ad` contract: layers["counts"] saved, var_names swapped to ENSEMBL, MT genes stripped
-- Report: valid HTML, contains dataset_id, contains cell type names, skipped notice when skipped, no provenance error
+- **Skip path:** `adata_sc=None` skips cleanly; `skipped=True` in provenance;
+  `inplace=False/True` semantics correct
+- **Tangram path:** output contract (`obsm["imputed_expression"]` is `np.ndarray`,
+  dtype `float32`); shape (spots × n_genes); provenance keys; `inplace=False`
+  does not mutate input; invalid method → `ValueError`
+- **gimVI ImportError guard:** raises `ImportError` when `_SCVI_AVAILABLE=False`
+- **Tangram ImportError guard:** raises `ImportError` when `_TANGRAM_AVAILABLE=False`
+- **Helpers:** `_ensure_counts_in_X` prefers `layers["counts"]`; `_select_overlap_hvgs`
+  returns list within spatial genes; no-overlap → `ValueError`
+- **Report:** renders without error (squidpy mocked out); skipped state renders
+  skip notice; stat cards present; validation section present; numpy array obsm
+  reconstructed from `uns` gene names correctly
 
-**Integration test** (skipped by default):
-```python
-@pytest.mark.skip(reason="requires Kuppe data + ~2h runtime")
-def test_full_deconvolution_kuppe():
-    ...
-```
-Run manually with:
+Total: 20 tests.
+
+---
+
+## 8. Benchmark Data Download
+
+**Location:** `scripts/download_spatial_benchmark.py`
+**Phase 7 Session B** — *new*
+
+**Purpose:** Downloads all spatial benchmark datasets needed for OmicSage testing
+and validation. Kuppe datasets download automatically; 10x datasets print manual
+instructions and validate the directory structure once placed.
+
+**Usage:**
 ```bash
-python -m pytest tests/test_spatial_deconvolve.py::test_full_deconvolution_kuppe --no-header -s
+conda activate omicsage
+python scripts/download_spatial_benchmark.py                        # download all
+python scripts/download_spatial_benchmark.py --skip kuppe_visium    # skip one
+python scripts/download_spatial_benchmark.py --validate-only        # check what's present
 ```
 
----
+**Dataset registry:**
 
-### `test_spatial_downstream.py`
-**Location:** `tests/test_spatial_downstream.py`
-**Covers:** `spatial_downstream` + `generate_spatial_downstream_report`
-**Strategy:** All analyses run on a synthetic 60-spot AnnData fixture. Slow analyses (ligrec, GSEA) are tested as individual units; co-occurrence and nhood_enrichment use squidpy on the minimal graph.
+| Key | Dataset | Size | Method |
+|-----|---------|------|--------|
+| `kuppe_visium` | Kuppe et al. 2022 Visium (human heart) | ~1 GB | Auto (Figshare) |
+| `kuppe_snrna` | Kuppe et al. 2022 snRNA-seq reference | ~2 GB | Auto (Figshare) |
+| `visium_hd_mouse_brain` | 10x Visium HD Mouse Brain | ~3 GB | Manual (10x website) |
+| `xenium_breast` | 10x Xenium Human Breast Cancer | ~8 GB | Manual (10x website, account required) |
 
-Key test groups:
-- Import smoke test (module + report callable)
-- `inplace=True/False` behaviour (object identity check)
-- `TypeError` on non-AnnData input
-- All analyses skip gracefully on bare AnnData (no deconvolution, no moranI)
-- Region clustering: `obs["region_cluster"]` present, dtype is category, `n_regions ≥ 1`
-- Cell-type expression: `uns["celltype_marker_genes"]` is dict, genes per cell type ≤ `n_marker_genes`
-- Neighbourhood enrichment: `uns["dominant_cell_type_nhood_enrichment"]` present with `"zscore"` key
-- Co-occurrence: `uns["dominant_cell_type_co_occurrence"]` present
-- Cell-type SVGs: `uns["celltype_svg"]` is dict (squidpy required; skipped if absent)
-- Provenance structure: `module`, `timestamp`, `params`, `analyses` all present
-- Report raises `ValueError` when `uns["omicsage_spatial_downstream"]` absent
-- Report generates valid HTML with expected section headings
+**Validation checks:**
+- Kuppe: file exists and `> 1 MB`
+- Visium HD: directory contains `binned_outputs/` and `spatial/`
+- Xenium: directory contains `experiment.xenium`, `cell_feature_matrix.h5`,
+  `transcripts.parquet`
+
+**Exit code:** `0` if all datasets ready or skipped; `1` if any manual download
+is required or a download failed (CI-compatible).
 
 ---
 
-## 8. AnnData State Reference
+## 9. AnnData State Reference
 
 The table below shows the complete state of `adata` after each pipeline step.
 
-| Key | After ingest | After QC | After reduce | After cluster | After deconvolve | After downstream |
-|-----|:---:|:---:|:---:|:---:|:---:|:---:|
-| `X` | raw counts | raw counts | normalized+log1p | normalized+log1p | normalized+log1p | normalized+log1p |
-| `layers["counts"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obsm["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `uns["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obs["total_counts"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obs["n_genes_by_counts"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obs["pct_counts_mt"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `obs["qc_pass"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `var["highly_variable"]` | — | — | ✅ | ✅ | ✅ | ✅ |
-| `obsm["X_pca"]` | — | — | ✅ | ✅ | ✅ | ✅ |
-| `obsp["spatial_connectivities"]` | — | — | ✅ | ✅ | ✅ | ✅ |
-| `obs["spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ |
-| `uns["moranI"]` | — | — | — | ✅ (if run_svg) | ✅ | ✅ |
-| `obsm["q05_cell_abundance_w_sf"]` | — | — | — | — | ✅ (if ref) | ✅ (if ref) |
-| `obs[cell_type columns]` | — | — | — | — | ✅ (if ref) | ✅ (if ref) |
-| `obs["region_cluster"]` | — | — | — | — | — | ✅ (if ref) |
-| `obsm["X_umap_celltype"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["celltype_marker_genes"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["celltype_svg"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["*_nhood_enrichment"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["*_co_occurrence"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["*_ligrec"]` | — | — | — | — | — | ✅ (if ref) |
-| `uns["svg_gsea"]` | — | — | — | — | — | ✅ |
-| `uns["omicsage_spatial_ingest"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_qc"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_reduce"]` | — | — | ✅ | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ |
-| `uns["omicsage_spatial_deconvolve"]` | — | — | — | — | ✅ | ✅ |
-| `uns["omicsage_spatial_downstream"]` | — | — | — | — | — | ✅ |
+| Key | ingest | QC | reduce | cluster | deconvolve | downstream | impute |
+|-----|:---:|:---:|:---:|:---:|:---:|:---:|:---:|
+| `X` | raw | raw | norm+log1p | norm+log1p | norm+log1p | norm+log1p | norm+log1p |
+| `layers["counts"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obsm["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["spatial"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["total_counts"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["qc_pass"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `var["highly_variable"]` | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obsm["X_pca"]` | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obsp["spatial_connectivities"]` | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `obs["spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| `uns["moranI"]` | — | — | — | ✅¹ | ✅ | ✅ | ✅ |
+| `obsm["q05_cell_abundance_w_sf"]` | — | — | — | — | ✅² | ✅² | ✅² |
+| `obs[cell_type columns]` | — | — | — | — | ✅² | ✅² | ✅² |
+| `obs["region_cluster"]` | — | — | — | — | — | ✅² | ✅² |
+| `obsm["X_umap_celltype"]` | — | — | — | — | — | ✅² | ✅² |
+| `uns["celltype_marker_genes"]` | — | — | — | — | — | ✅² | ✅² |
+| `uns["*_nhood_enrichment"]` | — | — | — | — | — | ✅² | ✅² |
+| `uns["*_co_occurrence"]` | — | — | — | — | — | ✅² | ✅² |
+| `uns["*_ligrec"]` | — | — | — | — | — | ✅² | ✅² |
+| `uns["svg_gsea"]` | — | — | — | — | — | ✅ | ✅ |
+| `obsm["imputed_expression"]` | — | — | — | — | — | — | ✅³ |
+| `obs["tangram_mapping_score"]` | — | — | — | — | — | — | ✅⁴ |
+| `uns["omicsage_spatial_ingest"]` | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_qc"]` | — | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_reduce"]` | — | — | ✅ | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_cluster"]` | — | — | — | ✅ | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_deconvolve"]` | — | — | — | — | ✅ | ✅ | ✅ |
+| `uns["omicsage_spatial_downstream"]` | — | — | — | — | — | ✅ | ✅ |
+| `uns["omicsage_spatial_impute"]` | — | — | — | — | — | — | ✅ |
 
-`*` = `dominant_celltype_key` prefix (default: `dominant_cell_type`).
-`if ref` = requires `ref_adata` to have been passed to `spatial_deconvolve`; all downstream deconvolution-dependent analyses skip gracefully if absent.
+¹ Only if `run_svg=True`
+² Only if `ref_adata` was provided to `spatial_deconvolve`
+³ float32 numpy array; `uns["omicsage_spatial_impute"]["outputs"]["genes_imputed"]`
+  holds column names
+⁴ Only in `tangram_mode="cells"`; not available in clusters mode
+
+`*` = `dominant_celltype_key` prefix (default: `dominant_cell_type`)
 
 ---
 
-## 9. Key Decisions
+## 10. Key Decisions
 
 | Decision | Choice | Reason |
 |----------|--------|--------|
 | Normalization | `normalize_total` + `log1p` | SCTransform is R-only; Python/scanpy standard |
-| HVG selection | `flavor="seurat"`, `n_top_genes=3000` | `"seurat"` safe for RNA (no TF-IDF overflow); 3000 standard for Visium |
-| Spatial graph | `coord_type=None` (auto-detect) | Safer than hardcoding `"grid"`; squidpy auto-selects grid when `uns["spatial"]` present |
+| HVG selection | `flavor="seurat"`, `n_top_genes=3000` | Safe for RNA; 3000 standard for Visium |
+| Spatial graph | `coord_type=None` (auto-detect) | squidpy auto-selects grid; safer than hardcoding |
 | Clustering graph | KNN from PCA, NOT spatial graph | Cluster by transcriptomic similarity; spatial graph reserved for SVGs |
-| SVG p-values | `n_perms=None` (analytical) | Fast; permutation testing available but slow for 3000+ genes |
-| Deconvolution | cell2location | sc-best-practices recommended; best on simulated benchmarks |
-| GPU/CPU | Auto-detected by PyTorch | No explicit `use_gpu` flag; CPU fallback automatic |
-| Gene IDs | ENSEMBL IDs in `var_names` after h5ad ingest | cell2location requires ENSEMBL to map between spatial and reference |
-| MT genes | Stripped at ingest into `obsm["MT"]` | cell2location recommendation; MT% QC still computed from original X |
-| Benchmark deconvolution | Graceful skip when `ref_adata=None` | squidpy benchmark has no paired scRNA-seq reference |
-| Annotation map | Optional, no hardcoded cluster→celltype maps | Cluster numbering is non-deterministic across runs |
-| `inplace` default | `False` | Safe default; avoids unexpected mutation |
-| Report structure | `<header>/<main>/<footer>` with `<section>` blocks | Matches RNA pipeline exactly; required for combined report tab extraction |
-| Region clustering graph | `key_added="neighbors_celltype"` in `sc.pp.neighbors` | Prevents overwriting gene-expression KNN; Leiden and UMAP for region clusters read this graph explicitly |
-| UMAP key for region clusters | `obsm["X_umap_celltype"]` (not `X_umap`) | Avoids overwriting any gene-expression UMAP from earlier steps; original `X_umap` saved and restored |
-| Cell-type SVG spatial graph | Recomputed per subset with `sq.gr.spatial_neighbors` | The original `obsp["spatial_connectivities"]` is invalid after spot subsetting |
-| SVG GSEA p-values | `n_perms=None` (analytical) for per-subset Moran's I | Speed; running 1000 permutations × n_cell_types is prohibitive in a pipeline |
-| ligrec gene symbol swap | Temporary copy with `var_names = var["feature_name"]` | OmniPath matches gene symbols; ENSEMBL IDs in `var_names` after ingest would match nothing. Copy discarded after result is transferred back |
-| GSEA dtype sanitisation | `_sanitize_gsea_df()` before `uns["svg_gsea"]` assignment | gseapy returns numeric columns as `object` dtype; `write_h5ad` crashes trying to serialise floats as HDF5 variable-length strings |
-| Downstream predecessor | `"cluster"` (minimum); `resolve_input` upgrades to deconvolve if available | Allows downstream to run on any dataset, even without a scRNA-seq reference; Tier 2 analyses skip gracefully |
+| SVG p-values | `n_perms=None` (analytical) | Fast; permutation testing available but slow |
+| Deconvolution default | NNLS | Memory-safe; cell2location opt-in |
+| Xenium deconvolution | `method: none` | Cell-level data; deconvolution not applicable |
+| Visium HD bin default | 8µm | 10x recommendation; 2µm is too sparse |
+| Visium HD / Xenium loader | `spatialdata-io` | Both `sq.read.visium_hd` and `sq.read.xenium` do not exist in squidpy; spatialdata-io is the correct package |
+| Visium HD / Xenium SpatialData→AnnData | Extract `sdata.tables[key]` | Tables already have `obsm["spatial"]` set — no extra extraction needed |
+| uns["spatial"] stub for new formats | Minimal stub built in loader | Downstream squidpy tools validate for `uns["spatial"]`; imaging data not loaded by default |
+| Imputed expression storage | `float32` numpy array in `obsm` | AnnData rejects plain Python strings in obsm; DataFrames fail h5py due to mixed-type string columns |
+| Gene names for imputed expression | Stored in `uns` provenance | Decouples gene identity from the array; compatible with h5ad checkpoint round-trip |
+| Tangram mode default | `"clusters"` | `"cells"` mode OOM on 41k cell reference (41k × 3k spots tensor); clusters mode uses n_cell_types × n_spots — negligible |
+| Tangram `project_genes` | Must pass `cluster_label` + capture return value | In clusters mode: `cluster_label` required for obs-index alignment; `project_genes` returns new AnnData, does not mutate `ad_map` |
+| Validation scatter normalization | log-normalise measured before Spearman | Imputed values are on normalised scale; raw counts vs normalised gives artificially low r |
+| Mapping scores in clusters mode | Not computed | `ad_map.obs` rows are cell types, not spots; `tg_score` cannot map back to spots |
+| Imputation for Xenium | `enabled: false` default | Xenium is already a targeted panel; imputing genes not in the panel has less value than for Visium |
+| Gene ID consistency | `_select_overlap_hvgs` uses `set` intersection of `var_names` | Ensures no mismatched symbols vs ENSEMBL IDs; raises `ValueError` with clear message if overlap is empty |
+| Annotation map | Optional, no hardcoded maps | Cluster numbering is non-deterministic across runs |
+| `inplace` default | `False` | Safe default |
+| Report structure | `<header>/<main>/<footer>` with `<section>` blocks | Required for combined report tab extraction |
+| GSEA dtype sanitisation | `_sanitize_gsea_df()` before `uns["svg_gsea"]` | gseapy returns numeric columns as `object` dtype; `write_h5ad` crashes |
+| Downstream predecessor | `"cluster"` (minimum); upgrades to deconvolve if available | Allows running on any dataset without scRNA-seq reference |
+| Impute predecessor | `"cluster"` (does not require deconvolution) | Imputation is independent of cell type deconvolution |

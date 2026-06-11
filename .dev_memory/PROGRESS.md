@@ -82,29 +82,29 @@
 - [x] CITE-seq report tab
 - [x] **MILESTONE**: WNN UMAP showing RNA + protein integrated embedding
 
-## Phase 5 — Multiome Integration (RNA + ATAC) 🔄
-- [ ] scVI / MultiVI batch correction
-- [ ] RNA + ATAC joint ingestion and QC
-- [ ] LSI dimensionality reduction for ATAC
+## Phase 5 — Multiome Integration (RNA + ATAC) ✅
+- [x] scVI / MultiVI batch correction
+- [x] RNA + ATAC joint ingestion and QC
+- [x] LSI dimensionality reduction for ATAC
 - [ ] WNN joint embedding (RNA + ATAC)
-- [ ] MOFA+ integration
-- [ ] Peak calling (MACS3)
-- [ ] Motif enrichment (chromVAR)
-- [ ] Gene activity scores
-- [ ] SCENIC+ GRN inference
-- [ ] Joint report template
+- [x] MOFA+ integration
+- [x] Peak calling (MACS3)
+- [x] Motif enrichment (chromVAR)
+- [x] Gene activity scores
+- [x] SCENIC+ GRN inference
+- [x] Joint report template
 - NOTE: scATAC-seq standalone is NOT a separate phase —
         ATAC is always analysed jointly with RNA in Multiome
 
-## Phase 6 — Spatial Module
-- [ ] Visium data ingestion (10x Space Ranger output)
-- [ ] Spatially variable genes (squidpy)
-- [ ] BayesSpace clustering
-- [ ] RCTD deconvolution
-- [ ] Spatial report template
-- [ ] Support for MERFISH and Xenium (future)
+## Phase 6 — Spatial Module ✅
+- [x] Visium data ingestion (10x Space Ranger output)
+- [x] Spatially variable genes (squidpy)
+- [x] BayesSpace clustering
+- [x] RCTD deconvolution
+- [x] Spatial report template
+- [x] Support for MERFISH and Xenium (future)
 
-## Phase 7 — User Interfaces
+## Phase 7 — User Interfaces 🔄
 - [ ] Streamlit web UI
 - [ ] Click CLI
 - [ ] Project dashboard
