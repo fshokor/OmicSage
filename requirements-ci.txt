@@ -38,3 +38,4 @@ ctxcore>=0.2.0
 decoupler>=2.0.0
 cell2location==0.1.5
 tangram-sc==1.0.0
+squidpy>=1.0.0

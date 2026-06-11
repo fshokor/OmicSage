@@ -100,9 +100,15 @@ def _make_mock_tg(n_spots: int, n_genes: int, gene_names: list[str]):
         )
         return ad_map
 
-    def project_genes(adata_map, adata_sc):
-        # Mutates adata_map to have imputed expression; already mocked above
-        pass
+    def project_genes(adata_map, adata_sc, cluster_label=None, scale=True):
+        # project_genes RETURNS a new AnnData (spots × genes).
+        # The module captures this return value and calls .to_df() on it.
+        adata_ge = MagicMock()
+        adata_ge.to_df.return_value = pd.DataFrame(
+            np.random.rand(n_spots, n_genes),
+            columns=gene_names,
+        )
+        return adata_ge
 
     mock_tg.pp_adatas = pp_adatas
     mock_tg.map_cells_to_space = map_cells_to_space

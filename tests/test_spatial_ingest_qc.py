@@ -188,8 +188,12 @@ class TestListSupportedTypes:
 
     def test_planned_types_present(self):
         result = list_supported_types()
-        for t in ["xenium", "merfish", "codex", "visium_hd"]:
+        # visium_hd and xenium are now implemented (Session B)
+        for t in ["merfish", "codex"]:
             assert result[t] == "planned"
+        # confirm the Session B formats are implemented
+        assert result["visium_hd"] == "implemented"
+        assert result["xenium"] == "implemented"
 
 
 # ===========================================================================
@@ -198,12 +202,12 @@ class TestListSupportedTypes:
 
 
 class TestPlannedTypesRaiseNotImplemented:
-    @pytest.mark.parametrize("stype", ["xenium", "merfish", "codex", "visium_hd"])
+    @pytest.mark.parametrize("stype", ["merfish", "codex"])  # visium_hd/xenium now implemented
     def test_planned_type_raises(self, stype):
         with pytest.raises(NotImplementedError, match="planned for a future"):
             spatial_ingest("/some/path", spatial_type=stype)
 
-    @pytest.mark.parametrize("stype", ["xenium", "merfish", "visium_hd"])
+    @pytest.mark.parametrize("stype", ["merfish"])  # xenium/visium_hd now implemented
     def test_planned_type_error_includes_h5ad_workaround(self, stype):
         with pytest.raises(NotImplementedError, match="h5ad"):
             spatial_ingest("/some/path", spatial_type=stype)
