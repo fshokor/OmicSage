@@ -1,0 +1,102 @@
+[
+  {
+    "id": "20260616_235943",
+    "timestamp": "2026-06-16T23:59:43",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122_multiome",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_zmgwylsm.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  },
+  {
+    "id": "20260616_235653",
+    "timestamp": "2026-06-16T23:56:53",
+    "dataset_name": "kuppe_heart",
+    "dataset_id": "kuppe_heart",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_p7s5mr1w.yaml",
+    "reports_dir": "reports/kuppe_heart",
+    "status": "running"
+  },
+  {
+    "id": "20260616_235215",
+    "timestamp": "2026-06-16T23:52:15",
+    "dataset_name": "kuppe_heart",
+    "dataset_id": "kuppe_heart",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_aozc98yh.yaml",
+    "reports_dir": "reports/kuppe_heart",
+    "status": "running"
+  },
+  {
+    "id": "20260616_235203",
+    "timestamp": "2026-06-16T23:52:03",
+    "dataset_name": "kuppe_heart",
+    "dataset_id": "kuppe_heart",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_aozc98yh.yaml",
+    "reports_dir": "reports/kuppe_heart",
+    "status": "running"
+  },
+  {
+    "id": "20260616_234818",
+    "timestamp": "2026-06-16T23:48:18",
+    "dataset_name": "kuppe_heart",
+    "dataset_id": "kuppe_heart",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_4p70hicg.yaml",
+    "reports_dir": "reports/kuppe_heart",
+    "status": "running"
+  },
+  {
+    "id": "20260616_234037",
+    "timestamp": "2026-06-16T23:40:37",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122_multiome",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_3zi19rh7.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  },
+  {
+    "id": "20260616_233730",
+    "timestamp": "2026-06-16T23:37:30",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122_multiome",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_3zi19rh7.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  },
+  {
+    "id": "20260616_233707",
+    "timestamp": "2026-06-16T23:37:07",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122_multiome",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_3zi19rh7.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  },
+  {
+    "id": "20260616_232549",
+    "timestamp": "2026-06-16T23:25:49",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_eeqn46v3.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  },
+  {
+    "id": "20260616_232342",
+    "timestamp": "2026-06-16T23:23:42",
+    "dataset_name": "BMMC Multiome (NeurIPS 2021)",
+    "dataset_id": "GSE194122",
+    "modality": "Multiome",
+    "config_path": "/tmp/omicsage_eeqn46v3.yaml",
+    "reports_dir": "reports/BMMC_Multiome_NeurIPS_2021",
+    "status": "running"
+  }
+]

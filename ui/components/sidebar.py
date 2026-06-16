@@ -79,7 +79,7 @@ def render():
                             cfg    = load_config(cfg_path)
                             parsed = parse_config_into_state(cfg, cfg_path)
                             _apply_parsed(parsed)
-                            st.session_state[KEY_PAGE] = 2
+                            st.session_state[KEY_PAGE] = 1   # Configure first
                             st.rerun()
                         except Exception as e:
                             st.error(f"Could not load: {e}")

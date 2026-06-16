@@ -1,5 +1,5 @@
 """
-OmicSage — Streamlit UI  (v2)
+OmicSage — Streamlit UI 
 ==============================
 Run from repo root:
     streamlit run ui/app.py
@@ -117,7 +117,7 @@ def _nav():
 
     steps = [
         ("1 · Dataset",   True),
-        ("2 · Configure", data_ok),
+        ("2 · Configure", data_ok or config_ok),   # unlocked when config loaded
         ("3 · Run",       config_ok),
         ("4 · Report",    run_status == "done"),
     ]

@@ -89,30 +89,60 @@ def render():
             key="load_config_path",
         )
 
-        col_load, col_recent = st.columns([1, 1])
+        if config_path_input:
+            p = Path(config_path_input)
+            if p.exists() and p.suffix in (".yaml", ".yml"):
+                st.success(f"✓ Found: `{config_path_input}`")
 
-        with col_load:
-            if config_path_input:
-                p = Path(config_path_input)
-                if p.exists() and p.suffix in (".yaml", ".yml"):
-                    st.success(f"✓ Found: `{config_path_input}`")
-                    if st.button("Load this config →", type="primary",
+                # Parse the config to show a preview
+                try:
+                    cfg    = load_config(config_path_input)
+                    parsed = parse_config_into_state(cfg, config_path_input)
+                except Exception as e:
+                    st.error(f"Failed to parse config: {e}")
+                    parsed = None
+
+                if parsed:
+                    # ── Preview what was detected ──────────────────────────
+                    st.divider()
+                    st.markdown("### Confirm before loading")
+
+                    col_info, col_mod = st.columns([1, 1])
+                    with col_info:
+                        st.markdown(
+                            f"**Dataset**: {parsed['dataset_name'] or '—'}  \n"
+                            f"**ID**: {parsed['dataset_id'] or '—'}  \n"
+                            f"**Organism**: {parsed['organism']}  \n"
+                            f"**Steps enabled**: {len(parsed['selected_steps'])}"
+                        )
+                    with col_mod:
+                        # Let user confirm or override the detected modality
+                        modality_opts = ["scRNA-seq", "CITE-seq", "Multiome", "Spatial"]
+                        detected = parsed.get("modality", "scRNA-seq")
+                        detected_idx = modality_opts.index(detected) if detected in modality_opts else 0
+                        chosen_modality = st.selectbox(
+                            "Modality",
+                            options=modality_opts,
+                            index=detected_idx,
+                            key="load_modality_override",
+                            help=f"Auto-detected as **{detected}** from config. Change if incorrect.",
+                        )
+                        if chosen_modality != detected:
+                            st.caption(f"⚠ Overriding detected modality ({detected})")
+
+                    if st.button("Load & go to Configure →", type="primary",
                                  use_container_width=True):
-                        try:
-                            cfg    = load_config(config_path_input)
-                            parsed = parse_config_into_state(cfg, config_path_input)
-                            _apply_parsed(parsed)
-                            st.success(
-                                f"Loaded **{parsed['dataset_name']}** "
-                                f"({parsed['modality']}) — "
-                                f"{len(parsed['selected_steps'])} steps enabled."
-                            )
-                            st.session_state[KEY_PAGE] = 2   # go straight to Run
-                            st.rerun()
-                        except Exception as e:
-                            st.error(f"Failed to parse config: {e}")
-                elif config_path_input:
-                    st.error("File not found or not a .yaml file.")
+                        parsed["modality"] = chosen_modality
+                        _apply_parsed(parsed)
+                        st.session_state[KEY_PAGE] = 1
+                        st.rerun()
+
+            elif config_path_input:
+                st.error("File not found or not a .yaml file.")
+
+        col_load_spacer, col_recent = st.columns([1, 1])
+        with col_load_spacer:
+            pass  # config path input + preview fills this column
 
         # ── Recent runs ───────────────────────────────────────────────────────
         with col_recent:

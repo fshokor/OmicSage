@@ -1,185 +1,69 @@
-# OmicSage — Dataset Configuration
-# Dataset : GSE194122 BMMC CITE-seq (NeurIPS 2021)
-# Run     : python run_pipeline.py --config config/runs/GSE194122.yaml
-#
-# Common usage patterns
-# ---------------------
-# Full pipeline:
-#   python run_pipeline.py --config config/runs/GSE194122.yaml
-#
-# Stop at clustering to inspect:
-#   python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
-#
-# Resume after choosing a resolution:
-#   1. Set cluster.params.best_resolution_override below
-#   2. python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
-#   3. python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
-#
-# Re-run a single step:
-#   python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
-#
-# Skip harmony (no batch effects):
-#   Set harmony.enabled: false and cluster_harmony.enabled: false below
-
 dataset:
   id: GSE194122
-  name: "BMMC CITE-seq (NeurIPS 2021)"
-  modality: cite          # cite | scrna | atac | multiome
-  organism: human
-
+  name: BMMC Multiome (NeurIPS 2021)
 paths:
-  raw_input: data/benchmark/GSE194122_cite_raw_only.h5ad
-  processed_dir: data/processed/GSE194122
-  reports_dir: reports/GSE194122
-
+  atac_input: data/processed/GSE194122_multiome/01_qc_atac.h5ad
+  rna_input: data/processed/GSE194122_multiome/05_annotated.h5ad
+  processed_dir: data/processed/BMMC_Multiome_NeurIPS_2021
+  reports_dir: reports/BMMC_Multiome_NeurIPS_2021
+multiome:
+  batch_key: batch
 steps:
-
-  qc:
-    enabled: true
-    # input_override: data/external/my_qc_output.h5ad   # uncomment to bypass
-    params:
-      min_genes: 200
-      max_genes: 2500
-      max_mt_pct: 5.0
-      remove_doublets: true
-
-  normalize:
+  atac_qc:
     enabled: true
     params:
-      batch_key: batch
-      target_sum: 10000
-      n_top_genes: 2000
-      hvg_flavor: seurat    # seurat | seurat_v3 | cell_ranger
-
-  reduce:
+      min_peaks: 750
+      max_peaks: 500000
+      min_peak_counts: 1500
+      max_peak_counts: 100000
+      max_nucleosome_signal: 2.0
+      min_cells: 15
+      run_scrublet: false
+      filter_cells: false
+  atac_reduce:
     enabled: true
     params:
-      n_comps: 50
-      n_pcs_method: elbow   # elbow | cumvar | fixed
-      n_pcs: null           # set a number to override n_pcs_method
+      n_components: 50
       n_neighbors: 15
+      leiden_resolution: 0.5
+      random_state: 0
+      use_raw_counts: true
+  atac_annotate:
+    enabled: true
+    params:
+      promoter_upstream_bp: 2000
+      rna_label_key: cell_type_vote
+      min_peaks_per_gene: 1
+      leiden_key: atac_leiden
+  multiome_integration:
+    enabled: true
+    params:
+      method: mofa
       batch_key: batch
-
-  cluster:
+      n_latent: 20
+      max_epochs: 10
+      random_state: 0
+      n_top_peaks: 20000
+  multiome_deg:
     enabled: true
     params:
-      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0, 1.2, 1.5]
-      # best_resolution_override: 0.8   # uncomment after inspecting clusters
-
-  annotate:
-    enabled: true
-    params:
-      methods: ["celltypist", "markers", "sctype", "singler", "vote"] #
-      leiden_col: leiden
-      tissue: "Immune system"
-      scanvi_model: null   # set to path when model is ready
-
-      # CellTypist — added Healthy_COVID19_PBMC for PBMC/blood cross-check
-      celltypist_models:
-        - Immune_All_High.pkl
-        - Immune_All_Low.pkl
-        # - Healthy_COVID19_PBMC.pkl
-
-      # ScType — pin DB locally after first download to avoid network call each run
-      # To download once: see run_pipeline.py comments or docs
-      sctype_db_path: null   # null → fetch fresh from GitHub each run
-                             # "data/references/ScTypeDB_full.xlsx" → use local file
-
-      # SingleR — novershtern is bone-marrow specific (38 hematopoietic types)
-      # Options: hpca | blueprint_encode | dice | monaco_immune |
-      #          novershtern_hematopoietic | mouse_rnaseq |
-      #          hca | path/to/ref.h5ad
-      singler_ref: novershtern_hematopoietic
-      singler_ref_label_col: cell_type   # only used when singler_ref is a file path
-
-  deg:
-    enabled: true
-    params:
-      groupby: cell_type_vote
+      groupby: atac_celltype
       method: wilcoxon
       min_logfc: 0.25
       max_pval_adj: 0.05
-      n_genes: 500
-      top_n_volcano: 10
-      top_n_dotplot: 5
-      max_volcano_groups: 9
-      # Genes excluded from the REPORTED top-N DEG lists (still used in
-      # the rank_genes_groups computation so fold-changes remain unbiased).
-      # Ribosomal genes (RPL/RPS) dominate lymphoid/progenitor comparisons
-      # against an erythroid-heavy background and obscure true markers.
-      # Mitochondrial genes (MT-) are typically QC artefacts.
-      # Set to [] to disable filtering and see the raw ranked list.
+      n_genes: 200
       exclude_gene_prefixes:
-        - "RPL"
-        - "RPS"
-        - "MT-"
-
-  gsea:
+      - MT-
+      - RPL
+      - RPS
+      leiden_fallback: atac_leiden
+      exclude_peak_prefixes:
+      - chrM
+  multiome_grn:
     enabled: true
     params:
-      gene_sets:
-        - GO_Biological_Process_2023
-        - KEGG_2021_Human
-        - Reactome_2022
-      min_logfc: 0.25
-      max_pval_adj: 0.05
-      min_genes: 5
-      organism: human
-      direction: both
-      top_n_table: 5
-      top_n_bar: 10
-      # Genes excluded from the ORA query list before enrichment.
-      # Removing ribosomal genes here prevents Translation/Ribosome pathways
-      # from dominating the GSEA results for lymphoid and progenitor clusters.
-      # The gene universe (background) is NOT filtered — statistically correct.
-      # Must match the prefixes used in deg above for consistent results.
-      # Set to [] to disable.
-      exclude_gene_prefixes:
-        - "RPL"
-        - "RPS"
-        - "MT-"
-
-  harmony:
-    enabled: true           # set false if no batch effects
-    params:
-      batch_key: batch
-      n_pcs: 50
-      n_neighbors: 15
-      umap_min_dist: 0.3
-      random_state: 0
-
-  cluster_harmony:
-    enabled: true           # set false if harmony is false
-    params:
-      resolution_range: [0.2, 0.4, 0.6, 0.8, 1.0]
-
-  pseudobulk:
-    enabled: true
-    params:
-      groupby: cell_type_vote
-      donor_key: batch
-      counts_layer: counts
+      motif_db: jaspar
+      groupby: atac_celltype
+      n_top_peaks: 500
       min_cells: 10
-      min_samples: 3
-      min_logfc: 0.25
-      max_pval_adj: 0.05
-      top_n_volcano: 10
-      top_n_dotplot: 5
-      max_volcano_groups: 11
-      # Genes excluded from the REPORTED pseudobulk DEG lists.
-      # Without this, erythroid markers (HBB, HBA1, HBD, AHSP) appear as
-      # strongly downregulated in every non-erythroid cell type, dominating
-      # the pseudobulk results and obscuring biologically relevant DEGs.
-      # Ribosomal genes (RPL/RPS) have the same compositional artefact.
-      # These genes are excluded from displayed results only — DESeq2
-      # still uses them in normalisation and dispersion estimation.
-      # Set to [] to see the unfiltered ranking.
-      exclude_gene_prefixes:
-        - "RPL"
-        - "RPS"
-        - "MT-"
-        - "HBB"
-        - "HBA1"
-        - "HBA2"
-        - "HBD"
-        - "AHSP"
+      random_state: 0
