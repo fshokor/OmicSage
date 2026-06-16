@@ -1,26 +1,29 @@
 # OmicSage — Next Session
 > Written: 2026-06-16
-> Phase: 9 — Streamlit UI
+> Phase: 10 — Nextflow DSL2 Orchestration
 
 ---
 
 ## Session Context
 
 **Last thing completed:**
-Docker containerization — Phase 8 complete.
-All four modalities containerized in a single image with a modality-agnostic
-entrypoint. Verified build succeeds and pipeline runs inside container with
-volume-mounted data and reports.
+Streamlit UI — Phase 9 complete.
+Full 4-page UI built and debugged:
+- Page 1: Dataset (modality, name, ID, organism, data path, RNA ref path)
+- Page 2: Configure (step selector, per-step parameter widgets for all 4 modalities)
+- Page 3: Run (step range, --force, live log streaming via background thread)
+- Page 4: Report (embedded HTML via components.v1.html)
+- Save config YAML to config/runs/<id>.yaml
+- Load existing config from disk
+- Project history (.omicsage_history.json) with sidebar quick-reload
 
-**Files added this session:**
-```
-docker/Dockerfile.pipeline     ← conda-based image, all 4 modalities
-docker/Dockerfile.dev          ← extends pipeline image + Jupyter + pytest
-docker/entrypoint.sh           ← routes scrna/cite/multiome/spatial + jupyter/pytest/bash
-docker-compose.yml             ← 4 named services + dev service
-.dockerignore                  ← excludes data/, caches, .git
-scripts/run_docker.sh          ← convenience wrapper with volume mounts + GPU flag
-```
+**Docker status:**
+Phase 8 complete. All 4 modalities containerized in a single image.
+- docker/Dockerfile.pipeline  — conda-based, all modalities
+- docker/Dockerfile.dev       — extends pipeline + Jupyter + pytest
+- docker/entrypoint.sh        — routes modality + jupyter/pytest/bash
+- docker-compose.yml          — 4 named services + dev service
+- scripts/run_docker.sh       — convenience wrapper
 
 **Current test count:**
 ```bash
@@ -29,108 +32,114 @@ python -m pytest tests/ -q --tb=short
 ```
 Expected: 1472 passing, 58 skipped. Confirm before writing any new code.
 
-**Docker verification commands:**
-```bash
-# Build (already done — use cache)
-docker build -f docker/Dockerfile.pipeline -t omicsage:latest .
-
-# Run one step to verify
-./scripts/run_docker.sh scrna \
-  --config config/runs/gse166635_hcc.yaml --step ingest
-
-./scripts/run_docker.sh spatial \
-  --config config/runs/kuppe_heart.yaml --step ingest
+**UI files (current state):**
+```
+ui/
+  app.py
+  state.py
+  defaults.py
+  config_builder.py
+  config_io.py          ← new this session (save/load YAML)
+  history.py            ← new this session (project history)
+  __init__.py
+  components/
+    __init__.py
+    sidebar.py          ← updated this session (history panel)
+  _pages/
+    __init__.py
+    p1_dataset.py       ← updated this session (load config + history)
+    p2_configure.py     ← updated this session (save config button)
+    p3_run.py           ← updated this session (history recording)
+    p4_report.py
 ```
 
 ---
 
 ## Today's Goal
 
-**Single deliverable: Streamlit UI — skeleton + scRNA workflow.**
+**Single deliverable: Nextflow DSL2 orchestration layer.**
 
-A working `streamlit run ui/app.py` that lets a user:
-1. Upload a dataset (10x MTX folder or H5AD file)
-2. Select modality (scRNA / CITE-seq / Multiome / Spatial)
-3. Configure key parameters via sliders/dropdowns (no YAML editing)
-4. Run the pipeline with a live progress log
-5. View the combined HTML report inline when done
-
-Scope for this session: **scRNA modality only**. Other modalities are
-placeholders. The architecture must be extensible so adding them later
-is trivial.
+Wrap the existing Python pipeline runners in Nextflow DSL2 so that:
+1. Each pipeline step = one Nextflow process
+2. Steps are chained via channel outputs (checkpoint h5ad files)
+3. The full pipeline can be launched with:
+   `nextflow run main.nf --config config/runs/GSE166635.yaml`
+4. Steps skip automatically if checkpoint exists (Nextflow -resume)
+5. Docker container used for execution (already built)
 
 ---
 
-## Streamlit UI Architecture
+## Nextflow Architecture Plan
 
 ```
-ui/
-  app.py                  ← entry point, sidebar navigation
-  pages/
-    01_upload.py          ← drag-drop upload + modality selector
-    02_configure.py       ← parameter sliders, generates config YAML
-    03_run.py             ← pipeline runner, live log streaming
-    04_report.py          ← renders combined HTML report inline
-  components/
-    sidebar.py            ← shared sidebar (project selector, status)
-    config_builder.py     ← YAML config generator from UI inputs
-    log_streamer.py       ← subprocess stdout → st.empty() live log
-  state.py                ← st.session_state keys and defaults
+main.nf                     ← entry point, routes to correct workflow
+nextflow.config             ← executor, container, resource settings
+workflows/
+  scrna.nf                  ← scRNA-seq workflow (chain of processes)
+  cite.nf                   ← CITE-seq workflow
+  multiome.nf               ← Multiome workflow
+  spatial.nf                ← Spatial workflow
+modules/
+  scrna/
+    qc.nf                   ← process QC { ... }
+    normalize.nf
+    reduce.nf
+    cluster.nf
+    annotate.nf
+    deg.nf
+    gsea.nf
+    harmony.nf
+    pseudobulk.nf
+  cite/
+    normalize_adt.nf
+    ... (one file per step)
+  multiome/
+    atac_qc.nf
+    ...
+  spatial/
+    ingest.nf
+    ...
 ```
 
-**Key Streamlit decisions:**
-- Use `st.session_state` for all inter-page state (config, run status)
-- Pipeline runs as a `subprocess.Popen` with stdout piped to UI
-- Config generated as a temp YAML file, passed to runner via `--config`
-- Report rendered via `st.components.v1.html()` with the combined HTML
-
----
-
-## Design Principles for the UI
-
-- **Biologist-first**: no YAML, no terminal, no Python knowledge required
-- **Sane defaults**: every parameter has a sensible default pre-filled
-- **Progressive disclosure**: advanced parameters collapsed by default
-- **Non-blocking**: pipeline runs in background, UI stays responsive
-- **Graceful degradation**: AI features shown as optional, clearly labelled
-
----
-
-## Known Issues / Watch Out For
-
-- Streamlit reruns the entire script on every widget interaction —
-  use `st.session_state` carefully to avoid resetting pipeline state
-- `subprocess.Popen` stdout streaming requires `bufsize=1` and
-  `universal_newlines=True` to get line-by-line output
-- Large H5AD uploads: use `st.file_uploader` with `type=["h5ad","h5"]`
-  and save to a temp dir, not memory
-- The combined HTML report contains embedded JS — render with
-  `st.components.v1.html(html, height=800, scrolling=True)`
-- Do NOT import scanpy/anndata at the top of app.py —
-  Streamlit reruns are slow enough without loading the full stack on
-  every widget click. Import inside the run callback only.
+**Key design decisions to confirm at session start:**
+1. Each Nextflow process calls the existing Python runner with `--step <name>`
+   (reuse all existing pipeline code, no rewriting)
+2. Checkpoint h5ad files are the channel values passed between processes
+3. `--resume` uses Nextflow's built-in work dir caching
+4. Container: `omicsage:latest` (already built in Phase 8)
+5. Start with scRNA-seq only — other modalities follow same pattern
 
 ---
 
 ## Pre-session Checklist
 
 - [ ] Confirm baseline tests still pass (1472)
-- [ ] Confirm `streamlit` is in the conda env:
-      `conda activate omicsage && streamlit --version`
-- [ ] If not installed: `pip install streamlit`
-- [ ] Review `run_scrna_pipeline.py --help` to confirm CLI flags
-      available for the UI to pass through
+- [ ] Confirm Nextflow is installed:
+      `nextflow -version`
+      If not: `curl -s https://get.nextflow.io | bash`
+- [ ] Confirm Docker image exists:
+      `docker images | grep omicsage`
+- [ ] Review run_scrna_pipeline.py --help to confirm all --step names
 
 ---
 
 ## Verify at End of Session
 
 ```bash
-conda activate omicsage
-streamlit run ui/app.py
+# Run the scRNA pipeline through Nextflow
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  --step qc
 
-# In browser: upload a small H5AD, configure, run --step ingest,
-# confirm checkpoint appears and log streams live
+# Check Nextflow work dir
+ls work/
+
+# Resume from normalize
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -resume
 ```
 
 ---
@@ -138,7 +147,7 @@ streamlit run ui/app.py
 ## Memory Files to Update at End of This Session
 
 ```
-.dev_memory/NEXT_SESSION.md    ← replace with next phase content
-.dev_memory/CURRENT_STATUS.md  ← add Streamlit UI to completed
-.dev_memory/PROGRESS.md        ← tick Streamlit phase
+.dev_memory/NEXT_SESSION.md    ← replace with Phase 11 content
+.dev_memory/CURRENT_STATUS.md  ← add Nextflow layer to completed
+.dev_memory/PROGRESS.md        ← tick Nextflow phase
 ```

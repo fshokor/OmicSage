@@ -30,13 +30,11 @@ def slugify(name: str) -> str:
 def folder_name(name: str) -> str:
     """
     Convert display name to a filesystem-safe folder name.
-    Preserves case and hyphens, only replaces spaces with underscores
-    and strips characters that are illegal in folder names.
+    Keeps letters, digits, hyphens. Everything else → underscore.
     e.g. "HCC scRNA-seq (Wang et al. 2025)" → "HCC_scRNA-seq_Wang_et_al_2025"
     """
-    s = re.sub(r"[^\w\s\-]", "", name)   # keep letters, digits, _, -, spaces
-    s = re.sub(r"\s+", "_", s.strip())   # spaces → underscores
-    s = re.sub(r"_+", "_", s)            # collapse multiple underscores
+    s = re.sub(r"[^\w\-]", "_", name)  # replace anything not word/hyphen with _
+    s = re.sub(r"_+", "_", s)            # collapse consecutive underscores
     return s.strip("_") or "dataset"
 
 

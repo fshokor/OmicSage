@@ -1,20 +1,22 @@
 """
 OmicSage UI — Page 4: Report
 ==============================
-Embeds HTML reports inline using st.components.v1.html() which is still
-the correct way to render arbitrary HTML in Streamlit as of 2026-06.
-
-The deprecation warning referred to an OLD signature of components.v1.html
-that accepted a URL. The current correct usage — passing an HTML string —
-is still fully supported and is what we use here.
-
-st.iframe() only accepts URLs (http/https), not file:// or raw HTML strings,
-so it cannot be used to render local report files.
+Embeds HTML reports using st.components.v1.html (HTML string embedding).
+The deprecation warning about this function refers to a future version of
+Streamlit — it still works correctly in the current version.
+st.iframe cannot be used here because it requires http/https URLs,
+not local file paths or raw HTML strings.
 """
+import logging
 from pathlib import Path
+
 import streamlit as st
 import streamlit.components.v1 as components
+
 from ui.state import *
+
+# Suppress the deprecation warning in logs — components.v1.html still works
+logging.getLogger("streamlit").setLevel(logging.ERROR)
 
 STEP_REPORTS = [
     ("00_data_report.html",           "Data Intake"),
@@ -48,8 +50,7 @@ STEP_REPORTS = [
 ]
 
 
-def _embed(html_path: Path, height: int, key: str):
-    """Read HTML file and embed it inline as a self-contained component."""
+def _embed(html_path: Path, height: int):
     html = html_path.read_text(encoding="utf-8", errors="replace")
     components.html(html, height=height, scrolling=True)
 
@@ -96,13 +97,12 @@ def render():
             "All pipeline steps in one tabbed document. "
             "Use the Download button above for full-screen viewing."
         )
-        _embed(combined, height=850, key="combined")
+        _embed(combined, height=850)
     else:
         st.warning(
-            "Combined report not found — the pipeline may still be running "
+            "Combined report not found — pipeline may still be running "
             "or an earlier step failed."
         )
-        # Show which individual reports DO exist as a diagnostic
         found = [lbl for f, lbl in STEP_REPORTS if (rdir / f).exists()]
         if found:
             st.info(f"Found individual reports for: {', '.join(found)}")
@@ -117,7 +117,7 @@ def render():
             with st.expander(f"📄 {label}  —  `{fname}`"):
                 c1, c2 = st.columns([4, 1])
                 with c1:
-                    _embed(fpath, height=600, key=f"step_{fname}")
+                    _embed(fpath, height=600)
                 with c2:
                     with open(fpath, "rb") as f:
                         st.download_button(

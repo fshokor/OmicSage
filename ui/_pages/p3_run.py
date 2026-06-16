@@ -17,6 +17,7 @@ from pathlib import Path
 import streamlit as st
 
 from ui.state import *
+from ui import history as _history
 from ui.defaults import MODALITY_STEPS, STEP_LABELS, MODALITY_RUNNER
 
 # Queue key in session state — holds lines read by the background thread
@@ -243,6 +244,17 @@ def _launch(modality, config_path, run_mode, step_single, step_from, step_to, fo
     st.session_state[KEY_RUN_STATUS]  = "running"
     st.session_state[KEY_RUN_LOG]     = [f"$ {' '.join(cmd)}"]
     st.session_state[_QUEUE_KEY]      = log_queue
+
+    # Record in project history
+    entry_id = _history.add_entry(
+        dataset_name = st.session_state.get(KEY_DATASET_NAME, ""),
+        dataset_id   = st.session_state.get(KEY_DATASET_ID, ""),
+        modality     = st.session_state.get(KEY_MODALITY, ""),
+        config_path  = config_path,
+        reports_dir  = st.session_state.get(KEY_REPORTS_DIR, ""),
+        status       = "running",
+    )
+    st.session_state["_history_entry_id"] = entry_id
 
 
 # ── Log renderer ──────────────────────────────────────────────────────────────

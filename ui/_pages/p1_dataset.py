@@ -1,14 +1,17 @@
 """
 OmicSage UI — Page 1: Dataset
-Changes:
-  - Added dataset ID field (GEO accession) separate from display name
-  - Added organism selector (human / mouse / other)
-  - Organism stored in session state for Configure page to pick up
+Options:
+  A) New dataset — fill in modality, name, paths
+  B) Load existing config — point at a YAML file to restore everything
 """
 from pathlib import Path
 import streamlit as st
+import yaml
+
 from ui.state import *
 from ui.defaults import MODALITY_STEPS, STEP_DEFAULTS_ON
+from ui.config_io import load_config, parse_config_into_state
+from ui.history import get_recent, load_config_from_history, status_icon
 
 MODALITY_DESCRIPTIONS = {
     "scRNA-seq": "Gene expression profiling per cell",
@@ -27,15 +30,26 @@ NEEDS_RNA_PATH = {
 }
 
 DATA_PATH_LABELS = {
-    "scRNA-seq": ("Primary data path",
-                  "data/raw/GSE166635/  or  data/processed/GSE166635/01_qc.h5ad"),
-    "CITE-seq":  ("ADT data path",
-                  "data/processed/GSE194122/01_qc_adt.h5ad"),
-    "Multiome":  ("ATAC data path",
-                  "data/processed/GSE194122/01_qc_atac.h5ad"),
-    "Spatial":   ("Spatial data path",
-                  "data/benchmark/kuppe_visium_human_heart_2022_control.h5ad"),
+    "scRNA-seq": ("Primary data path",  "data/raw/GSE166635/  or  data/processed/GSE166635/01_qc.h5ad"),
+    "CITE-seq":  ("ADT data path",      "data/processed/GSE194122/01_qc_adt.h5ad"),
+    "Multiome":  ("ATAC data path",     "data/processed/GSE194122/01_qc_atac.h5ad"),
+    "Spatial":   ("Spatial data path",  "data/benchmark/kuppe_visium_human_heart_2022_control.h5ad"),
 }
+
+
+def _apply_parsed(parsed: dict) -> None:
+    """Write parsed config state into session state."""
+    st.session_state[KEY_MODALITY]       = parsed.get("modality", "scRNA-seq")
+    st.session_state[KEY_DATASET_NAME]   = parsed.get("dataset_name", "")
+    st.session_state[KEY_DATASET_ID]     = parsed.get("dataset_id", "")
+    st.session_state[KEY_DATA_PATH]      = parsed.get("data_path", "")
+    st.session_state[KEY_RNA_PATH]       = parsed.get("rna_path", "")
+    st.session_state[KEY_REPORTS_DIR]    = parsed.get("reports_dir", "")
+    st.session_state[KEY_SELECTED_STEPS] = parsed.get("selected_steps", [])
+    st.session_state[KEY_STEP_PARAMS]    = parsed.get("step_params", {})
+    st.session_state[KEY_CONFIG]         = parsed.get("config")
+    st.session_state[KEY_CONFIG_PATH]    = parsed.get("config_path", "")
+    st.session_state["organism"]         = parsed.get("organism", "human")
 
 
 def render():
@@ -44,6 +58,96 @@ def render():
 
     st.markdown("## Dataset")
     st.divider()
+
+    # ── Mode selector ─────────────────────────────────────────────────────────
+    mode = st.radio(
+        "How do you want to start?",
+        ["🆕 New dataset", "📂 Load existing config"],
+        horizontal=True,
+        key="dataset_mode",
+        label_visibility="collapsed",
+    )
+
+    st.divider()
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MODE A — Load existing config
+    # ══════════════════════════════════════════════════════════════════════════
+    if mode == "📂 Load existing config":
+        st.markdown("### Load config")
+        st.caption(
+            "Point at any OmicSage YAML config file. "
+            "The UI will extract modality, paths, steps and parameters "
+            "and take you straight to Run."
+        )
+
+        config_path_input = st.text_input(
+            "Config file path",
+            value="",
+            placeholder="config/runs/GSE166635.yaml",
+            label_visibility="collapsed",
+            key="load_config_path",
+        )
+
+        col_load, col_recent = st.columns([1, 1])
+
+        with col_load:
+            if config_path_input:
+                p = Path(config_path_input)
+                if p.exists() and p.suffix in (".yaml", ".yml"):
+                    st.success(f"✓ Found: `{config_path_input}`")
+                    if st.button("Load this config →", type="primary",
+                                 use_container_width=True):
+                        try:
+                            cfg    = load_config(config_path_input)
+                            parsed = parse_config_into_state(cfg, config_path_input)
+                            _apply_parsed(parsed)
+                            st.success(
+                                f"Loaded **{parsed['dataset_name']}** "
+                                f"({parsed['modality']}) — "
+                                f"{len(parsed['selected_steps'])} steps enabled."
+                            )
+                            st.session_state[KEY_PAGE] = 2   # go straight to Run
+                            st.rerun()
+                        except Exception as e:
+                            st.error(f"Failed to parse config: {e}")
+                elif config_path_input:
+                    st.error("File not found or not a .yaml file.")
+
+        # ── Recent runs ───────────────────────────────────────────────────────
+        with col_recent:
+            history = get_recent(8)
+            if history:
+                st.markdown("**Or pick a recent run:**")
+                for entry in history:
+                    icon = status_icon(entry.get("status", "idle"))
+                    label = (
+                        f"{icon} {entry['dataset_name']}  ·  "
+                        f"`{entry['modality']}`  ·  "
+                        f"{entry['timestamp'][:10]}"
+                    )
+                    if st.button(label, key=f"hist_{entry['id']}",
+                                 use_container_width=True):
+                        cfg_path = entry.get("config_path", "")
+                        if cfg_path and Path(cfg_path).exists():
+                            try:
+                                cfg    = load_config(cfg_path)
+                                parsed = parse_config_into_state(cfg, cfg_path)
+                                _apply_parsed(parsed)
+                                st.session_state[KEY_PAGE] = 2
+                                st.rerun()
+                            except Exception as e:
+                                st.error(f"Could not reload: {e}")
+                        else:
+                            st.warning("Config file no longer exists at original path.")
+            else:
+                st.caption("No run history yet.")
+
+        return  # don't show the new-dataset form below
+
+    # ══════════════════════════════════════════════════════════════════════════
+    # MODE B — New dataset
+    # ══════════════════════════════════════════════════════════════════════════
 
     # ── 1. Modality ───────────────────────────────────────────────────────────
     st.markdown("### 1 · Modality")
@@ -81,7 +185,7 @@ def render():
             "Display name",
             value=st.session_state.get(KEY_DATASET_NAME, ""),
             placeholder="e.g. HCC scRNA-seq (Wang et al. 2025)",
-            help="Human-readable name shown in reports and the UI.",
+            help="Human-readable name used in reports and the UI.",
         )
         st.session_state[KEY_DATASET_NAME] = name
     with col2:
@@ -89,8 +193,7 @@ def render():
             "Dataset ID",
             value=st.session_state.get(KEY_DATASET_ID, ""),
             placeholder="e.g. GSE166635",
-            help="GEO accession or unique project ID. Used for folder names and "
-                 "GEO metadata lookup in reports. Leave blank to auto-generate from name.",
+            help="GEO accession or project ID — used for folder names and config filename.",
         )
         st.session_state[KEY_DATASET_ID] = dataset_id
 
@@ -148,13 +251,13 @@ def render():
     elif st.session_state.get(KEY_DATA_PATH):
         st.info(f"Currently set: `{st.session_state[KEY_DATA_PATH]}`")
 
-    # ── 5. RNA reference path (CITE / Multiome / Spatial) ────────────────────
+    # ── 5. RNA reference path ─────────────────────────────────────────────────
     if modality in NEEDS_RNA_PATH:
         st.divider()
         rna_label, rna_caption = NEEDS_RNA_PATH[modality]
         st.markdown(f"### 5 · {rna_label}")
         st.caption(rna_caption)
-        st.caption("Optional — you can leave this blank if skipping integration/deconvolution steps.")
+        st.caption("Optional — leave blank if skipping integration/deconvolution steps.")
 
         rna_path = st.text_input(
             rna_label,
