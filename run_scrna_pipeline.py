@@ -4,41 +4,41 @@ OmicSage — Generic Pipeline Runner
 Usage
 -----
   # Run all enabled steps (two equivalent forms)
-  python run_pipeline.py --config config/runs/GSE194122.yaml
-  python run_pipeline.py --config config/runs/GSE194122.yaml --step all
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --step all
 
   # Stop at a checkpoint (inclusive)
-  python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
 
   # Resume from a checkpoint (inclusive)
-  python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
 
   # Run a specific range
-  python run_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
 
   # Run exactly one step
-  python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+  python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --step normalize
 
   # Run all steps with AI features enabled
-  python run_pipeline.py --config config/runs/GSE166635.yaml --step all --ai
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --step all --ai
 
   # Run only the AI layer (pipeline steps already cached)
-  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --ai-only
 
   # Run only one specific AI module (all pipeline steps already cached)
-  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-module coherence_reviewer
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-module coherence_reviewer
 
   # Run AI layer starting from a specific module
-  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module narrative_generator
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module narrative_generator
 
   # Run AI layer up to a specific module (inclusive)
-  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-to-module deg_validator
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-to-module deg_validator
 
   # Run a range of AI modules
-  python run_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module cluster_annotator --ai-to-module coherence_reviewer
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --ai-only --ai-from-module cluster_annotator --ai-to-module coherence_reviewer
 
   # Disable AI entirely even when --ai is passed (useful for testing)
-  python run_pipeline.py --config config/runs/GSE166635.yaml --step all --ai --ai-module off
+  python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --step all --ai --ai-module off
 
 AI module order
 ---------------
@@ -58,8 +58,8 @@ Resolution override
         params:
           best_resolution_override: 0.8
   Then re-run:
-      python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
-      python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+      python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --step cluster
+      python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
 """
 
 import sys

@@ -266,9 +266,11 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict, library_key: str =
         )
 
     raw = adata.obsm["imputed_expression"]
-    gene_names = adata.uns.get("omicsage_spatial_impute", {}).get(
+    _gene_names_raw = adata.uns.get("omicsage_spatial_impute", {}).get(
         "outputs", {}
     ).get("genes_imputed", None)
+    # After h5ad round-trip genes_imputed may be a numpy array — coerce to list.
+    gene_names = list(_gene_names_raw) if _gene_names_raw is not None else None
 
     if isinstance(raw, np.ndarray):
         if gene_names is None or len(gene_names) != raw.shape[1]:
@@ -299,30 +301,137 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict, library_key: str =
         )
 
     # Add imputed expression to adata.obs temporarily for sq.pl.spatial_scatter
+    library_key = library_key  # may be None for single-sample data
+    samples = []
+    if library_key and library_key in adata.obs.columns:
+        samples = sorted(adata.obs[library_key].astype(str).unique().tolist())
+    multi_sample = len(samples) > 1
+
     figs_html = ""
     for gene in top5:
         key = f"_imputed_{gene}"
         adata.obs[key] = imputed[gene].values if len(imputed) == adata.n_obs else np.nan
         try:
-            fig, ax = plt.subplots(figsize=(5, 5))
-            import squidpy as sq
-            scatter_kwargs = dict(
-                color=key,
-                ax=ax,
-                title=f"Imputed: {gene}",
-                colormap="magma",
-                size=1.2,
-                show=False,
-            )
-            if library_key:
-                scatter_kwargs["library_key"] = library_key
-            sq.pl.spatial_scatter(adata, **scatter_kwargs)
-            ax.set_title(f"Imputed: {gene}", fontsize=10, fontweight="bold")
-            b64 = _fig_to_b64(fig)
-            figs_html += (
-                f'<div class="fig-wrap"><h3>{gene}</h3>'
-                f'{_img_tag(b64, gene)}</div>'
-            )
+            if multi_sample:
+                # Per-sample render + 2-column grid stitch
+                import io as _io
+                import base64 as _b64_mod
+                per_b64s = []
+                for sample_id in samples:
+                    try:
+                        mask = adata.obs[library_key].astype(str) == sample_id
+                        ad_sub = adata[mask].copy()
+                        # Prune uns["spatial"] so squidpy doesn't demand library_key
+                        if "spatial" in ad_sub.uns and sample_id in ad_sub.uns["spatial"]:
+                            ad_sub.uns["spatial"] = {sample_id: ad_sub.uns["spatial"][sample_id]}
+                        plt.close("all")
+                        scatter_kwargs: dict = dict(
+                            color=key,
+                            title=f"Imputed: {gene}",
+                            cmap="magma",
+                            size=1.2,
+                            figsize=(5, 5),
+                        )
+                        result = sq.pl.spatial_scatter(ad_sub, **scatter_kwargs)
+                        if result is None:
+                            fig = plt.gcf()
+                        elif hasattr(result, "get_figure"):
+                            fig = result.get_figure()
+                        elif hasattr(result, "__len__") and len(result) > 0:
+                            first = result[0]
+                            fig = first.get_figure() if hasattr(first, "get_figure") else plt.gcf()
+                        else:
+                            fig = plt.gcf()
+                        if not fig.axes:
+                            all_figs = list(map(plt.figure, plt.get_fignums()))
+                            if all_figs:
+                                fig = all_figs[-1]
+                        try:
+                            fig.tight_layout()
+                        except Exception:
+                            pass
+                        buf = _io.BytesIO()
+                        fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+                        buf.seek(0)
+                        per_b64s.append((sample_id, _b64_mod.b64encode(buf.read()).decode()))
+                        plt.close(fig)
+                    except Exception as e:
+                        logger.warning(f"impute scatter failed for sample {sample_id}, gene {gene}: {e}")
+                        plt.close("all")
+
+                if per_b64s:
+                    imgs = [plt.imread(_io.BytesIO(_b64_mod.b64decode(b))) for _, b in per_b64s]
+                    ncols = 2
+                    nrows = (len(imgs) + ncols - 1) // ncols
+                    max_h = max(a.shape[0] for a in imgs)
+                    max_w = max(a.shape[1] for a in imgs)
+                    n_ch  = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+
+                    def _pad(a):
+                        return np.pad(a,
+                                      ((0, max_h - a.shape[0]), (0, max_w - a.shape[1]), (0, 0)),
+                                      mode="constant", constant_values=1.0)
+
+                    padded = [_pad(a) for a in imgs]
+                    while len(padded) < nrows * ncols:
+                        padded.append(np.ones((max_h, max_w, n_ch), dtype=padded[0].dtype))
+                    grid = np.vstack([np.hstack(padded[r * ncols:(r + 1) * ncols])
+                                      for r in range(nrows)])
+                    dpi = 100
+                    fig2, ax2 = plt.subplots(
+                        figsize=(grid.shape[1] / dpi, grid.shape[0] / dpi), dpi=dpi)
+                    ax2.imshow(grid)
+                    ax2.axis("off")
+                    for idx, (sample_id, _) in enumerate(per_b64s):
+                        row_i, col_i = idx // ncols, idx % ncols
+                        ax2.text(col_i * max_w + max_w * 0.02,
+                                 row_i * max_h + max_h * 0.04,
+                                 sample_id, fontsize=8, fontweight="bold",
+                                 color="white", va="top",
+                                 bbox=dict(facecolor="black", alpha=0.45, pad=2, linewidth=0))
+                    fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
+                    buf2 = _io.BytesIO()
+                    fig2.savefig(buf2, format="png", dpi=dpi, bbox_inches="tight")
+                    buf2.seek(0)
+                    b64 = _b64_mod.b64encode(buf2.read()).decode()
+                    plt.close(fig2)
+                    figs_html += (
+                        f'<div class="fig-wrap"><h3>{gene}</h3>'
+                        f'{_img_tag(b64, gene)}</div>'
+                    )
+            else:
+                # Single-sample path
+                plt.close("all")
+                scatter_kwargs: dict = dict(
+                    color=key,
+                    title=f"Imputed: {gene}",
+                    cmap="magma",
+                    size=1.2,
+                    figsize=(5, 5),
+                )
+                result = sq.pl.spatial_scatter(adata, **scatter_kwargs)
+                if result is None:
+                    fig = plt.gcf()
+                elif hasattr(result, "get_figure"):
+                    fig = result.get_figure()
+                elif hasattr(result, "__len__") and len(result) > 0:
+                    first = result[0]
+                    fig = first.get_figure() if hasattr(first, "get_figure") else plt.gcf()
+                else:
+                    fig = plt.gcf()
+                if not fig.axes:
+                    all_figs = list(map(plt.figure, plt.get_fignums()))
+                    if all_figs:
+                        fig = all_figs[-1]
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                b64 = _fig_to_b64(fig)
+                figs_html += (
+                    f'<div class="fig-wrap"><h3>{gene}</h3>'
+                    f'{_img_tag(b64, gene)}</div>'
+                )
         except Exception as exc:
             logger.warning(f"Could not plot imputed gene {gene}: {exc}", exc_info=True)
             plt.close("all")
@@ -354,9 +463,11 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
         )
 
     raw = adata.obsm["imputed_expression"]
-    gene_names = adata.uns.get("omicsage_spatial_impute", {}).get(
+    _gene_names_raw_v = adata.uns.get("omicsage_spatial_impute", {}).get(
         "outputs", {}
     ).get("genes_imputed", None)
+    # After h5ad round-trip genes_imputed may be a numpy array — coerce to list.
+    gene_names = list(_gene_names_raw_v) if _gene_names_raw_v is not None else None
 
     if isinstance(raw, np.ndarray):
         if gene_names is None or len(gene_names) != raw.shape[1]:

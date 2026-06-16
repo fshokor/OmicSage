@@ -1,217 +1,136 @@
 # OmicSage — Next Session
-> Written: 2026-06-11
-> Phase: 8 — Docker Containerization
+> Written: 2026-06-16
+> Phase: 9 — Streamlit UI
 
 ---
 
 ## Session Context
 
 **Last thing completed:**
-- Phase 7 fully complete (Sessions 1–5 + Session A + Session B extensions)
-- Session A: `spatial_impute.py` + `spatial_impute_report.py` + `test_spatial_impute.py`
-  + runner + combined report + kuppe config updated. Multiple bug fixes:
-  OOM fix (Tangram clusters mode), `project_genes` API fix, numpy array
-  storage, log-normalisation in validation scatter, library_key multi-sample fix.
-- Session B: `spatial_ingest.py` Visium HD + Xenium loaders (spatialdata-io),
-  `test_spatial_ingest_formats.py` (27 tests), `visium_hd_mouse_brain.yaml`,
-  `xenium_breast.yaml`, `scripts/download_spatial_benchmark.py`.
-- Docs: `SPATIAL_MASTER_PROMPT.md` v1.1, `SPATIAL_MODULE_DOCS.md` fully updated.
-- Tests fixed: `test_spatial_ingest_qc.py` (5 stub tests updated),
-  `test_spatial_impute.py` (mock project_genes return value fixed).
+Docker containerization — Phase 8 complete.
+All four modalities containerized in a single image with a modality-agnostic
+entrypoint. Verified build succeeds and pipeline runs inside container with
+volume-mounted data and reports.
+
+**Files added this session:**
+```
+docker/Dockerfile.pipeline     ← conda-based image, all 4 modalities
+docker/Dockerfile.dev          ← extends pipeline image + Jupyter + pytest
+docker/entrypoint.sh           ← routes scrna/cite/multiome/spatial + jupyter/pytest/bash
+docker-compose.yml             ← 4 named services + dev service
+.dockerignore                  ← excludes data/, caches, .git
+scripts/run_docker.sh          ← convenience wrapper with volume mounts + GPU flag
+```
 
 **Current test count:**
 ```bash
 conda activate omicsage
 python -m pytest tests/ -q --tb=short
 ```
-Confirm baseline before writing any new code. Expected: ~1476 passing.
+Expected: 1472 passing, 58 skipped. Confirm before writing any new code.
 
-**Files modified last session block:**
-```
-pipeline/modules/spatial/spatial_impute.py         ← NEW
-reports/templates/spatial/spatial_impute_report.py ← NEW
-reports/spatial_combined_report.py                 ← Impute tab added
-run_spatial_pipeline.py                            ← impute step added
-tests/test_spatial_impute.py                       ← NEW
-tests/test_spatial_ingest_qc.py                    ← stub tests updated
-tests/test_spatial_ingest_formats.py               ← NEW
-pipeline/modules/spatial/spatial_ingest.py         ← Visium HD + Xenium loaders
-config/runs/kuppe_heart.yaml                       ← impute block added
-config/runs/visium_hd_mouse_brain.yaml             ← NEW
-config/runs/xenium_breast.yaml                     ← NEW
-scripts/download_spatial_benchmark.py              ← NEW
-ai/manual_review/SPATIAL_MASTER_PROMPT.md          ← v1.1
-SPATIAL_MODULE_DOCS.md                             ← fully updated
+**Docker verification commands:**
+```bash
+# Build (already done — use cache)
+docker build -f docker/Dockerfile.pipeline -t omicsage:latest .
+
+# Run one step to verify
+./scripts/run_docker.sh scrna \
+  --config config/runs/gse166635_hcc.yaml --step ingest
+
+./scripts/run_docker.sh spatial \
+  --config config/runs/kuppe_heart.yaml --step ingest
 ```
 
 ---
 
 ## Today's Goal
 
-**Single deliverable: Docker containerization of the OmicSage pipeline.**
+**Single deliverable: Streamlit UI — skeleton + scRNA workflow.**
 
-A working `docker-compose up` that runs the full spatial pipeline end-to-end
-on the Kuppe benchmark dataset inside a container, with results written to the
-host filesystem.
+A working `streamlit run ui/app.py` that lets a user:
+1. Upload a dataset (10x MTX folder or H5AD file)
+2. Select modality (scRNA / CITE-seq / Multiome / Spatial)
+3. Configure key parameters via sliders/dropdowns (no YAML editing)
+4. Run the pipeline with a live progress log
+5. View the combined HTML report inline when done
 
----
-
-## Deliverables
-
-```
-docker/
-  Dockerfile.pipeline       ← Python analysis environment (conda-based)
-  Dockerfile.dev            ← development image with Jupyter + hot-reload
-docker-compose.yml          ← orchestrates pipeline + volume mounts
-.dockerignore               ← exclude data/, checkpoints/, __pycache__ etc.
-scripts/run_docker.sh       ← convenience wrapper: docker run with correct mounts
-```
-
-Optional but useful this session:
-```
-docker/entrypoint.sh        ← flexible entrypoint: run pipeline step or shell
-```
+Scope for this session: **scRNA modality only**. Other modalities are
+placeholders. The architecture must be extensible so adding them later
+is trivial.
 
 ---
 
-## Design Decisions to Make Before Coding
+## Streamlit UI Architecture
 
-**1. Base image**
-Use `continuumio/miniconda3` as the base — matches your WSL2 conda environment
-exactly. Alternative is `python:3.11-slim` + pip-only, but conda is safer given
-the heavy bioinformatics dependency stack (scanpy, squidpy, tangram-sc, etc.).
-
-**2. Dependency installation strategy**
-Two-stage build:
-- Stage 1: install `environment.yml` into conda env `omicsage`
-  (`conda env create -f environment.yml`)
-- Stage 2: copy source code
-This keeps the layer cache efficient — a code change doesn't invalidate
-the 3 GB dependency layer.
-
-**3. Volume mounts (critical)**
 ```
-data/benchmark/   → read-only input
-data/processed/   → read-write output (checkpoints)
-reports/          → read-write output (HTML reports)
-config/           → read-only config
-pipeline/         → read-write during dev (hot-reload)
-```
-Never bake data into the image.
-
-**4. Entrypoint**
-```bash
-conda run -n omicsage python run_spatial_pipeline.py \
-  --config config/runs/kuppe_heart.yaml \
-  "$@"          # pass --step, --from-step, --force etc. through
+ui/
+  app.py                  ← entry point, sidebar navigation
+  pages/
+    01_upload.py          ← drag-drop upload + modality selector
+    02_configure.py       ← parameter sliders, generates config YAML
+    03_run.py             ← pipeline runner, live log streaming
+    04_report.py          ← renders combined HTML report inline
+  components/
+    sidebar.py            ← shared sidebar (project selector, status)
+    config_builder.py     ← YAML config generator from UI inputs
+    log_streamer.py       ← subprocess stdout → st.empty() live log
+  state.py                ← st.session_state keys and defaults
 ```
 
-**5. GPU support**
-Add `--gpus all` flag to `docker run` in the convenience script,
-guarded by `OMICSAGE_GPU=1` env var. Default is CPU-only.
+**Key Streamlit decisions:**
+- Use `st.session_state` for all inter-page state (config, run status)
+- Pipeline runs as a `subprocess.Popen` with stdout piped to UI
+- Config generated as a temp YAML file, passed to runner via `--config`
+- Report rendered via `st.components.v1.html()` with the combined HTML
 
 ---
 
-## Dockerfile.pipeline skeleton
+## Design Principles for the UI
 
-```dockerfile
-FROM continuumio/miniconda3:latest
-
-# System deps needed by some bio packages
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    build-essential gcc g++ libhdf5-dev git \
-    && rm -rf /var/lib/apt/lists/*
-
-WORKDIR /app
-
-# Layer 1: dependencies (cached unless environment.yml changes)
-COPY environment.yml .
-RUN conda env create -f environment.yml \
-    && conda clean -afy
-
-# Layer 2: source code
-COPY . .
-
-# Ensure conda env is on PATH
-ENV PATH /opt/conda/envs/omicsage/bin:$PATH
-
-ENTRYPOINT ["python", "run_spatial_pipeline.py"]
-CMD ["--help"]
-```
-
----
-
-## docker-compose.yml skeleton
-
-```yaml
-version: "3.9"
-services:
-  pipeline:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.pipeline
-    volumes:
-      - ./data:/app/data
-      - ./reports:/app/reports
-      - ./config:/app/config
-      - ./pipeline:/app/pipeline     # hot-reload during dev
-    environment:
-      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
-    command: ["--config", "config/runs/kuppe_heart.yaml"]
-```
-
----
-
-## Pre-session checklist
-
-Before starting:
-- [ ] Run baseline test count and record it here
-- [ ] Confirm Docker Desktop is running in WSL2
-      (`docker info` should return without error)
-- [ ] Confirm `environment.yml` is up to date — check that these are present:
-      `tangram-sc`, `spatialdata-io`, `squidpy`, `scvi-tools`, `cell2location`
-      (they should be, but verify before baking into the image)
-- [ ] Note the size of the conda env:
-      `du -sh ~/miniconda3/envs/omicsage/`
-      This is roughly the Docker image size — plan for a 4–8 GB image
+- **Biologist-first**: no YAML, no terminal, no Python knowledge required
+- **Sane defaults**: every parameter has a sensible default pre-filled
+- **Progressive disclosure**: advanced parameters collapsed by default
+- **Non-blocking**: pipeline runs in background, UI stays responsive
+- **Graceful degradation**: AI features shown as optional, clearly labelled
 
 ---
 
 ## Known Issues / Watch Out For
 
-- `continuumio/miniconda3` base images can be slow to pull (~150 MB).
-  Build once, iterate on the source layer.
-- `conda env create` inside Docker can hit memory limits on WSL2.
-  If it OOMs, add `--memory 8g` to the Docker build command.
-- Some packages (cell2location, tangram-sc) compile C extensions — the
-  `build-essential` apt layer is required.
-- `hdf5` headers (`libhdf5-dev`) are needed for `h5py` native compilation.
-- On WSL2, Docker Desktop must have "Use WSL 2 based engine" enabled
-  (Docker Desktop → Settings → General).
-- `.dockerignore` must exclude `data/` to keep the build context small —
-  benchmark datasets are several GB and must never be baked into the image.
-- `conda run -n omicsage` vs activating the env: inside Docker, activation
-  doesn't work in non-interactive shells. Use the full path
-  `/opt/conda/envs/omicsage/bin/python` or `ENV PATH` in the Dockerfile.
+- Streamlit reruns the entire script on every widget interaction —
+  use `st.session_state` carefully to avoid resetting pipeline state
+- `subprocess.Popen` stdout streaming requires `bufsize=1` and
+  `universal_newlines=True` to get line-by-line output
+- Large H5AD uploads: use `st.file_uploader` with `type=["h5ad","h5"]`
+  and save to a temp dir, not memory
+- The combined HTML report contains embedded JS — render with
+  `st.components.v1.html(html, height=800, scrolling=True)`
+- Do NOT import scanpy/anndata at the top of app.py —
+  Streamlit reruns are slow enough without loading the full stack on
+  every widget click. Import inside the run callback only.
+
+---
+
+## Pre-session Checklist
+
+- [ ] Confirm baseline tests still pass (1472)
+- [ ] Confirm `streamlit` is in the conda env:
+      `conda activate omicsage && streamlit --version`
+- [ ] If not installed: `pip install streamlit`
+- [ ] Review `run_scrna_pipeline.py --help` to confirm CLI flags
+      available for the UI to pass through
 
 ---
 
 ## Verify at End of Session
 
 ```bash
-# Build the image
-docker build -f docker/Dockerfile.pipeline -t omicsage:latest .
+conda activate omicsage
+streamlit run ui/app.py
 
-# Run one pipeline step on Kuppe (fast — ingest only)
-docker run --rm \
-  -v $(pwd)/data:/app/data \
-  -v $(pwd)/reports:/app/reports \
-  -v $(pwd)/config:/app/config \
-  omicsage:latest \
-  --config config/runs/kuppe_heart.yaml --step ingest
-
-# Confirm checkpoint written to host filesystem
-ls data/processed/kuppe_heart/01_ingested.h5ad
+# In browser: upload a small H5AD, configure, run --step ingest,
+# confirm checkpoint appears and log streams live
 ```
 
 ---
@@ -219,7 +138,7 @@ ls data/processed/kuppe_heart/01_ingested.h5ad
 ## Memory Files to Update at End of This Session
 
 ```
-.dev_memory/NEXT_SESSION.md    ← replace with Streamlit phase content
-.dev_memory/CURRENT_STATUS.md  ← add Docker to completed infrastructure
-.dev_memory/PROGRESS.md        ← tick Docker phase
+.dev_memory/NEXT_SESSION.md    ← replace with next phase content
+.dev_memory/CURRENT_STATUS.md  ← add Streamlit UI to completed
+.dev_memory/PROGRESS.md        ← tick Streamlit phase
 ```

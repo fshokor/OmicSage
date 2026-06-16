@@ -113,14 +113,8 @@ def _render_page(title: str, header_subtitle: str, sections: list[str], timestam
 
 
 def _squidpy_panel_figsize(adata, per_panel=(6, 6), max_total_w=18):
-    """Cap squidpy scatter figsize for multi-sample (library_key) layouts."""
-    library_key = _get_library_key(adata)
-    if library_key and library_key in adata.obs.columns:
-        n = adata.obs[library_key].nunique()
-    else:
-        n = 1
-    w = min(per_panel[0] * n, max_total_w)
-    return (w, per_panel[1])
+    """Return per-panel figsize unchanged; multi-sample handled in _squidpy_scatter_b64."""
+    return per_panel
 
 def _fig_to_b64(fig: plt.Figure) -> str:
     buf = BytesIO()
@@ -136,48 +130,142 @@ def _squidpy_scatter_b64(
     img_key=None,
     library_key=None,
     title=None,
-    figsize=(6, 5),
+    figsize=(6, 6),
 ):
-    """Render ``sq.pl.spatial_scatter`` and return a base64 PNG string.
+    """Render sq.pl.spatial_scatter and return a base64 PNG.
 
-    Uses the canonical squidpy API (per scverse/squidpy source):
-      - ``img_res_key`` (NOT ``img_key`` — the docstring shorthand is misleading)
-      - ``figsize`` is a top-level parameter
-      - ``return_ax=True`` returns axes so we can grab the figure cleanly
-      - NO ``show=`` parameter exists — passing it crashes deep in matplotlib
-      - When ``library_key`` is set, squidpy creates one panel per library
-        automatically; we let it own the figure entirely.
-
-    Returns
-    -------
-    str or None
-        Base64-encoded PNG of the rendered figure, or None if rendering fails.
+    Multi-sample strategy: render each sample separately and stitch into a
+    2-column grid.  squidpy's side-by-side layout produces extreme aspect
+    ratios (~9:1) with 4 samples, which are unreadable at browser column widths.
     """
-    kwargs = dict(color=color, frameon=False, return_ax=True, figsize=figsize)
-    if img_key:
-        kwargs["img_res_key"] = img_key
-    if library_key:
-        kwargs["library_key"] = library_key
+    import numpy as _np
+    import io as _io
+    import base64 as _b64_mod
 
-    axes = sq.pl.spatial_scatter(adata, **kwargs)
+    if not _SQUIDPY_AVAILABLE:
+        return None
 
-    # axes can be a single Axes or a Sequence[Axes] (multi-sample)
-    if axes is None:
-        fig = plt.gcf()
-    elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
-        # Sequence of axes - grab figure from first
-        first = axes[0] if len(axes) > 0 else None
-        fig = first.get_figure() if first is not None else plt.gcf()
-    else:
-        fig = axes.get_figure()
-
-    if title:
-        fig.suptitle(title, fontsize=10, fontweight="bold", y=1.01)
     try:
-        fig.tight_layout()
-    except Exception:
-        pass  # tight_layout sometimes warns on multi-axes figures
-    return _fig_to_b64(fig)
+        samples = []
+        if library_key and library_key in adata.obs.columns:
+            samples = sorted(adata.obs[library_key].astype(str).unique().tolist())
+
+        # ── Single-sample fast path ──────────────────────────────────────────
+        if len(samples) <= 1:
+            plt.close("all")
+            kwargs = dict(color=color, frameon=False, figsize=figsize)
+            if img_key:
+                kwargs["img_res_key"] = img_key
+            result = sq.pl.spatial_scatter(adata, **kwargs)
+            if result is None:
+                fig = plt.gcf()
+            elif hasattr(result, "get_figure"):
+                fig = result.get_figure()
+            elif hasattr(result, "__len__") and len(result) > 0:
+                ax0 = result[0]
+                fig = ax0.get_figure() if hasattr(ax0, "get_figure") else plt.gcf()
+            else:
+                fig = plt.gcf()
+            if not fig.axes:
+                all_figs = [plt.figure(n) for n in plt.get_fignums()]
+                if all_figs:
+                    fig = all_figs[-1]
+            if title:
+                fig.suptitle(title, fontsize=10, fontweight="bold")
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            return _fig_to_b64(fig)
+
+        # ── Multi-sample: per-sample render + 2-column grid stitch ───────────
+        per_b64s: list = []
+        for sample_id in samples:
+            try:
+                mask = adata.obs[library_key].astype(str) == sample_id
+                ad_sub = adata[mask].copy()
+                # uns["spatial"] is not filtered by obs subsetting — prune to
+                # the current sample so squidpy doesn't demand a library_key.
+                if "spatial" in ad_sub.uns and sample_id in ad_sub.uns["spatial"]:
+                    ad_sub.uns["spatial"] = {sample_id: ad_sub.uns["spatial"][sample_id]}
+                plt.close("all")
+                kwargs = dict(color=color, frameon=False, figsize=figsize)
+                if img_key:
+                    kwargs["img_res_key"] = img_key
+                result = sq.pl.spatial_scatter(ad_sub, **kwargs)
+                if result is None:
+                    fig = plt.gcf()
+                elif hasattr(result, "get_figure"):
+                    fig = result.get_figure()
+                elif hasattr(result, "__len__") and len(result) > 0:
+                    ax0 = result[0]
+                    fig = ax0.get_figure() if hasattr(ax0, "get_figure") else plt.gcf()
+                else:
+                    fig = plt.gcf()
+                if not fig.axes:
+                    all_figs = [plt.figure(n) for n in plt.get_fignums()]
+                    if all_figs:
+                        fig = all_figs[-1]
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                buf = _io.BytesIO()
+                fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+                buf.seek(0)
+                per_b64s.append((sample_id, _b64_mod.b64encode(buf.read()).decode()))
+                plt.close(fig)
+            except Exception as e:
+                logger.warning("[reduce_report] scatter failed for sample %s: %s", sample_id, e)
+                plt.close("all")
+
+        if not per_b64s:
+            return None
+
+        imgs = [plt.imread(_io.BytesIO(_b64_mod.b64decode(b))) for _, b in per_b64s]
+        ncols = 2
+        nrows = (len(imgs) + ncols - 1) // ncols
+        max_h = max(a.shape[0] for a in imgs)
+        max_w = max(a.shape[1] for a in imgs)
+        n_ch  = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+
+        def _pad(a):
+            return _np.pad(a,
+                           ((0, max_h - a.shape[0]), (0, max_w - a.shape[1]), (0, 0)),
+                           mode="constant", constant_values=1.0)
+
+        padded = [_pad(a) for a in imgs]
+        while len(padded) < nrows * ncols:
+            padded.append(_np.ones((max_h, max_w, n_ch), dtype=padded[0].dtype))
+
+        grid = _np.vstack([_np.hstack(padded[r * ncols:(r + 1) * ncols])
+                           for r in range(nrows)])
+
+        dpi = 100
+        title_pad = 0.35 if title else 0.0
+        fig2, ax2 = plt.subplots(
+            figsize=(grid.shape[1] / dpi, grid.shape[0] / dpi + title_pad), dpi=dpi)
+        ax2.imshow(grid)
+        ax2.axis("off")
+        if title:
+            fig2.suptitle(title, fontsize=10, fontweight="bold")
+        for idx, (sample_id, _) in enumerate(per_b64s):
+            row_i, col_i = idx // ncols, idx % ncols
+            ax2.text(col_i * max_w + max_w * 0.02, row_i * max_h + max_h * 0.04,
+                     sample_id, fontsize=8, fontweight="bold", color="white", va="top",
+                     bbox=dict(facecolor="black", alpha=0.45, pad=2, linewidth=0))
+        fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
+        buf2 = _io.BytesIO()
+        fig2.savefig(buf2, format="png", dpi=dpi, bbox_inches="tight")
+        buf2.seek(0)
+        result_b64 = _b64_mod.b64encode(buf2.read()).decode()
+        plt.close(fig2)
+        return result_b64
+
+    except Exception as e:
+        logger.warning("[reduce_report] _squidpy_scatter_b64(%s) failed: %s", color, e)
+        plt.close("all")
+        return None
 
 
 

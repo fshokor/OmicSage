@@ -1591,7 +1591,7 @@ python -m pytest tests/test_pseudobulk_deg.py -v    # 14 passed
 
 ---
 
-## 21. `run_pipeline.py` + `config/runs/`
+## 21. `run_scrna_pipeline.py` + `config/runs/`
 
 **What it does**
 
@@ -1599,7 +1599,7 @@ Generic pipeline runner. Executes any subset of the 10 Phase 1 steps for any
 dataset. All dataset identity, paths, and parameters live in a per-dataset YAML
 config file — the runner itself never needs to be edited.
 
-**Location**: `run_pipeline.py` (repo root)
+**Location**: `run_scrna_pipeline.py` (repo root)
 
 **Config files**: `config/runs/<dataset_id>.yaml` — one file per dataset
 
@@ -1681,19 +1681,19 @@ on the annotated file. Harmony does not add or modify these columns.
 
 ```bash
 # Full pipeline
-python run_pipeline.py --config config/runs/GSE194122.yaml
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml
 
 # Stop at a checkpoint (inclusive) — then inspect the report
-python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
 
 # Resume from a checkpoint (inclusive)
-python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
 
 # Run a specific range
-python run_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step normalize --to-step reduce
 
 # Run exactly one step
-python run_pipeline.py --config config/runs/GSE194122.yaml --step normalize
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --step normalize
 
 # Valid step names (in order):
 # qc  normalize  reduce  cluster  annotate  deg  gsea  harmony  cluster_harmony  pseudobulk
@@ -1708,7 +1708,7 @@ The runner supports this explicitly:
 
 ```bash
 # 1. Run through clustering
-python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
 
 # 2. Open reports/GSE194122/04_cluster_report.html
 #    Decide you want resolution 0.8 instead of the auto-selected value
@@ -1717,10 +1717,10 @@ python run_pipeline.py --config config/runs/GSE194122.yaml --to-step cluster
 #      resolution_override: 0.8
 
 # 4. Re-run clustering with the chosen resolution
-python run_pipeline.py --config config/runs/GSE194122.yaml --step cluster
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --step cluster
 
 # 5. Continue from annotation onward
-python run_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
+python run_scrna_pipeline.py --config config/runs/GSE194122.yaml --from-step annotate
 ```
 
 ---
@@ -1783,7 +1783,7 @@ echo. >> logs\GSE194122.log
 echo ======================================================== >> logs\GSE194122.log
 echo RUN %date% %time% >> logs\GSE194122.log
 echo ======================================================== >> logs\GSE194122.log
-python run_pipeline.py --config configs\GSE194122.yaml >> logs\GSE194122.log 2>&1
+python run_scrna_pipeline.py --config configs\GSE194122.yaml >> logs\GSE194122.log 2>&1
 ```
 
 The runner prints start time, end time, and elapsed time (`HHh MMm SSs`) at
@@ -1859,7 +1859,7 @@ progress bar showing how much of the pipeline has been run.
 - Left/right arrow keys navigate between tabs
 - Tab button scrolls into view on mobile (many tabs case)
 
-**Usage — called automatically by run_pipeline.py**
+**Usage — called automatically by run_scrna_pipeline.py**
 
 ```python
 from reports.combined_report import generate_combined_report
@@ -1885,7 +1885,7 @@ python -m reports.combined_report \
   --output reports/GSE166635/combined.html
 ```
 
-**Wiring into run_pipeline.py**
+**Wiring into run_scrna_pipeline.py**
 
 Add at the end of `main()`, just before the footer print block:
 

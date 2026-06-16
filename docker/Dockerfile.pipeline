@@ -1,0 +1,93 @@
+# ============================================================
+# OmicSage — Pipeline Image
+# Supports: scRNA-seq, CITE-seq, Multiome, Spatial
+# Base: continuumio/miniconda3 (matches WSL2 conda env exactly)
+# ============================================================
+
+FROM continuumio/miniconda3:23.10.0-1
+
+LABEL maintainer="OmicSage <omicsage.io>"
+LABEL description="OmicSage multi-omics analysis pipeline"
+LABEL version="1.0"
+
+# ------------------------------------------------------------
+# System dependencies
+# Required by: h5py (libhdf5), scanpy/squidpy (gcc),
+#              cell2location/tangram (C extensions),
+#              spatialdata-io (libxml2)
+# ------------------------------------------------------------
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    gcc \
+    g++ \
+    libhdf5-dev \
+    libxml2-dev \
+    libcurl4-openssl-dev \
+    libssl-dev \
+    git \
+    wget \
+    curl \
+    procps \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+
+# ------------------------------------------------------------
+# Layer 1: Conda environment (cached unless environment.yml changes)
+# This is the slow layer (~10-20 min first build, cached after)
+# ------------------------------------------------------------
+COPY environment.yml .
+
+RUN conda env create -f environment.yml \
+    && conda clean -afy \
+    && find /opt/conda/envs/omicsage -name "*.pyc" -delete \
+    && find /opt/conda/envs/omicsage -name "__pycache__" -type d -exec rm -rf {} + 2>/dev/null || true
+
+# Put the omicsage env on PATH for all subsequent RUN/CMD/ENTRYPOINT
+ENV PATH="/opt/conda/envs/omicsage/bin:${PATH}"
+ENV CONDA_DEFAULT_ENV="omicsage"
+
+# ------------------------------------------------------------
+# Layer 2: Source code (fast layer — changes often)
+# ------------------------------------------------------------
+COPY pipeline/     ./pipeline/
+COPY reports/      ./reports/
+COPY ai/           ./ai/
+COPY config/       ./config/
+COPY tests/        ./tests/
+COPY run_scrna_pipeline.py      .
+COPY run_cite_pipeline.py       .
+COPY run_multiome_pipeline.py   .
+COPY run_spatial_pipeline.py    .
+
+# ------------------------------------------------------------
+# Runtime configuration
+# ------------------------------------------------------------
+
+# API keys — injected at runtime via docker run -e or docker-compose
+# Never baked into the image
+ENV ANTHROPIC_API_KEY=""
+ENV OPENAI_API_KEY=""
+ENV OLLAMA_HOST="http://host.docker.internal:11434"
+
+# Modality selector — overridden by docker-compose service or -e flag
+# Options: scrna | cite | multiome | spatial
+ENV OMICSAGE_MODALITY="scrna"
+
+# GPU flag — set to 1 to enable GPU-aware tools (Tangram, scVI)
+ENV OMICSAGE_GPU="0"
+
+# Prevent Python from buffering stdout (so logs appear live)
+ENV PYTHONUNBUFFERED="1"
+
+# HDF5 threading — prevents race conditions in multi-sample loops
+ENV HDF5_USE_FILE_LOCKING="FALSE"
+
+# ------------------------------------------------------------
+# Entrypoint
+# ------------------------------------------------------------
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["--help"]

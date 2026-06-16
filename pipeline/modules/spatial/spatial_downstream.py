@@ -538,6 +538,11 @@ def _run_co_occurrence(
         return {"skipped": True, "reason": "obsm['spatial'] not found"}
 
     try:
+        # sq.gr.co_occurrence requires cluster_key to be Categorical.
+        col = adata.obs[dominant_celltype_key]
+        if not hasattr(col, "cat"):
+            adata.obs[dominant_celltype_key] = col.astype(str).astype("category")
+
         kwargs: dict = {
             "cluster_key": dominant_celltype_key,
             "n_jobs": n_jobs,
@@ -594,6 +599,11 @@ def _run_nhood_enrichment(
             }
 
     try:
+        # sq.gr.nhood_enrichment requires cluster_key to be Categorical.
+        col = adata.obs[dominant_celltype_key]
+        if not hasattr(col, "cat"):
+            adata.obs[dominant_celltype_key] = col.astype(str).astype("category")
+
         sq.gr.nhood_enrichment(
             adata,
             cluster_key=dominant_celltype_key,
@@ -668,6 +678,19 @@ def _run_ligrec(
         }
 
     try:
+        # sq.gr.ligrec requires the cluster column to be Categorical with clean
+        # string category labels.  After h5ad round-trip the column is often
+        # plain object dtype, which causes "Invalid cluster '<name>'" errors.
+        # Cast once here to guarantee the correct dtype in every branch below.
+        col = adata.obs[dominant_celltype_key]
+        if not hasattr(col, "cat"):
+            adata.obs[dominant_celltype_key] = col.astype(str).astype("category")
+        else:
+            # Already Categorical but categories may be non-string (e.g. int)
+            adata.obs[dominant_celltype_key] = (
+                col.astype(str).astype("category")
+            )
+
         # ligrec matches gene names against OmniPath database (gene symbols).
         # When var_names are ENSEMBL IDs, we must temporarily remap to symbols.
         if "feature_name" in adata.var.columns:

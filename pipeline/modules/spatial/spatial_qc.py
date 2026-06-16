@@ -89,6 +89,21 @@ def spatial_qc(
     adata.var["mt"] = adata.var_names.str.startswith(mt_prefix)
     n_mt_genes = int(adata.var["mt"].sum())
 
+    # Warn when the prefix doesn't match anything — common when var_names are
+    # ENSEMBL IDs (e.g. ENSG...) instead of gene symbols.  MT% will be 0 for
+    # all spots, so the max_mt_pct filter has no effect.
+    if n_mt_genes == 0:
+        import warnings
+        warnings.warn(
+            f"[spatial_qc] mt_prefix='{mt_prefix}' matched 0 genes in var_names. "
+            "MT gene % will be 0 for all spots. "
+            "If your data uses ENSEMBL IDs, try setting mt_prefix to match the "
+            "ENSEMBL mitochondrial prefix (e.g. 'MT-' will not match 'ENSG...'; "
+            "use var['feature_name'] if available, or filter by chromosome instead).",
+            UserWarning,
+            stacklevel=2,
+        )
+
     # ------------------------------------------------------------------ #
     # 2. Calculate QC metrics (scanpy standard)
     # ------------------------------------------------------------------ #
@@ -164,6 +179,7 @@ def spatial_qc(
             "removed_low_genes": low_genes,
             "removed_high_genes": high_genes,
             "removed_high_mt": high_mt,
+            "mt_prefix_zero_match": n_mt_genes == 0,
         },
         "summary_stats": summary_stats,
     }

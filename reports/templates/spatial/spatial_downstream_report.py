@@ -153,22 +153,42 @@ def _squidpy_fig_b64(
     figsize: tuple = (6, 5),
     **kwargs,
 ) -> Optional[str]:
-    """Call a sq.pl.* function by name and return base64 PNG or None."""
+    """Call a sq.pl.* function by name and return base64 PNG or None.
+
+    squidpy plot functions may return an Axes, a list of Axes, or None
+    depending on version and whether show=True/False is honoured.
+    We capture the figure via the returned object when possible, and fall
+    back to plt.gcf() otherwise.  We always close all figures afterwards to
+    avoid memory leaks.
+    """
     if not _SQUIDPY_AVAILABLE:
         return None
     try:
+        plt.close("all")
         fn = getattr(sq.pl, plot_fn)
+        # Pass figsize as a keyword; some sq.pl functions ignore it, which is fine.
         result = fn(adata, figsize=figsize, **kwargs)
-        # sq.pl.* may return axes, list of axes, or None (writes directly to gcf)
+        # Resolve the figure object from whatever sq.pl.* returned
         if result is None:
             fig = plt.gcf()
-        elif hasattr(result, "__len__") and not hasattr(result, "get_figure"):
-            first = result[0] if len(result) > 0 else None
-            fig = first.get_figure() if first is not None else plt.gcf()
         elif hasattr(result, "get_figure"):
+            # Single Axes object
             fig = result.get_figure()
+        elif hasattr(result, "__len__") and len(result) > 0:
+            # List/array of Axes
+            first = result[0]
+            if hasattr(first, "get_figure"):
+                fig = first.get_figure()
+            else:
+                fig = plt.gcf()
         else:
             fig = plt.gcf()
+        # Sanity-check: if gcf() returns an empty figure squidpy may have
+        # plotted into a different figure — use the most recently created one.
+        if not fig.axes:
+            figs = list(map(plt.figure, plt.get_fignums()))
+            if figs:
+                fig = figs[-1]
         try:
             fig.tight_layout()
         except Exception:
@@ -183,34 +203,137 @@ def _squidpy_fig_b64(
 def _spatial_scatter_b64(
     adata: ad.AnnData,
     color: str,
-    figsize: tuple = (6, 5),
+    figsize: tuple = (6, 6),
     library_key: Optional[str] = None,
 ) -> Optional[str]:
-    """Spatial scatter coloured by an obs column."""
+    """Spatial scatter coloured by an obs column.
+
+    Multi-sample strategy: render each sample separately and stitch into a
+    2-column grid to avoid extreme aspect ratios with ≥2 samples.
+    """
+    import numpy as _np
+    import io as _io
+    import base64 as _b64_mod
+
     if not _SQUIDPY_AVAILABLE or "spatial" not in adata.obsm:
         return None
+
     try:
-        kwargs: dict = {
-            "color": color,
-            "frameon": False,
-            "return_ax": True,
-            "figsize": figsize,
-        }
-        if library_key:
-            kwargs["library_key"] = library_key
-        axes = sq.pl.spatial_scatter(adata, **kwargs)
-        if axes is None:
-            fig = plt.gcf()
-        elif hasattr(axes, "__len__") and not hasattr(axes, "get_figure"):
-            first = axes[0] if len(axes) > 0 else None
-            fig = first.get_figure() if first is not None else plt.gcf()
-        else:
-            fig = axes.get_figure()
-        try:
-            fig.tight_layout()
-        except Exception:
-            pass
-        return _fig_to_b64(fig)
+        samples = []
+        if library_key and library_key in adata.obs.columns:
+            samples = sorted(adata.obs[library_key].astype(str).unique().tolist())
+
+        # Single-sample fast path
+        if len(samples) <= 1:
+            plt.close("all")
+            kwargs: dict = {"color": color, "frameon": False, "figsize": figsize}
+            if library_key:
+                kwargs["library_key"] = library_key
+            result = sq.pl.spatial_scatter(adata, **kwargs)
+            if result is None:
+                fig = plt.gcf()
+            elif hasattr(result, "get_figure"):
+                fig = result.get_figure()
+            elif hasattr(result, "__len__") and len(result) > 0:
+                ax0 = result[0]
+                fig = ax0.get_figure() if hasattr(ax0, "get_figure") else plt.gcf()
+            else:
+                fig = plt.gcf()
+            if not fig.axes:
+                all_figs = [plt.figure(n) for n in plt.get_fignums()]
+                if all_figs:
+                    fig = all_figs[-1]
+            try:
+                fig.tight_layout()
+            except Exception:
+                pass
+            return _fig_to_b64(fig)
+
+        # Multi-sample: per-sample render + 2-column grid stitch
+        per_b64s: list[tuple[str, str]] = []
+        for sample_id in samples:
+            try:
+                mask = adata.obs[library_key].astype(str) == sample_id
+                ad_sub = adata[mask].copy()
+                # uns["spatial"] is NOT filtered by obs subsetting — prune to
+                # the current sample so squidpy doesn't demand a library_key.
+                if "spatial" in ad_sub.uns and sample_id in ad_sub.uns["spatial"]:
+                    ad_sub.uns["spatial"] = {sample_id: ad_sub.uns["spatial"][sample_id]}
+                plt.close("all")
+                kwargs = {"color": color, "frameon": False, "figsize": figsize}
+                result = sq.pl.spatial_scatter(ad_sub, **kwargs)
+                if result is None:
+                    fig = plt.gcf()
+                elif hasattr(result, "get_figure"):
+                    fig = result.get_figure()
+                elif hasattr(result, "__len__") and len(result) > 0:
+                    ax0 = result[0]
+                    fig = ax0.get_figure() if hasattr(ax0, "get_figure") else plt.gcf()
+                else:
+                    fig = plt.gcf()
+                if not fig.axes:
+                    all_figs = [plt.figure(n) for n in plt.get_fignums()]
+                    if all_figs:
+                        fig = all_figs[-1]
+                try:
+                    fig.tight_layout()
+                except Exception:
+                    pass
+                buf = _io.BytesIO()
+                fig.savefig(buf, format="png", dpi=100, bbox_inches="tight")
+                buf.seek(0)
+                per_b64s.append((sample_id, _b64_mod.b64encode(buf.read()).decode()))
+                plt.close(fig)
+            except Exception as e:
+                logger.warning("[downstream_report] scatter failed for sample %s: %s", sample_id, e)
+                plt.close("all")
+
+        if not per_b64s:
+            return None
+
+        imgs = []
+        for _, b in per_b64s:
+            arr = plt.imread(_io.BytesIO(_b64_mod.b64decode(b)))
+            imgs.append(arr)
+
+        ncols = 2
+        nrows = (len(imgs) + ncols - 1) // ncols
+        max_h = max(a.shape[0] for a in imgs)
+        max_w = max(a.shape[1] for a in imgs)
+        n_ch  = imgs[0].shape[2] if imgs[0].ndim == 3 else 1
+
+        def _pad(a):
+            ph = max_h - a.shape[0]
+            pw = max_w - a.shape[1]
+            return _np.pad(a, ((0, ph), (0, pw), (0, 0)),
+                           mode="constant", constant_values=1.0)
+
+        padded = [_pad(a) for a in imgs]
+        while len(padded) < nrows * ncols:
+            padded.append(_np.ones((max_h, max_w, n_ch), dtype=padded[0].dtype))
+
+        rows = [_np.hstack(padded[r * ncols:(r + 1) * ncols]) for r in range(nrows)]
+        grid = _np.vstack(rows)
+
+        dpi = 100
+        fig2, ax2 = plt.subplots(figsize=(grid.shape[1] / dpi, grid.shape[0] / dpi), dpi=dpi)
+        ax2.imshow(grid)
+        ax2.axis("off")
+        for idx, (sample_id, _) in enumerate(per_b64s):
+            row_i = idx // ncols
+            col_i = idx % ncols
+            ax2.text(col_i * max_w + max_w * 0.02, row_i * max_h + max_h * 0.04,
+                     sample_id, fontsize=8, fontweight="bold", color="white", va="top",
+                     bbox=dict(facecolor="black", alpha=0.45, pad=2, linewidth=0))
+        fig2.subplots_adjust(left=0, right=1, top=1, bottom=0)
+
+        buf2 = _io.BytesIO()
+        fig2.savefig(buf2, format="png", dpi=dpi, bbox_inches="tight")
+        buf2.seek(0)
+        result_b64 = _b64_mod.b64encode(buf2.read()).decode()
+        plt.close(fig2)
+        return result_b64
+
     except Exception as e:
         logger.warning("[downstream_report] spatial_scatter(%s) failed: %s", color, e)
         plt.close("all")
@@ -431,8 +554,25 @@ def _section_co_occurrence(adata: ad.AnnData, prov: dict, dominant_celltype_key:
                 .value_counts()
                 .index[0]
             )
+            # squidpy reads uns[f"{cluster_key}_colors"] for the palette.
+            # After deconvolution the color list may be sized for all cell types
+            # (11) while dominant_cell_type only has 6 — this causes a palette
+            # length mismatch.  Strip the stale key so squidpy auto-generates
+            # a fresh palette from the actual categories present.
+            import copy as _copy
+            adata_plot = _copy.copy(adata)
+            adata_plot.uns = dict(adata.uns)
+            colors_key = f"{dominant_celltype_key}_colors"
+            adata_plot.uns.pop(colors_key, None)
+            # Also ensure the column is Categorical with only observed categories
+            col = adata_plot.obs[dominant_celltype_key]
+            if hasattr(col, "cat"):
+                adata_plot.obs = adata_plot.obs.copy()
+                adata_plot.obs[dominant_celltype_key] = (
+                    col.astype(str).astype("category")
+                )
             b64 = _squidpy_fig_b64(
-                adata,
+                adata_plot,
                 "co_occurrence",
                 figsize=(8, 5),
                 cluster_key=dominant_celltype_key,
@@ -456,7 +596,7 @@ def _section_co_occurrence(adata: ad.AnnData, prov: dict, dominant_celltype_key:
       <p>Co-occurrence score (conditional probability ratio) of each cell type
          co-occurring with the most abundant type across increasing radii.
          Scores &gt; 1 indicate spatial enrichment at that distance.</p>
-      {fig_html if fig_html else '<p class="note">Co-occurrence data computed. Install squidpy for visualisation.</p>'}
+      {fig_html if fig_html else '<p class="note">Co-occurrence data computed but plot could not be rendered (check logs for details).</p>'}
     </section>
     """
 
@@ -472,13 +612,33 @@ def _section_nhood_enrichment(adata: ad.AnnData, prov: dict, dominant_celltype_k
 
     b64 = None
     if _SQUIDPY_AVAILABLE:
-        b64 = _squidpy_fig_b64(
-            adata,
-            "nhood_enrichment",
-            figsize=(7, 6),
-            cluster_key=dominant_celltype_key,
-            method="average",
-        )
+        try:
+            # The nhood enrichment z-score matrix is sized for all Categorical
+            # levels, but dominant_cell_type may have fewer observed categories
+            # than the original deconvolution cell type list.  Casting to string
+            # drops unused levels and ensures the matrix size matches the obs column.
+            # Also strip any stale _colors key to avoid palette length mismatches.
+            import copy as _copy
+            adata_plot = _copy.copy(adata)
+            adata_plot.uns = dict(adata.uns)
+            colors_key = f"{dominant_celltype_key}_colors"
+            adata_plot.uns.pop(colors_key, None)
+            if dominant_celltype_key in adata_plot.obs.columns:
+                col = adata_plot.obs[dominant_celltype_key]
+                if hasattr(col, "cat"):
+                    adata_plot.obs = adata_plot.obs.copy()
+                    adata_plot.obs[dominant_celltype_key] = (
+                        col.astype(str).astype("category")
+                    )
+            b64 = _squidpy_fig_b64(
+                adata_plot,
+                "nhood_enrichment",
+                figsize=(7, 6),
+                cluster_key=dominant_celltype_key,
+                method="average",
+            )
+        except Exception as e:
+            logger.warning("[downstream_report] nhood_enrichment plot failed: %s", e)
 
     fig_html = ""
     if b64:
@@ -496,7 +656,7 @@ def _section_nhood_enrichment(adata: ad.AnnData, prov: dict, dominant_celltype_k
       <p>Permutation-based test ({n_perms} permutations) on the spatial adjacency graph.
          High z-scores indicate cell type pairs that are more often neighbours than
          expected by chance. Negative values indicate spatial exclusion.</p>
-      {fig_html if fig_html else '<p class="note">Enrichment data computed. Install squidpy for visualisation.</p>'}
+      {fig_html if fig_html else '<p class="note">Enrichment data computed but plot could not be rendered (check logs for details).</p>'}
     </section>
     """
 
@@ -606,42 +766,89 @@ def _lr_focused_dotplot(adata: "ad.AnnData", ligrec_key: str,
                         dominant_celltype_key: str,
                         pvals_df: "pd.DataFrame",
                         n_cell_types: int = 6,
+                        n_top_pairs: int = 40,
                         alpha: float = 0.001) -> Optional[str]:
-    """Option 1 — focused squidpy dotplot restricted to the top N cell type pairs.
+    """Focused squidpy dotplot restricted to top N cell type pairs × top N LR pairs.
 
-    Selects the source and target cell types that participate in the most
-    significant interactions, then passes source_groups / target_groups to
-    sq.pl.ligrec so the column count stays manageable.
+    squidpy has no built-in row cap — the only way to limit the y-axis is to
+    physically subset uns[ligrec_key]["means"] and ["pvalues"] to the rows we
+    want *before* passing to sq.pl.ligrec.  We write the subset into a shallow
+    copy of adata.uns so the original data is never mutated.
+
+    Row selection: top `n_top_pairs` LR pairs ranked by minimum p-value across
+    the selected cell-type column pairs.
     """
     if not _SQUIDPY_AVAILABLE:
         return None
     try:
+        import copy as _copy
         import numpy as _np
 
-        # Count significant interactions per source / target cell type
-        sig_mask = pvals_df < alpha                       # bool DataFrame, cols = (src, tgt)
+        # ── Select top source / target cell types ────────────────────────────
+        sig_mask = pvals_df < alpha
         src_counts = sig_mask.sum(axis=0).groupby(level=0).sum()
         tgt_counts = sig_mask.sum(axis=0).groupby(level=1).sum()
-
         top_src = src_counts.nlargest(n_cell_types).index.tolist()
         top_tgt = tgt_counts.nlargest(n_cell_types).index.tolist()
-
         if not top_src or not top_tgt:
             return None
 
-        # Estimate a sensible figsize: ~1.2in per cell type column pair + 4in for labels
-        n_cols = min(len(top_src) * len(top_tgt), n_cell_types ** 2)
-        fig_w  = min(4 + n_cols * 0.9, 18)
-        fig_h  = min(4 + len(pvals_df) * 0.18, 14)
+        # ── Retrieve full means/pvals from uns ───────────────────────────────
+        ligrec_data = adata.uns[ligrec_key]
+        means_full = ligrec_data.get("means")
+        pvals_full = ligrec_data.get("pvalues")
+        if means_full is None or pvals_full is None:
+            return None
+
+        # ── Column subset: keep only top_src × top_tgt pairs ────────────────
+        keep_cols = [
+            c for c in pvals_full.columns
+            if c[0] in top_src and c[1] in top_tgt
+        ]
+        if not keep_cols:
+            return None
+        pvals_sub = pvals_full[keep_cols]
+        means_sub = means_full[keep_cols] if all(c in means_full.columns for c in keep_cols) else means_full
+
+        # ── Row subset: top n_top_pairs by min p-value across kept columns ───
+        row_min_p = pvals_sub.min(axis=1)
+        # Keep only rows that are significant in at least one kept column
+        sig_rows = row_min_p < alpha
+        if sig_rows.sum() == 0:
+            # Relax to show something
+            sig_rows = row_min_p < 0.05
+        if sig_rows.sum() == 0:
+            return None
+
+        top_rows = (
+            row_min_p[sig_rows]
+            .nsmallest(n_top_pairs)
+            .index
+        )
+        pvals_trimmed = pvals_sub.loc[top_rows]
+        means_trimmed = means_sub.loc[top_rows]
+
+        # ── Build a shallow adata copy with trimmed ligrec in uns ────────────
+        adata_plot = _copy.copy(adata)
+        adata_plot.uns = dict(adata.uns)
+        adata_plot.uns[ligrec_key] = dict(ligrec_data)
+        adata_plot.uns[ligrec_key]["means"]   = means_trimmed
+        adata_plot.uns[ligrec_key]["pvalues"] = pvals_trimmed
+
+        # ── Figsize from actual trimmed row/col counts ───────────────────────
+        n_rows = len(pvals_trimmed)
+        n_cols = len(keep_cols)
+        fig_w = min(4 + n_cols * 0.9, 22)
+        fig_h = min(3 + n_rows * 0.35, 20)
 
         return _squidpy_fig_b64(
-            adata,
+            adata_plot,
             "ligrec",
             figsize=(fig_w, fig_h),
             cluster_key=dominant_celltype_key,
             source_groups=top_src,
             target_groups=top_tgt,
-            pvalue_threshold=0.05,
+            pvalue_threshold=1.0,   # don't let squidpy filter further
             alpha=alpha,
         )
     except Exception as e:
@@ -693,7 +900,7 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
     if means_df is not None and pvals_df is not None and _SQUIDPY_AVAILABLE:
         dot_b64 = _lr_focused_dotplot(
             adata, ligrec_key, dominant_celltype_key,
-            pvals_df, n_cell_types=6, alpha=0.001,
+            pvals_df, n_cell_types=6, n_top_pairs=40, alpha=0.001,
         )
 
     # ── Assemble HTML ─────────────────────────────────────────────────────────

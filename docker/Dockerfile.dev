@@ -1,0 +1,47 @@
+# ============================================================
+# OmicSage — Development Image
+# Extends the pipeline image with:
+#   - Jupyter Lab for interactive exploration
+#   - ipykernel registered to the omicsage env
+#   - pytest + coverage pre-installed
+#   - Source mounted at runtime (not baked in) for hot-reload
+# ============================================================
+
+FROM omicsage:latest
+
+LABEL description="OmicSage development environment with Jupyter"
+
+# ------------------------------------------------------------
+# Dev-only additions (thin layer on top of pipeline image)
+# ------------------------------------------------------------
+RUN /opt/conda/envs/omicsage/bin/pip install --no-cache-dir \
+    jupyterlab>=4.0 \
+    ipykernel \
+    ipywidgets \
+    pytest-cov \
+    pytest-xdist \
+    memory-profiler \
+    line-profiler \
+    && /opt/conda/envs/omicsage/bin/python -m ipykernel install \
+       --name omicsage \
+       --display-name "OmicSage (Python 3.11)"
+
+# ------------------------------------------------------------
+# Jupyter configuration
+# ------------------------------------------------------------
+ENV JUPYTER_ENABLE_LAB="yes"
+EXPOSE 8888
+
+# ------------------------------------------------------------
+# Dev entrypoint — can launch either pipeline or Jupyter
+# Usage:
+#   docker-compose run dev jupyter          ← launch Jupyter Lab
+#   docker-compose run dev pytest tests/    ← run tests
+#   docker-compose run dev bash             ← interactive shell
+#   docker-compose run dev --help           ← pipeline help
+# ------------------------------------------------------------
+COPY docker/entrypoint.sh /entrypoint.sh
+RUN chmod +x /entrypoint.sh
+
+ENTRYPOINT ["/entrypoint.sh"]
+CMD ["jupyter"]

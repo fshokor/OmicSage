@@ -1,71 +1,149 @@
+# ============================================================
+# OmicSage — Docker Compose
+# Four named services, one per modality, sharing one image.
+#
+# Usage examples:
+#   docker-compose run scrna --config config/runs/gse166635_hcc.yaml
+#   docker-compose run spatial --config config/runs/kuppe_heart.yaml --step ingest
+#   docker-compose run cite --config config/runs/gse194122_cite.yaml --from-step normalize
+#   docker-compose run multiome --config config/runs/gse194122_multiome.yaml
+#   docker-compose run dev jupyter
+#   docker-compose run dev pytest tests/ -q
+# ============================================================
+
 version: "3.9"
 
+# ------------------------------------------------------------
+# Shared configuration (anchored for DRY reuse)
+# ------------------------------------------------------------
+x-pipeline-base: &pipeline-base
+  build:
+    context: ..
+    dockerfile: docker/Dockerfile.pipeline
+  image: omicsage:latest
+  volumes:
+    # Data: read-write (input files + checkpoint .h5ad files written here)
+    - ../data:/app/data
+    # Reports: read-write (HTML reports written here)
+    - ../reports/output:/app/reports/output
+    # Config: read-only (YAML run configs)
+    - ../config:/app/config:ro
+    # Pipeline source: read-only in production
+    - ../pipeline:/app/pipeline:ro
+    # AI skills and prompts: read-only
+    - ../ai:/app/ai:ro
+  environment:
+    # API keys — set in your shell before running, never hardcoded
+    - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+    - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+    - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+    # GPU: set OMICSAGE_GPU=1 in shell to enable
+    - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+    - PYTHONUNBUFFERED=1
+    - HDF5_USE_FILE_LOCKING=FALSE
+  # Remove container after run (checkpoints persist via volume mounts)
+  restart: "no"
+
+# ------------------------------------------------------------
+# Services
+# ------------------------------------------------------------
 services:
-  python:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.python
-    image: omicsage/python:latest
-    container_name: omicsage-python
-    volumes:
-      - .:/app
-      - ./data:/app/data
-      - ./results:/app/results
-      - ./logs:/app/logs
+
+  # ----------------------------------------------------------
+  # scRNA-seq pipeline
+  # Example: docker-compose run scrna --config config/runs/gse166635_hcc.yaml
+  # ----------------------------------------------------------
+  scrna:
+    <<: *pipeline-base
     environment:
+      - OMICSAGE_MODALITY=scrna
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - PYTHONPATH=/app
-    networks:
-      - omicsage-net
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+      - PYTHONUNBUFFERED=1
+      - HDF5_USE_FILE_LOCKING=FALSE
 
-  streamlit:
+  # ----------------------------------------------------------
+  # CITE-seq pipeline
+  # Example: docker-compose run cite --config config/runs/gse194122_cite.yaml
+  # ----------------------------------------------------------
+  cite:
+    <<: *pipeline-base
+    environment:
+      - OMICSAGE_MODALITY=cite
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+      - PYTHONUNBUFFERED=1
+      - HDF5_USE_FILE_LOCKING=FALSE
+
+  # ----------------------------------------------------------
+  # Multiome (RNA + ATAC) pipeline
+  # Example: docker-compose run multiome --config config/runs/gse194122_multiome.yaml
+  # ----------------------------------------------------------
+  multiome:
+    <<: *pipeline-base
+    environment:
+      - OMICSAGE_MODALITY=multiome
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+      - PYTHONUNBUFFERED=1
+      - HDF5_USE_FILE_LOCKING=FALSE
+
+  # ----------------------------------------------------------
+  # Spatial transcriptomics pipeline
+  # Example: docker-compose run spatial --config config/runs/kuppe_heart.yaml
+  # ----------------------------------------------------------
+  spatial:
+    <<: *pipeline-base
+    environment:
+      - OMICSAGE_MODALITY=spatial
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+      - PYTHONUNBUFFERED=1
+      - HDF5_USE_FILE_LOCKING=FALSE
+
+  # ----------------------------------------------------------
+  # Development service
+  # Builds from Dockerfile.dev (adds Jupyter + pytest tools)
+  # Source code mounted read-write for hot-reload
+  # Example: docker-compose run dev jupyter
+  # Example: docker-compose run dev pytest tests/ -q
+  # Example: docker-compose run dev bash
+  # ----------------------------------------------------------
+  dev:
     build:
-      context: .
-      dockerfile: docker/Dockerfile.python
-    image: omicsage/python:latest
-    container_name: omicsage-ui
-    command: streamlit run ui/app.py --server.port 8501 --server.address 0.0.0.0
+      context: ..
+      dockerfile: docker/Dockerfile.dev
+    image: omicsage:dev
+    volumes:
+      # Full source mounted read-write for hot-reload
+      - ../data:/app/data
+      - ../reports:/app/reports
+      - ../config:/app/config
+      - ../pipeline:/app/pipeline
+      - ../ai:/app/ai
+      - ../tests:/app/tests
+      # Mount runners read-write so you can edit and re-run immediately
+      - ../run_scrna_pipeline.py:/app/run_scrna_pipeline.py
+      - ../run_cite_pipeline.py:/app/run_cite_pipeline.py
+      - ../run_multiome_pipeline.py:/app/run_multiome_pipeline.py
+      - ../run_spatial_pipeline.py:/app/run_spatial_pipeline.py
     ports:
-      - "8501:8501"
-    volumes:
-      - .:/app
-      - ./data:/app/data
-      - ./results:/app/results
+      # Jupyter Lab
+      - "8888:8888"
     environment:
+      - OMICSAGE_MODALITY=${OMICSAGE_MODALITY:-scrna}
       - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY:-}
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
-      - PYTHONPATH=/app
-    networks:
-      - omicsage-net
-
-  r:
-    build:
-      context: .
-      dockerfile: docker/Dockerfile.r
-    image: omicsage/r:latest
-    container_name: omicsage-r
-    volumes:
-      - .:/app
-      - ./data:/app/data
-      - ./results:/app/results
-    networks:
-      - omicsage-net
-
-  nextflow:
-    image: nextflow/nextflow:23.10.1
-    container_name: omicsage-nextflow
-    working_dir: /app
-    volumes:
-      - .:/app
-      - ./data:/app/data
-      - ./results:/app/results
-      - /var/run/docker.sock:/var/run/docker.sock
-    environment:
-      - NXF_OPTS=-Xms512m -Xmx2g
-    networks:
-      - omicsage-net
-
-networks:
-  omicsage-net:
-    driver: bridge
+      - OLLAMA_HOST=${OLLAMA_HOST:-http://host.docker.internal:11434}
+      - OMICSAGE_GPU=${OMICSAGE_GPU:-0}
+      - PYTHONUNBUFFERED=1
+      - HDF5_USE_FILE_LOCKING=FALSE
+    restart: "no"
