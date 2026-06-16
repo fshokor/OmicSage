@@ -315,3 +315,14 @@ MODALITY_RUNNER = {
 
 # ── Organism options ───────────────────────────────────────────────────────────
 ORGANISMS = ["human", "mouse"]
+
+# ── Nextflow modality names (passed as --modality to main.nf) ─────────────────
+MODALITY_NF_NAME = {
+    "scRNA-seq": "scrna",
+    "CITE-seq":  "cite",
+    "Multiome":  "multiome",
+    "Spatial":   "spatial",
+}
+
+# Modalities with Nextflow workflows currently implemented
+NF_IMPLEMENTED = {"scRNA-seq"}
