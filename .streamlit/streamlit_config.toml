@@ -1,0 +1,9 @@
+[server]
+maxUploadSize = 10240        # 10 GB — real H5AD files can be several GB
+maxMessageSize = 10240       # match upload size
+
+[browser]
+gatherUsageStats = false     # no telemetry
+
+[theme]
+base = "dark"
