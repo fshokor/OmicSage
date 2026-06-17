@@ -1,7 +1,7 @@
 """
 tests/test_spatial_impute.py — OmicSage Phase 7 extension
 
-Tests for pipeline/modules/spatial/spatial_impute.py and
+Tests for pipeline/modules/scripts/spatial/spatial_impute.py and
 reports/templates/spatial/spatial_impute_report.py.
 
 Strategy
@@ -123,9 +123,9 @@ def _make_mock_tg(n_spots: int, n_genes: int, gene_names: list[str]):
 
 def _import_module():
     """Import spatial_impute, reloading to pick up any monkey-patching."""
-    if "pipeline.modules.spatial.spatial_impute" in sys.modules:
-        return importlib.reload(sys.modules["pipeline.modules.spatial.spatial_impute"])
-    import pipeline.modules.spatial.spatial_impute as m
+    if "pipeline.modules.scripts.spatial.spatial_impute" in sys.modules:
+        return importlib.reload(sys.modules["pipeline.modules.scripts.spatial.spatial_impute"])
+    import pipeline.modules.scripts.spatial.spatial_impute as m
     return m
 
 

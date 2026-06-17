@@ -25,9 +25,9 @@ squidpy = pytest.importorskip("squidpy")
 import anndata as ad
 import pandas as pd
 
-from pipeline.modules.spatial.spatial_reduce import spatial_reduce
-from pipeline.modules.spatial.spatial_cluster import spatial_cluster
-from pipeline.modules.spatial.spatial_deconvolve import spatial_deconvolve
+from pipeline.modules.scripts.spatial.spatial_reduce import spatial_reduce
+from pipeline.modules.scripts.spatial.spatial_cluster import spatial_cluster
+from pipeline.modules.scripts.spatial.spatial_deconvolve import spatial_deconvolve
 from reports.templates.spatial.spatial_deconvolve_report import (
     generate_spatial_deconvolve_report,
 )
@@ -330,7 +330,7 @@ class TestIngestH5adContract:
         h5ad_path = str(tmp_path / "test.h5ad")
         adata.write_h5ad(h5ad_path)
 
-        from pipeline.modules.spatial.spatial_ingest import spatial_ingest
+        from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
         out, _ = spatial_ingest(h5ad_path, spatial_type="h5ad")
         assert "counts" in out.layers
 
@@ -346,7 +346,7 @@ class TestIngestH5adContract:
         h5ad_path = str(tmp_path / "test_ensembl.h5ad")
         adata.write_h5ad(h5ad_path)
 
-        from pipeline.modules.spatial.spatial_ingest import spatial_ingest
+        from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
         out, _ = spatial_ingest(h5ad_path, spatial_type="h5ad")
         assert all(v.startswith("ENSG") for v in out.var_names)
 
@@ -365,7 +365,7 @@ class TestIngestH5adContract:
         h5ad_path = str(tmp_path / "test_mt.h5ad")
         adata.write_h5ad(h5ad_path)
 
-        from pipeline.modules.spatial.spatial_ingest import spatial_ingest
+        from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
         out, _ = spatial_ingest(h5ad_path, spatial_type="h5ad")
         assert "MT" in out.obsm
         assert out.n_vars == n_other

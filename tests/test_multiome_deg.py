@@ -1,5 +1,5 @@
 """
-tests/test_multiome_deg.py — Tests for pipeline/modules/multiome/multiome_deg.py
+tests/test_multiome_deg.py — Tests for pipeline/modules/scripts/multiome/multiome_deg.py
 
 Coverage
 --------
@@ -52,7 +52,7 @@ from anndata import AnnData
 mudata = pytest.importorskip("mudata")
 MuData = mudata.MuData
 
-from pipeline.modules.multiome.multiome_deg import multiome_deg
+from pipeline.modules.scripts.multiome.multiome_deg import multiome_deg
 
 
 # ---------------------------------------------------------------------------

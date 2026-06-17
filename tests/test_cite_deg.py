@@ -93,7 +93,7 @@ def adt_fixture():
 # Import
 # ---------------------------------------------------------------------------
 
-from pipeline.modules.cite.cite_deg import cite_deg
+from pipeline.modules.scripts.cite.cite_deg import cite_deg
 
 
 # ---------------------------------------------------------------------------

@@ -106,7 +106,7 @@ def deg_dict_fixture(mdata_fixture):
 # Import
 # ---------------------------------------------------------------------------
 
-from pipeline.modules.cite.cite_gsea import cite_gsea
+from pipeline.modules.scripts.cite.cite_gsea import cite_gsea
 
 
 # ---------------------------------------------------------------------------
@@ -152,7 +152,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             result, gsea_dict = cite_gsea(
@@ -172,7 +172,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             _, gsea_dict = cite_gsea(
@@ -192,7 +192,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             result, gsea_dict = cite_gsea(
@@ -211,7 +211,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             result, _ = cite_gsea(
@@ -231,7 +231,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             _, gsea_dict = cite_gsea(
@@ -250,7 +250,7 @@ class TestReturnContract:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             _, gsea_dict = cite_gsea(
@@ -277,7 +277,7 @@ class TestInplace:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             cite_gsea(mdata_fixture, cite_deg_dict=deg_dict_fixture, inplace=False)
@@ -294,7 +294,7 @@ class TestInplace:
             },
         )
         with patch(
-            "pipeline.modules.cite.cite_gsea._rna_gsea",
+            "pipeline.modules.scripts.cite.cite_gsea._rna_gsea",
             return_value=gsea_mock_result,
         ):
             cite_gsea(mdata_fixture, cite_deg_dict=deg_dict_fixture, inplace=True)

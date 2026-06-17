@@ -21,8 +21,8 @@ squidpy = pytest.importorskip("squidpy")
 
 import anndata as ad
 
-from pipeline.modules.spatial.spatial_reduce import spatial_reduce
-from pipeline.modules.spatial.spatial_cluster import spatial_cluster
+from pipeline.modules.scripts.spatial.spatial_reduce import spatial_reduce
+from pipeline.modules.scripts.spatial.spatial_cluster import spatial_cluster
 from reports.templates.spatial.spatial_cluster_report import (
     generate_spatial_cluster_report,
 )

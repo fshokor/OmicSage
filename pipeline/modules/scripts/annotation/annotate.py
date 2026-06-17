@@ -26,7 +26,7 @@ scanvi       — scANVI transfer learning via scvi-hub (optional, GPU-accelerate
 
 Public API
 ----------
-    from pipeline.modules.annotation.annotate import annotate, MARKER_SETS
+    from pipeline.modules.scripts.annotation.annotate import annotate, MARKER_SETS
 
     adata_ann, ann_dict = annotate(
         adata_clustered,

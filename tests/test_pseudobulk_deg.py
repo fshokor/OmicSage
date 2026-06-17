@@ -1,5 +1,5 @@
 """
-test_pseudobulk_deg.py — Tests for pipeline/modules/downstream/pseudobulk_deg.py
+test_pseudobulk_deg.py — Tests for pipeline/modules/scripts/downstream/pseudobulk_deg.py
 
 Run with:
     cd ~/OmicSage
@@ -18,7 +18,7 @@ import pandas as pd
 import pytest
 from anndata import AnnData
 
-from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
+from pipeline.modules.scripts.downstream.pseudobulk_deg import pseudobulk_deg
 
 
 # ---------------------------------------------------------------------------

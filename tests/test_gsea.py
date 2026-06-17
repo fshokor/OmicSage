@@ -41,7 +41,7 @@ gseapy = pytest.importorskip(
            "Install with: pip install gseapy",
 )
 
-from pipeline.modules.downstream.gsea import gsea  # noqa: E402  (after importorskip)
+from pipeline.modules.scripts.downstream.gsea import gsea  # noqa: E402  (after importorskip)
 
 
 # ---------------------------------------------------------------------------

@@ -1,5 +1,5 @@
 """
-tests/test_adt_annotate.py — Tests for pipeline/modules/cite/adt_annotate.py
+tests/test_adt_annotate.py — Tests for pipeline/modules/scripts/cite/adt_annotate.py
 
 Coverage:
   Happy path
@@ -85,7 +85,7 @@ from mudata import MuData
 # Path setup
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pipeline.modules.cite.adt_annotate import annotate_adt
+from pipeline.modules.scripts.cite.adt_annotate import annotate_adt
 
 
 # ---------------------------------------------------------------------------

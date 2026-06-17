@@ -26,7 +26,7 @@ from pathlib import Path
 from unittest.mock import patch, MagicMock
 import anndata as ad
 
-from pipeline.modules.qc.ingest import (
+from pipeline.modules.scripts.qc.ingest import (
     load_dataset,
     detect_format,
     _is_integer_matrix,

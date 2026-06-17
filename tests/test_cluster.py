@@ -39,7 +39,7 @@ import scipy.sparse as sp
 import scanpy as sc
 from anndata import AnnData
 
-from pipeline.modules.clustering.cluster import cluster, compute_ari, _res_key
+from pipeline.modules.scripts.clustering.cluster import cluster, compute_ari, _res_key
 
 # ---------------------------------------------------------------------------
 # Fixtures

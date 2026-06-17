@@ -9,16 +9,16 @@ REPO_ROOT = Path(__file__).parent.parent
 class TestRepoStructure:
     REQUIRED_DIRS = [
         ".dev_memory", "config",
-        "pipeline/modules/qc", "pipeline/modules/processing",
-        "pipeline/modules/clustering", "pipeline/modules/annotation",
-        "pipeline/modules/downstream", "pipeline/workflows",
+        "pipeline/modules/scripts/qc", "pipeline/modules/scripts/processing",
+        "pipeline/modules/scripts/clustering", "pipeline/modules/scripts/annotation",
+        "pipeline/modules/scripts/downstream", "pipeline/workflows",
         "ai", "reports/templates", "reports/slides",
         "ui", "cli", "data/benchmark", "data/references",
         "tests", "docs", "docker", ".github/workflows",
     ]
     REQUIRED_FILES = [
-        "config/schema.yaml", "pipeline/main.nf",
-        "pipeline/workflows/scrna.nf", "pipeline/workflows/scatac.nf",
+        "config/schema.yaml", "main.nf",
+        "pipeline/workflows/scrna.nf", "pipeline/workflows/multiome.nf",
         "pipeline/workflows/spatial.nf", "pipeline/workflows/integration.nf",
         "nextflow.config", "docker/Dockerfile.python", "docker/Dockerfile.r",
         "docker-compose.yml", "environment.yml",

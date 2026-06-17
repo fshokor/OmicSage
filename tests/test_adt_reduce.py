@@ -1,5 +1,5 @@
 """
-tests/test_adt_reduce.py — Tests for pipeline/modules/cite/adt_reduce.py
+tests/test_adt_reduce.py — Tests for pipeline/modules/scripts/cite/adt_reduce.py
 
 Coverage:
   - Happy path: PCA + neighbors + UMAP computed correctly
@@ -47,7 +47,7 @@ from mudata import MuData
 # Path setup — import from project root
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pipeline.modules.cite.adt_reduce import reduce_adt
+from pipeline.modules.scripts.cite.adt_reduce import reduce_adt
 
 
 # ---------------------------------------------------------------------------

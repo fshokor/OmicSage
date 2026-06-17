@@ -1,7 +1,7 @@
 """
 tests/test_adt_doublets.py
 
-Tests for pipeline/modules/cite/adt_doublets.py
+Tests for pipeline/modules/scripts/cite/adt_doublets.py
 
 Test groups
 -----------
@@ -37,7 +37,7 @@ import scipy.sparse as sp
 # ---------------------------------------------------------------------------
 def import_module():
     import importlib.util, sys, pathlib
-    path = pathlib.Path(__file__).parent.parent / "pipeline/modules/cite/adt_doublets.py"
+    path = pathlib.Path(__file__).parent.parent / "pipeline/modules/scripts/cite/adt_doublets.py"
     spec = importlib.util.spec_from_file_location("adt_doublets", path)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)

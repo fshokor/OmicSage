@@ -1,5 +1,5 @@
 """
-tests/test_adt_harmony.py — Tests for pipeline/modules/cite/adt_harmony.py
+tests/test_adt_harmony.py — Tests for pipeline/modules/scripts/cite/adt_harmony.py
 
 Coverage:
   - Happy path: Harmony + neighbors + UMAP computed correctly
@@ -51,7 +51,7 @@ from mudata import MuData
 # Path setup
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pipeline.modules.cite.adt_harmony import run_harmony_adt
+from pipeline.modules.scripts.cite.adt_harmony import run_harmony_adt
 
 
 # ---------------------------------------------------------------------------

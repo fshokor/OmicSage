@@ -110,7 +110,7 @@ def adt_only_fixture():
 # Import
 # ---------------------------------------------------------------------------
 
-from pipeline.modules.cite.cite_corr import cite_corr
+from pipeline.modules.scripts.cite.cite_corr import cite_corr
 
 
 # ---------------------------------------------------------------------------

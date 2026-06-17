@@ -23,7 +23,7 @@ import sys
 import os
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from pipeline.modules.multiome.atac_qc import atac_qc
+from pipeline.modules.scripts.multiome.atac_qc import atac_qc
 
 
 # ---------------------------------------------------------------------------

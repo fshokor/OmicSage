@@ -1,7 +1,7 @@
 """
 tests/test_annotate.py
 ======================
-Test suite for pipeline/modules/annotation/annotate.py
+Test suite for pipeline/modules/scripts/annotation/annotate.py
 
 Tests
 -----
@@ -51,7 +51,7 @@ import sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
-from pipeline.modules.annotation.annotate import (
+from pipeline.modules.scripts.annotation.annotate import (
     annotate,
     _fetch_sctype_db,
     _parse_sctype_markers,
@@ -182,7 +182,7 @@ def adata_pre_annotated(adata_clustered):
     We call the internal _run_majority_vote directly so the test is independent
     of the CellTypist import guard.
     """
-    from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+    from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
     adata = adata_clustered.copy()
     # Run marker scoring to populate cell_type_markers
     score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
@@ -450,7 +450,7 @@ class TestRunScType:
  
     def test_column_exists_after_run(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -458,7 +458,7 @@ class TestRunScType:
  
     def test_labels_are_strings(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -468,7 +468,7 @@ class TestRunScType:
  
     def test_every_cluster_covered(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -481,7 +481,7 @@ class TestRunScType:
         no cluster should fall back to 'Unknown'.
         """
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -490,7 +490,7 @@ class TestRunScType:
  
     def test_liver_tissue_gives_liver_types(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Liver")
@@ -501,7 +501,7 @@ class TestRunScType:
  
     def test_column_is_category_dtype(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -513,7 +513,7 @@ class TestRunScType:
         sentinel = np.zeros_like(adata_clustered.layers["logcounts"])
         adata_clustered.layers["logcounts"] = sentinel
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
             _run_sctype(adata_clustered, "leiden", tissue="Immune system")
@@ -527,10 +527,10 @@ class TestAnnotateWithScType:
  
     def test_sctype_in_methods_run(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
-            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+            with patch("pipeline.modules.scripts.annotation.annotate._run_celltypist"):
                 adata_ann, ann_dict = annotate(
                     adata_clustered,
                     methods=["markers", "sctype"],
@@ -540,10 +540,10 @@ class TestAnnotateWithScType:
  
     def test_tissue_recorded_in_provenance(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
-            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+            with patch("pipeline.modules.scripts.annotation.annotate._run_celltypist"):
                 adata_ann, ann_dict = annotate(
                     adata_clustered,
                     methods=["markers", "sctype"],
@@ -553,10 +553,10 @@ class TestAnnotateWithScType:
  
     def test_sctype_column_written_by_annotate(self, adata_clustered):
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             return_value=_make_mock_db(),
         ):
-            with patch("pipeline.modules.annotation.annotate._run_celltypist"):
+            with patch("pipeline.modules.scripts.annotation.annotate._run_celltypist"):
                 adata_ann, _ = annotate(
                     adata_clustered,
                     methods=["markers", "sctype"],
@@ -568,7 +568,7 @@ class TestAnnotateWithScType:
         """If network fails, sctype warns and skips — does not crash annotate()."""
         import requests
         with patch(
-            "pipeline.modules.annotation.annotate._fetch_sctype_db",
+            "pipeline.modules.scripts.annotation.annotate._fetch_sctype_db",
             side_effect=requests.ConnectionError("network down"),
         ):
             with pytest.warns(UserWarning, match="ScType annotation failed"):
@@ -739,7 +739,7 @@ class TestRunScANVI:
     def test_scanvi_generic_error_warns_and_skips(self, adata_clustered):
         """A runtime error in _run_scanvi warns and skips without crashing."""
         with patch(
-            "pipeline.modules.annotation.annotate._run_scanvi",
+            "pipeline.modules.scripts.annotation.annotate._run_scanvi",
             side_effect=RuntimeError("model corrupt"),
         ):
             with pytest.warns(UserWarning, match="scANVI annotation failed"):
@@ -768,7 +768,7 @@ class TestNWayVote:
         Populate the obs columns that vote reads from, then call _run_majority_vote.
         Returns (adata, vote_df).
         """
-        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
         score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
         # Simulate celltypist_fine (same as markers — perfect agreement)
         adata.obs["celltypist_fine"] = adata.obs["cell_type_markers"].copy()
@@ -799,7 +799,7 @@ class TestNWayVote:
         Adding cell_type_scanvi (same label, high posterior) should raise confidence
         to at or above the level without it.
         """
-        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
 
         # Baseline: two methods, perfect agreement
         adata_base = adata_clustered.copy()
@@ -831,7 +831,7 @@ class TestNWayVote:
         scANVI with low posterior (0.1) contributes little weight;
         winner should still be decided by the other two methods.
         """
-        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
 
         adata = adata_clustered.copy()
         score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
@@ -854,7 +854,7 @@ class TestNWayVote:
 
     def test_vote_df_has_scanvi_column_when_present(self, adata_clustered):
         """vote_df has 'scANVI' column when cell_type_scanvi obs col exists."""
-        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
 
         adata = adata_clustered.copy()
         score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
@@ -869,7 +869,7 @@ class TestNWayVote:
 
     def test_vote_with_no_active_slots_gives_unknown(self, adata_clustered):
         """If all obs columns are missing, vote assigns 'Unknown' to every cluster."""
-        from pipeline.modules.annotation.annotate import _run_marker_scoring, _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_marker_scoring, _run_majority_vote
 
         adata = adata_clustered.copy()
         score_df = _run_marker_scoring(adata, "leiden", MARKER_SETS)
@@ -923,7 +923,7 @@ class TestSingleR:
     Mock strategy
     -------------
     Every test patches BOTH:
-      1. ``pipeline.modules.annotation.annotate._load_singler_ref`` → returns a
+      1. ``pipeline.modules.scripts.annotation.annotate._load_singler_ref`` → returns a
          small in-memory AnnData so no network call is made.
       2. ``singler.annotate_single`` → returns a controlled BiocFrame-like object
          so the C++ library is never invoked and results are predictable.
@@ -961,7 +961,7 @@ class TestSingleR:
         ref = _make_singler_ref()
         n = len(adata)
         mock_result = self._make_singler_result(n, label=label, delta=delta)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 _run_singler(adata, "leiden")
 
@@ -1000,7 +1000,7 @@ class TestSingleR:
         ref = _make_singler_ref()
         n = len(adata_clustered)
         mock_result = self._make_singler_result_unassigned(n)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 _run_singler(adata_clustered, "leiden")
         labels = adata_clustered.obs["cell_type_singler"].unique().tolist()
@@ -1012,7 +1012,7 @@ class TestSingleR:
         ref = _make_singler_ref()
         n = len(adata_clustered)
         mock_result = self._make_singler_result_unassigned(n)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 _run_singler(adata_clustered, "leiden")
         mask_unassigned = adata_clustered.obs["cell_type_singler"] == "Unassigned"
@@ -1034,7 +1034,7 @@ class TestSingleR:
             lc if not hasattr(lc, "toarray") else lc.toarray()
         )
         mock_result = self._make_singler_result(n)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result) as mock_fn:
                 _run_singler(adata_clustered, "leiden")
         mock_fn.assert_called_once()
@@ -1051,7 +1051,7 @@ class TestSingleR:
         ref = _make_singler_ref()
         n = len(adata_clustered)
         mock_result = self._make_singler_result(n)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 adata_ann, ann_dict = annotate(
                     adata_clustered,
@@ -1064,7 +1064,7 @@ class TestSingleR:
         ref = _make_singler_ref()
         n = len(adata_clustered)
         mock_result = self._make_singler_result(n)
-        with patch("pipeline.modules.annotation.annotate._load_singler_ref", return_value=ref):
+        with patch("pipeline.modules.scripts.annotation.annotate._load_singler_ref", return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 adata_ann, ann_dict = annotate(
                     adata_clustered,
@@ -1079,7 +1079,7 @@ class TestSingleR:
     def test_singler_skipped_gracefully_on_error(self, adata_clustered):
         """If _run_singler raises, annotate() warns and skips — no crash."""
         with patch(
-            "pipeline.modules.annotation.annotate._run_singler",
+            "pipeline.modules.scripts.annotation.annotate._run_singler",
             side_effect=RuntimeError("ref download failed"),
         ):
             with pytest.warns(UserWarning, match="SingleR annotation failed"):
@@ -1114,11 +1114,11 @@ class TestSingleR:
         We patch both _HPCA_CACHE and _TABULA_SAPIENS_CACHE (alias) and
         _SINGLER_CACHE_DIR to avoid touching the real ~/.cache directory.
         """
-        from pipeline.modules.annotation.annotate import _load_hpca_reference
+        from pipeline.modules.scripts.annotation.annotate import _load_hpca_reference
         fake_cache = tmp_path / "hpca_ref.h5ad"
-        with patch("pipeline.modules.annotation.annotate._HPCA_CACHE", fake_cache):
-            with patch("pipeline.modules.annotation.annotate._TABULA_SAPIENS_CACHE", fake_cache):
-                with patch("pipeline.modules.annotation.annotate._SINGLER_CACHE_DIR", tmp_path):
+        with patch("pipeline.modules.scripts.annotation.annotate._HPCA_CACHE", fake_cache):
+            with patch("pipeline.modules.scripts.annotation.annotate._TABULA_SAPIENS_CACHE", fake_cache):
+                with patch("pipeline.modules.scripts.annotation.annotate._SINGLER_CACHE_DIR", tmp_path):
                     ref = _load_hpca_reference()
         assert fake_cache.exists(), "Cache file should exist after first download"
         assert ref.n_obs >= 5, "Reference should have at least 5 cell types"
@@ -1143,14 +1143,14 @@ class TestSctypeDbPath:
         db_path = tmp_path / "mini_sctype_db.xlsx"
         mini_db.to_excel(db_path, index=False)
 
-        from pipeline.modules.annotation.annotate import _fetch_sctype_db
+        from pipeline.modules.scripts.annotation.annotate import _fetch_sctype_db
         db = _fetch_sctype_db(db_path=db_path)
         assert "tissueType" in db.columns
         assert set(db["cellName"].tolist()) == {"T cell", "B cell"}
 
     def test_sctype_local_db_missing_file_raises(self, adata_clustered):
         """sctype_db_path pointing to non-existent file raises FileNotFoundError."""
-        from pipeline.modules.annotation.annotate import _fetch_sctype_db
+        from pipeline.modules.scripts.annotation.annotate import _fetch_sctype_db
         with pytest.raises(FileNotFoundError):
             _fetch_sctype_db(db_path="/nonexistent/db.xlsx")
 
@@ -1158,7 +1158,7 @@ class TestSctypeDbPath:
         """annotate() threads sctype_db_path through to _run_sctype."""
         db_path = tmp_path / "mini_db.xlsx"
 
-        with patch("pipeline.modules.annotation.annotate._run_sctype") as mock_sctype:
+        with patch("pipeline.modules.scripts.annotation.annotate._run_sctype") as mock_sctype:
             annotate(
                 adata_clustered,
                 methods=["markers", "sctype"],
@@ -1194,7 +1194,7 @@ class TestSinglerNamedCelldexRef:
 
     def test_known_celldex_refs_constant_has_correct_keys(self):
         """_CELLDEX_KNOWN_REFS contains all expected named references."""
-        from pipeline.modules.annotation.annotate import _CELLDEX_KNOWN_REFS
+        from pipeline.modules.scripts.annotation.annotate import _CELLDEX_KNOWN_REFS
         expected = {
             "hpca", "blueprint_encode", "dice",
             "monaco_immune", "novershtern_hematopoietic", "mouse_rnaseq",
@@ -1203,10 +1203,10 @@ class TestSinglerNamedCelldexRef:
 
     def test_named_ref_routes_to_load_celldex_reference(self, adata_clustered):
         """singler_ref='blueprint_encode' calls _load_celldex_reference, not the file-path branch."""
-        from pipeline.modules.annotation.annotate import _load_singler_ref
+        from pipeline.modules.scripts.annotation.annotate import _load_singler_ref
         ref = _make_singler_ref()
         with patch(
-            "pipeline.modules.annotation.annotate._load_celldex_reference",
+            "pipeline.modules.scripts.annotation.annotate._load_celldex_reference",
             return_value=ref,
         ) as mock_load:
             result = _load_singler_ref("blueprint_encode", "cell_type")
@@ -1215,10 +1215,10 @@ class TestSinglerNamedCelldexRef:
 
     def test_named_ref_case_insensitive(self, adata_clustered):
         """Named refs are case-insensitive (Blueprint_Encode → blueprint_encode)."""
-        from pipeline.modules.annotation.annotate import _load_singler_ref
+        from pipeline.modules.scripts.annotation.annotate import _load_singler_ref
         ref = _make_singler_ref()
         with patch(
-            "pipeline.modules.annotation.annotate._load_celldex_reference",
+            "pipeline.modules.scripts.annotation.annotate._load_celldex_reference",
             return_value=ref,
         ) as mock_load:
             _load_singler_ref("Blueprint_Encode", "cell_type")
@@ -1226,7 +1226,7 @@ class TestSinglerNamedCelldexRef:
 
     def test_unknown_ref_name_raises_valueerror(self):
         """An unknown string that is not a file path raises a helpful ValueError."""
-        from pipeline.modules.annotation.annotate import _load_singler_ref
+        from pipeline.modules.scripts.annotation.annotate import _load_singler_ref
         with pytest.raises((ValueError, FileNotFoundError)):
             _load_singler_ref("nonexistent_reference", "cell_type")
 
@@ -1239,7 +1239,7 @@ class TestSinglerNamedCelldexRef:
             ["CellType0"] * n if col == "best"
             else np.full(n, 0.3, dtype=np.float64)
         )
-        with patch("pipeline.modules.annotation.annotate._load_celldex_reference",
+        with patch("pipeline.modules.scripts.annotation.annotate._load_celldex_reference",
                    return_value=ref):
             with patch("singler.annotate_single", return_value=mock_result):
                 adata_ann, ann_dict = annotate(
@@ -1256,7 +1256,7 @@ class TestSinglerNamedCelldexRef:
 # Majority vote — label normalisation and tiebreak tests
 # ─────────────────────────────────────────────────────────────────────────────
 
-from pipeline.modules.annotation.annotate import _normalise_label, _run_majority_vote
+from pipeline.modules.scripts.annotation.annotate import _normalise_label, _run_majority_vote
 
 
 class TestNormaliseLabel:
@@ -1431,7 +1431,7 @@ class TestCelltypistAnyModel:
                     "celltypist.annotate",
                     return_value=self._mock_pred(adata_clustered),
                 ):
-                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    from pipeline.modules.scripts.annotation.annotate import _run_celltypist
                     _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
 
         assert "celltypist_Healthy_COVID19_PBMC" in adata_clustered.obs.columns
@@ -1448,7 +1448,7 @@ class TestCelltypistAnyModel:
                     "celltypist.annotate",
                     return_value=self._mock_pred(adata_clustered),
                 ):
-                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    from pipeline.modules.scripts.annotation.annotate import _run_celltypist
                     _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
 
         assert adata_clustered.obs["celltypist_coarse"].iloc[0] == "not_run"
@@ -1466,7 +1466,7 @@ class TestCelltypistAnyModel:
                     "celltypist.annotate",
                     return_value=self._mock_pred(adata_clustered),
                 ) as mock_ct:
-                    from pipeline.modules.annotation.annotate import _run_celltypist
+                    from pipeline.modules.scripts.annotation.annotate import _run_celltypist
                     _run_celltypist(adata_clustered, "leiden", model_names, tmp_path)
 
         call_kwargs = mock_ct.call_args.kwargs
@@ -1489,7 +1489,7 @@ class TestCelltypistAnyModel:
         adata_clustered.obs["cell_type_sctype"]  = "Monocyte"
         adata_clustered.obs["cell_type_singler"] = "Monocyte"
 
-        from pipeline.modules.annotation.annotate import _run_majority_vote
+        from pipeline.modules.scripts.annotation.annotate import _run_majority_vote
         score_df = pd.DataFrame(
             {"cluster": adata_clustered.obs["leiden"].unique().tolist()}
         ).set_index("cluster")

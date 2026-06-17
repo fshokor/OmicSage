@@ -94,48 +94,48 @@ def empty_adata():
 class TestNormalizeAdtValidation:
 
     def test_rejects_non_anndata(self):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         with pytest.raises(TypeError, match="AnnData"):
             normalize_adt("not_an_anndata")
 
     def test_rejects_empty_cells(self):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         empty = AnnData(X=np.zeros((0, 5), dtype=float))
         empty.var_names = [f"CD{i}" for i in range(5)]
         with pytest.raises(ValueError, match="0 cells"):
             normalize_adt(empty)
 
     def test_rejects_empty_proteins(self):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         no_prot = AnnData(X=np.zeros((10, 0), dtype=float))
         with pytest.raises(ValueError, match="0 proteins"):
             normalize_adt(no_prot)
 
     def test_rejects_bad_clr_axis(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         with pytest.raises(ValueError, match="clr_axis"):
             normalize_adt(adata_raw, clr_axis=2)
 
     def test_rejects_dsb_empty_non_anndata(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         with pytest.raises(TypeError, match="AnnData"):
             normalize_adt(adata_raw, dsb_empty_adata="bad")
 
     def test_rejects_dsb_empty_zero_rows(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         zero_empty = AnnData(X=np.zeros((0, adata_raw.n_vars), dtype=float))
         zero_empty.var_names = list(adata_raw.var_names)
         with pytest.raises(ValueError, match="0 rows"):
             normalize_adt(adata_raw, dsb_empty_adata=zero_empty)
 
     def test_rejects_dsb_protein_mismatch(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         bad_empty = _make_empty_adata(n_proteins=adata_raw.n_vars + 1)
         with pytest.raises(ValueError, match="proteins"):
             normalize_adt(adata_raw, dsb_empty_adata=bad_empty)
 
     def test_rejects_dsb_varnames_mismatch(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         bad_empty = _make_empty_adata(
             n_proteins=adata_raw.n_vars,
             protein_names=[f"OTHER{i}" for i in range(adata_raw.n_vars)],
@@ -152,52 +152,52 @@ class TestNormalizeAdtValidation:
 class TestNormalizeAdtClrOnly:
 
     def test_clr_layers_written(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, metrics = normalize_adt(adata_raw)
         assert "counts" in out.layers
         assert "adt_clr" in out.layers
         assert "adt_dsb" not in out.layers
 
     def test_clr_x_equals_adt_clr(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(adata_raw)
         np.testing.assert_array_almost_equal(
             np.asarray(out.X), np.asarray(out.layers["adt_clr"])
         )
 
     def test_clr_counts_preserved(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         raw_X = adata_raw.X.copy()
         out, _ = normalize_adt(adata_raw)
         np.testing.assert_array_equal(np.asarray(out.layers["counts"]), raw_X)
 
     def test_clr_metrics_dsb_false(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         _, metrics = normalize_adt(adata_raw)
         assert metrics["dsb_applied"] is False
         assert metrics["active_layer"] == "adt_clr"
 
     def test_inplace_false_does_not_mutate(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         raw_X = adata_raw.X.copy()
         normalize_adt(adata_raw, inplace=False)
         np.testing.assert_array_equal(np.asarray(adata_raw.X), raw_X)
 
     def test_inplace_true_mutates(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         raw_X = adata_raw.X.copy()
         normalize_adt(adata_raw, inplace=True)
         # After CLR, .X should differ from raw integer counts
         assert not np.allclose(np.asarray(adata_raw.X), raw_X)
 
     def test_clr_axis_1(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, metrics = normalize_adt(adata_raw, clr_axis=1)
         assert metrics["clr_axis"] == 1
         assert "adt_clr" in out.layers
 
     def test_provenance_written(self, adata_raw):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(adata_raw)
         uns = out.uns["omicsage_adt_normalize"]
         assert "timestamp" in uns
@@ -213,7 +213,7 @@ class TestNormalizeAdtClrOnly:
 class TestNormalizeAdtDsb:
 
     def test_dsb_layers_written(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, metrics = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -222,7 +222,7 @@ class TestNormalizeAdtDsb:
         assert "counts" in out.layers, "raw counts layer must be preserved"
 
     def test_dsb_x_equals_adt_dsb(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -231,7 +231,7 @@ class TestNormalizeAdtDsb:
         )
 
     def test_dsb_raw_counts_preserved(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         raw_X = adata_raw.X.copy()
         out, _ = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
@@ -239,7 +239,7 @@ class TestNormalizeAdtDsb:
         np.testing.assert_array_equal(np.asarray(out.layers["counts"]), raw_X)
 
     def test_dsb_metrics_populated(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         _, metrics = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -252,7 +252,7 @@ class TestNormalizeAdtDsb:
 
     def test_dsb_x_differs_from_clr(self, adata_raw, empty_adata):
         """After DSB, adata.X (DSB) must differ from adt_clr."""
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -262,7 +262,7 @@ class TestNormalizeAdtDsb:
             "DSB and CLR values should differ — DSB subtracts ambient background"
 
     def test_dsb_provenance_in_uns(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -274,7 +274,7 @@ class TestNormalizeAdtDsb:
 
     def test_dsb_isotype_controls_present(self, adata_raw, empty_adata):
         """When valid isotype controls are provided, they're recorded in metrics."""
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         # Use the first 2 proteins as fake isotype controls
         iso = list(adata_raw.var_names[:2])
         _, metrics = normalize_adt(
@@ -289,7 +289,7 @@ class TestNormalizeAdtDsb:
         self, adata_raw, empty_adata
     ):
         """Controls not in var_names should be silently filtered (no exception)."""
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         iso = ["NONEXISTENT_CTRL_1", "NONEXISTENT_CTRL_2"]
         _, metrics = normalize_adt(
             adata_raw,
@@ -302,7 +302,7 @@ class TestNormalizeAdtDsb:
 
     def test_dsb_no_muon_layer_name_collision(self, adata_raw, empty_adata):
         """The muon 'dsb' layer should be renamed to 'adt_dsb'."""
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         out, _ = normalize_adt(
             adata_raw, dsb_empty_adata=empty_adata, dsb_denoise=False
         )
@@ -311,7 +311,7 @@ class TestNormalizeAdtDsb:
         assert "adt_dsb" in out.layers
 
     def test_dsb_inplace_false_does_not_mutate(self, adata_raw, empty_adata):
-        from pipeline.modules.cite.adt_normalize import normalize_adt
+        from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
         raw_X = adata_raw.X.copy()
         normalize_adt(adata_raw, dsb_empty_adata=empty_adata,
                       dsb_denoise=False, inplace=False)

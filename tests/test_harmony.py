@@ -76,7 +76,7 @@ harmony = pytest.importorskip(
     reason="harmonypy not installed — skipping harmony tests",
 )
 
-from pipeline.modules.integration.harmony_correct import (  # noqa: E402
+from pipeline.modules.scripts.integration.harmony_correct import (  # noqa: E402
     harmony_correct,
     _validate_inputs,
 )

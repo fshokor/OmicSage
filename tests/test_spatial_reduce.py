@@ -21,7 +21,7 @@ squidpy = pytest.importorskip("squidpy")
 
 import anndata as ad
 
-from pipeline.modules.spatial.spatial_reduce import spatial_reduce
+from pipeline.modules.scripts.spatial.spatial_reduce import spatial_reduce
 from reports.templates.spatial.spatial_reduce_report import (
     generate_spatial_reduce_report,
 )

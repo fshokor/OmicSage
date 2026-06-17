@@ -47,7 +47,7 @@ from anndata import AnnData
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
-from pipeline.modules.qc.normalize import normalize
+from pipeline.modules.scripts.qc.normalize import normalize
 
 
 # ---------------------------------------------------------------------------

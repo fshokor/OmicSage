@@ -123,7 +123,7 @@ def bare_adata() -> ad.AnnData:
 # ---------------------------------------------------------------------------
 
 def test_import():
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
     from reports.templates.spatial.spatial_downstream_report import (
         generate_spatial_downstream_report,
     )
@@ -136,7 +136,7 @@ def test_import():
 # ---------------------------------------------------------------------------
 
 def test_inplace_false_returns_copy(minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     original_id = id(minimal_adata)
     result, prov = spatial_downstream(
@@ -156,7 +156,7 @@ def test_inplace_false_returns_copy(minimal_adata):
 
 
 def test_inplace_true_modifies_in_place(minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -176,7 +176,7 @@ def test_inplace_true_modifies_in_place(minimal_adata):
 # ---------------------------------------------------------------------------
 
 def test_type_error_on_non_anndata():
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     with pytest.raises(TypeError):
         spatial_downstream({"not": "anndata"})
@@ -187,7 +187,7 @@ def test_type_error_on_non_anndata():
 # ---------------------------------------------------------------------------
 
 def test_all_analyses_skip_on_bare_adata(bare_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         bare_adata,
@@ -209,7 +209,7 @@ def test_all_analyses_skip_on_bare_adata(bare_adata):
 # ---------------------------------------------------------------------------
 
 def test_region_clustering_writes_obs_column(minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -235,7 +235,7 @@ def test_region_clustering_writes_obs_column(minimal_adata):
 # ---------------------------------------------------------------------------
 
 def test_celltype_expression_writes_marker_dict(minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -267,7 +267,7 @@ def test_celltype_expression_writes_marker_dict(minimal_adata):
 
 def test_nhood_enrichment_writes_uns(minimal_adata):
     squidpy = pytest.importorskip("squidpy")
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -297,7 +297,7 @@ def test_nhood_enrichment_writes_uns(minimal_adata):
 
 def test_co_occurrence_writes_uns(minimal_adata):
     squidpy = pytest.importorskip("squidpy")
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -324,7 +324,7 @@ def test_co_occurrence_writes_uns(minimal_adata):
 
 def test_celltype_svg_writes_uns(minimal_adata):
     squidpy = pytest.importorskip("squidpy")
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     result, prov = spatial_downstream(
         minimal_adata,
@@ -351,7 +351,7 @@ def test_celltype_svg_writes_uns(minimal_adata):
 # ---------------------------------------------------------------------------
 
 def test_provenance_structure(minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
 
     _, prov = spatial_downstream(
         minimal_adata,
@@ -383,7 +383,7 @@ def test_report_raises_without_provenance(tmp_path, minimal_adata):
 
 
 def test_report_generates_valid_html(tmp_path, minimal_adata):
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
     from reports.templates.spatial.spatial_downstream_report import (
         generate_spatial_downstream_report,
     )

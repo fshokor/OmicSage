@@ -20,14 +20,14 @@ import anndata as ad
 
 # ---------------------------------------------------------------------------
 # Import the module under test
-# (mirrors the path pipeline/modules/cite/adt_normalize.py)
+# (mirrors the path pipeline/modules/scripts/cite/adt_normalize.py)
 # ---------------------------------------------------------------------------
 import sys
 import os
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from pipeline.modules.cite.adt_normalize import normalize_adt
+from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
 
 
 # ---------------------------------------------------------------------------

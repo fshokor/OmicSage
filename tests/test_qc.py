@@ -1,7 +1,7 @@
 """
 tests/test_qc.py
 ================
-Test suite for pipeline/modules/qc/qc.py
+Test suite for pipeline/modules/scripts/qc/qc.py
 
 All tests use real benchmark data — no synthetic fixtures.
 
@@ -25,8 +25,8 @@ import pytest
 import scipy.sparse as sp
 from pathlib import Path
 
-from pipeline.modules.qc.ingest import load_dataset
-from pipeline.modules.qc.qc import run_qc, _detect_mt_genes, _detect_modality
+from pipeline.modules.scripts.qc.ingest import load_dataset
+from pipeline.modules.scripts.qc.qc import run_qc, _detect_mt_genes, _detect_modality
 
 
 # ---------------------------------------------------------------------------
@@ -65,7 +65,7 @@ def cite_raw():
     adata_sub = adata_backed[idx_sorted].to_memory()
     adata_backed.file.close()
 
-    from pipeline.modules.qc.ingest import _extract_raw_counts
+    from pipeline.modules.scripts.qc.ingest import _extract_raw_counts
     adata_sub, _ = _extract_raw_counts(adata_sub)
 
     if not sp.issparse(adata_sub.X):

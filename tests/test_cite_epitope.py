@@ -132,7 +132,7 @@ def adt_only_fixture():
 # Import
 # ---------------------------------------------------------------------------
 
-from pipeline.modules.cite.cite_epitope import cite_epitope
+from pipeline.modules.scripts.cite.cite_epitope import cite_epitope
 
 
 # ---------------------------------------------------------------------------

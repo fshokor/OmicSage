@@ -20,7 +20,7 @@ sq = pytest.importorskip("squidpy", reason="squidpy not installed")
 import anndata as ad
 import scipy.sparse as sp
 
-from pipeline.modules.spatial.spatial_ingest import (
+from pipeline.modules.scripts.spatial.spatial_ingest import (
     _is_benchmark, _is_codex, _is_h5ad,
     _is_merfish, _is_visium, _is_visium_hd, _is_xenium,
     _resolve_spatial_type,
@@ -28,7 +28,7 @@ from pipeline.modules.spatial.spatial_ingest import (
     list_supported_types,
     spatial_ingest,
 )
-from pipeline.modules.spatial.spatial_qc import spatial_qc
+from pipeline.modules.scripts.spatial.spatial_qc import spatial_qc
 
 
 # ===========================================================================

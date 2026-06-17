@@ -1,6 +1,6 @@
 """
 tests/test_multiome_grn.py
-Tests for pipeline/modules/multiome/multiome_grn.py
+Tests for pipeline/modules/scripts/multiome/multiome_grn.py
 
 Coverage:
   Happy path
@@ -154,7 +154,7 @@ def _make_deg_dict() -> dict:
 # Import the module under test
 # ---------------------------------------------------------------------------
 
-from pipeline.modules.multiome.multiome_grn import (   # noqa: E402
+from pipeline.modules.scripts.multiome.multiome_grn import (   # noqa: E402
     multiome_grn,
     _extract_top_peaks,
     _get_tf_list,

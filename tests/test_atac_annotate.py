@@ -1,5 +1,5 @@
 """
-tests/test_atac_annotate.py — Tests for pipeline/modules/multiome/atac_annotate.py
+tests/test_atac_annotate.py — Tests for pipeline/modules/scripts/multiome/atac_annotate.py
 
 Coverage:
   Happy path
@@ -85,7 +85,7 @@ from anndata import AnnData
 # Path setup
 # ---------------------------------------------------------------------------
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
-from pipeline.modules.multiome.atac_annotate import annotate_atac
+from pipeline.modules.scripts.multiome.atac_annotate import annotate_atac
 
 
 # ---------------------------------------------------------------------------

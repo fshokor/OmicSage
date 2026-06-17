@@ -19,7 +19,7 @@ import pytest
 import scanpy as sc
 from anndata import AnnData
 
-from pipeline.modules.downstream.deg import deg
+from pipeline.modules.scripts.downstream.deg import deg
 
 
 # ---------------------------------------------------------------------------

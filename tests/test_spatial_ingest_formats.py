@@ -2,7 +2,7 @@
 tests/test_spatial_ingest_formats.py — OmicSage Phase 7 extension (Session B)
 
 Tests for the Visium HD and Xenium loader implementations in
-pipeline/modules/spatial/spatial_ingest.py.
+pipeline/modules/scripts/spatial/spatial_ingest.py.
 
 Strategy
 --------
@@ -80,10 +80,10 @@ def _make_spatialdata_io_mock(func_name: str, table_key: str, adata: ad.AnnData)
 # ---------------------------------------------------------------------------
 
 def _import_ingest():
-    if "pipeline.modules.spatial.spatial_ingest" in sys.modules:
+    if "pipeline.modules.scripts.spatial.spatial_ingest" in sys.modules:
         import importlib
-        return importlib.reload(sys.modules["pipeline.modules.spatial.spatial_ingest"])
-    import pipeline.modules.spatial.spatial_ingest as m
+        return importlib.reload(sys.modules["pipeline.modules.scripts.spatial.spatial_ingest"])
+    import pipeline.modules.scripts.spatial.spatial_ingest as m
     return m
 
 

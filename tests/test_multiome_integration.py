@@ -1,6 +1,6 @@
 """
 tests/test_multiome_integration.py
-Tests for pipeline/modules/multiome/multiome_integration.py
+Tests for pipeline/modules/scripts/multiome/multiome_integration.py
 
 Coverage (active — MOFA+):
   Happy path
@@ -53,7 +53,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 from mudata import MuData
 
-from pipeline.modules.multiome.multiome_integration import run_mofa, run_multivi
+from pipeline.modules.scripts.multiome.multiome_integration import run_mofa, run_multivi
 
 try:
     import scvi as _scvi_check

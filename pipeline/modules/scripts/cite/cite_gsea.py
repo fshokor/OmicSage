@@ -38,7 +38,7 @@ Output
 
 Usage
 -----
-    from pipeline.modules.cite.cite_gsea import cite_gsea
+    from pipeline.modules.scripts.cite.cite_gsea import cite_gsea
 
     mdata_gsea, gsea_dict = cite_gsea(
         mdata,
@@ -63,7 +63,7 @@ except ImportError:
     MuData = None  # type: ignore
 
 # Re-use the existing RNA pipeline GSEA function
-from pipeline.modules.downstream.gsea import gsea as _rna_gsea
+from pipeline.modules.scripts.downstream.gsea import gsea as _rna_gsea
 
 
 # ---------------------------------------------------------------------------

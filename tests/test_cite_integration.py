@@ -8,7 +8,7 @@ import scipy.sparse as sp
 from anndata import AnnData
 from mudata import MuData
 
-from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi
+from pipeline.modules.scripts.cite.cite_integration import run_mofa, run_totalvi
 
 # Skip all totalVI tests until scvi import issue is resolved
 pytest.importorskip("scvi")

@@ -46,7 +46,7 @@ from anndata import AnnData
 # ---------------------------------------------------------------------------
 # Import the module under test
 # ---------------------------------------------------------------------------
-from pipeline.modules.qc.reduce import reduce, _select_variance, _select_fixed
+from pipeline.modules.scripts.qc.reduce import reduce, _select_variance, _select_fixed
 
 # ---------------------------------------------------------------------------
 # Fixtures
