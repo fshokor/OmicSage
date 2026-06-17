@@ -145,7 +145,7 @@ def validate_plan(active_steps, cfg, output_dir):
 
 def run_ingest(cfg, output_dir, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_ingest import spatial_ingest
+    from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
     out_path = output_dir / STEP_OUTPUT["ingest"]
     if out_path.exists() and not force:
         print(f"  [ingest] cached -> {out_path}")
@@ -169,7 +169,7 @@ def run_ingest(cfg, output_dir, force=False):
 
 def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_qc import spatial_qc
+    from pipeline.modules.scripts.spatial.spatial_qc import spatial_qc
     from reports.templates.spatial.spatial_qc_report import generate_spatial_qc_report
     out_path    = output_dir / STEP_OUTPUT["qc"]
     report_path = reports_dir / STEP_REPORT["qc"]
@@ -202,7 +202,7 @@ def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
 
 def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_reduce import spatial_reduce
+    from pipeline.modules.scripts.spatial.spatial_reduce import spatial_reduce
     from reports.templates.spatial.spatial_reduce_report import generate_spatial_reduce_report
     out_path    = output_dir / STEP_OUTPUT["reduce"]
     report_path = reports_dir / STEP_REPORT["reduce"]
@@ -236,7 +236,7 @@ def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
 
 def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_cluster import spatial_cluster
+    from pipeline.modules.scripts.spatial.spatial_cluster import spatial_cluster
     from reports.templates.spatial.spatial_cluster_report import generate_spatial_cluster_report
     out_path     = output_dir / STEP_OUTPUT["cluster"]
     report_path  = reports_dir / STEP_REPORT["cluster"]
@@ -271,7 +271,7 @@ def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
 
 def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_deconvolve import spatial_deconvolve
+    from pipeline.modules.scripts.spatial.spatial_deconvolve import spatial_deconvolve
     from reports.templates.spatial.spatial_deconvolve_report import generate_spatial_deconvolve_report
     out_path    = output_dir / STEP_OUTPUT["deconvolve"]
     report_path = reports_dir / STEP_REPORT["deconvolve"]
@@ -341,7 +341,7 @@ def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
 
 def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_downstream import spatial_downstream
+    from pipeline.modules.scripts.spatial.spatial_downstream import spatial_downstream
     from reports.templates.spatial.spatial_downstream_report import generate_spatial_downstream_report
     out_path    = output_dir / STEP_OUTPUT["downstream"]
     report_path = reports_dir / STEP_REPORT["downstream"]
@@ -398,7 +398,7 @@ def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
 
 def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
     import scanpy as sc
-    from pipeline.modules.spatial.spatial_impute import spatial_impute
+    from pipeline.modules.scripts.spatial.spatial_impute import spatial_impute
     from reports.templates.spatial.spatial_impute_report import generate_spatial_impute_report
     out_path    = output_dir / STEP_OUTPUT["impute"]
     report_path = reports_dir / STEP_REPORT["impute"]

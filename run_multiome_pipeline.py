@@ -256,7 +256,7 @@ def run_atac_qc(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[atac_qc] running …")
-    from pipeline.modules.multiome.atac_qc import atac_qc
+    from pipeline.modules.scripts.multiome.atac_qc import atac_qc
 
     atac = _load_atac(input_path)
     atac_qcd, metrics = atac_qc(
@@ -299,7 +299,7 @@ def run_atac_reduce(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[atac_reduce] running …")
-    from pipeline.modules.multiome.atac_reduce import atac_reduce
+    from pipeline.modules.scripts.multiome.atac_reduce import atac_reduce
 
     atac = _load_atac(input_path)
     atac_reduced, metrics = atac_reduce(
@@ -340,7 +340,7 @@ def run_atac_annotate(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[atac_annotate] running …")
-    from pipeline.modules.multiome.atac_annotate import annotate_atac
+    from pipeline.modules.scripts.multiome.atac_annotate import annotate_atac
 
     atac    = _load_atac(input_path)
     rna_path = resolve_rna_input(cfg, "atac_annotate", processed_dir)
@@ -400,7 +400,7 @@ def run_multiome_integration(input_path: Path, out: Path, reports_dir: Path,
     print("[multiome_integration] running …")
     import scanpy as sc
     import mudata as mu
-    from pipeline.modules.multiome.multiome_integration import run_mofa, run_multivi
+    from pipeline.modules.scripts.multiome.multiome_integration import run_mofa, run_multivi
 
     atac    = _load_atac(input_path)
     rna_path = resolve_rna_input(cfg, "multiome_integration", processed_dir)
@@ -497,7 +497,7 @@ def run_multiome_deg(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[multiome_deg] running …")
-    from pipeline.modules.multiome.multiome_deg import multiome_deg
+    from pipeline.modules.scripts.multiome.multiome_deg import multiome_deg
 
     mdata = _load_mdata(input_path)
     mdata, deg_dict = multiome_deg(
@@ -541,8 +541,8 @@ def run_multiome_grn(input_path: Path, out: Path, reports_dir: Path,
         return out
  
     print("[multiome_grn] running …")
-    from pipeline.modules.multiome.multiome_grn import multiome_grn
-    from pipeline.modules.multiome.multiome_deg  import multiome_deg as _deg   # noqa: F401
+    from pipeline.modules.scripts.multiome.multiome_grn import multiome_grn
+    from pipeline.modules.scripts.multiome.multiome_deg  import multiome_deg as _deg   # noqa: F401
  
     mdata = _load_mdata(input_path)
  

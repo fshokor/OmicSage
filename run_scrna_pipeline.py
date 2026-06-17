@@ -266,9 +266,9 @@ def run_qc(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[qc] running …")
-    from pipeline.modules.qc.ingest import load_dataset
-    from pipeline.modules.qc.qc import run_qc
-    from pipeline.modules.qc.data_report import run_data_report
+    from pipeline.modules.scripts.qc.ingest import load_dataset
+    from pipeline.modules.scripts.qc.qc import run_qc
+    from pipeline.modules.scripts.qc.data_report import run_data_report
 
     sample_name = cfg["dataset"].get("name", cfg["dataset"]["id"])
     adata = load_dataset(input_path, sample_name=sample_name)
@@ -319,8 +319,8 @@ def run_normalize(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[normalize] running …")
-    from pipeline.modules.qc.normalize import normalize
-    from pipeline.modules.qc.normalization_report import run_normalization_report
+    from pipeline.modules.scripts.qc.normalize import normalize
+    from pipeline.modules.scripts.qc.normalization_report import run_normalization_report
 
     adata = sc.read_h5ad(input_path)
     adata_norm, metrics = normalize(
@@ -352,8 +352,8 @@ def run_reduce(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[reduce] running …")
-    from pipeline.modules.qc.reduce import reduce
-    from pipeline.modules.qc.reduce_report import run_reduce_report
+    from pipeline.modules.scripts.qc.reduce import reduce
+    from pipeline.modules.scripts.qc.reduce_report import run_reduce_report
 
     adata = sc.read_h5ad(input_path)
     adata_reduced, metrics = reduce(
@@ -396,8 +396,8 @@ def run_cluster(input_path: Path, out: Path, reports_dir: Path,
         print(f"[cluster] best_resolution_override={best_resolution_override}, re-running …")
 
     print("[cluster] running …")
-    from pipeline.modules.clustering.cluster import cluster
-    from pipeline.modules.clustering.cluster_report import run_cluster_report
+    from pipeline.modules.scripts.clustering.cluster import cluster
+    from pipeline.modules.scripts.clustering.cluster_report import run_cluster_report
 
     adata = sc.read_h5ad(input_path)
     adata_clustered, metrics = cluster(
@@ -431,8 +431,8 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[annotate] running …")
-    from pipeline.modules.annotation.annotate import annotate
-    from pipeline.modules.annotation.annotate_report import run_annotate_report
+    from pipeline.modules.scripts.annotation.annotate import annotate
+    from pipeline.modules.scripts.annotation.annotate_report import run_annotate_report
 
     adata = sc.read_h5ad(input_path)
     adata_annotated, annotation_dict = annotate(
@@ -465,8 +465,8 @@ def run_annotate(input_path: Path, out: Path, reports_dir: Path,
 def run_deg(input_path: Path, out: Path, reports_dir: Path,
             params: dict, cfg: dict, force: bool = False) -> tuple[Path, dict]:
     print("[deg] running …")
-    from pipeline.modules.downstream.deg import deg
-    from pipeline.modules.downstream.deg_report import generate_deg_report
+    from pipeline.modules.scripts.downstream.deg import deg
+    from pipeline.modules.scripts.downstream.deg_report import generate_deg_report
 
     adata = sc.read_h5ad(input_path)
     adata_deg, deg_dict = deg(
@@ -497,7 +497,7 @@ def run_deg(input_path: Path, out: Path, reports_dir: Path,
 
 def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
     """Reconstruct deg_dict from cached file (needed when gsea runs after skipping deg)."""
-    from pipeline.modules.downstream.deg import deg
+    from pipeline.modules.scripts.downstream.deg import deg
 
     deg_path = processed_dir / STEP_OUTPUT["deg"]
     adata = sc.read_h5ad(deg_path)
@@ -517,8 +517,8 @@ def _reload_deg_dict(processed_dir: Path, params: dict) -> tuple[Path, dict]:
 def run_gsea(input_path: Path, out: Path, reports_dir: Path,
              params: dict, cfg: dict, deg_dict: dict, force: bool = False) -> Path:
     print("[gsea] running …")
-    from pipeline.modules.downstream.gsea import gsea
-    from pipeline.modules.downstream.gsea_report import generate_gsea_report
+    from pipeline.modules.scripts.downstream.gsea import gsea
+    from pipeline.modules.scripts.downstream.gsea_report import generate_gsea_report
 
     adata = sc.read_h5ad(input_path)
     adata_gsea, gsea_dict = gsea(
@@ -558,8 +558,8 @@ def run_harmony(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[harmony] running …")
-    from pipeline.modules.integration.harmony_correct import harmony_correct
-    from pipeline.modules.integration.harmony_report import generate_harmony_report
+    from pipeline.modules.scripts.integration.harmony_correct import harmony_correct
+    from pipeline.modules.scripts.integration.harmony_report import generate_harmony_report
 
     adata = sc.read_h5ad(input_path)
     adata = harmony_correct(
@@ -590,7 +590,7 @@ def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[cluster_harmony] running …")
-    from pipeline.modules.clustering.cluster import cluster, compute_ari
+    from pipeline.modules.scripts.clustering.cluster import cluster, compute_ari
 
     adata = sc.read_h5ad(input_path)
 
@@ -622,8 +622,8 @@ def run_cluster_harmony(input_path: Path, out: Path, reports_dir: Path,
 def run_pseudobulk(input_path: Path, out: Path, reports_dir: Path,
                    params: dict, cfg: dict, force: bool = False) -> Path:
     print("[pseudobulk] running …")
-    from pipeline.modules.downstream.pseudobulk_deg import pseudobulk_deg
-    from pipeline.modules.downstream.pseudobulk_deg_report import generate_pseudobulk_deg_report
+    from pipeline.modules.scripts.downstream.pseudobulk_deg import pseudobulk_deg
+    from pipeline.modules.scripts.downstream.pseudobulk_deg_report import generate_pseudobulk_deg_report
 
     adata = sc.read_h5ad(input_path)
     adata_pb, pb_dict = pseudobulk_deg(

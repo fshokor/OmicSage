@@ -324,5 +324,5 @@ MODALITY_NF_NAME = {
     "Spatial":   "spatial",
 }
 
-# Modalities with Nextflow workflows currently implemented
-NF_IMPLEMENTED = {"scRNA-seq"}
+# All four modalities now have Nextflow workflows implemented
+NF_IMPLEMENTED = {"scRNA-seq", "CITE-seq", "Multiome", "Spatial"}

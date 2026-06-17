@@ -262,7 +262,7 @@ def run_normalize_adt(input_path: Path, out: Path, reports_dir: Path,
         return out
 
     print("[normalize_adt] running …")
-    from pipeline.modules.cite.adt_normalize import normalize_adt
+    from pipeline.modules.scripts.cite.adt_normalize import normalize_adt
 
     adt = _load_adt(input_path)
     adt_norm, metrics = normalize_adt(
@@ -300,7 +300,7 @@ def run_doublets(input_path: Path, out: Path, reports_dir: Path,
 
     print("[doublets] running …")
     import mudata as mu
-    from pipeline.modules.cite.adt_doublets import detect_adt_doublets
+    from pipeline.modules.scripts.cite.adt_doublets import detect_adt_doublets
 
     adt = _load_adt(input_path)
     mdata = _wrap_mdata(adt)
@@ -340,7 +340,7 @@ def run_reduce_adt(input_path: Path, out: Path, reports_dir: Path,
 
     print("[reduce_adt] running …")
     import mudata as mu
-    from pipeline.modules.cite.adt_reduce import reduce_adt
+    from pipeline.modules.scripts.cite.adt_reduce import reduce_adt
 
     adt = _load_adt(input_path)
     mdata = _wrap_mdata(adt)
@@ -382,7 +382,7 @@ def run_harmony_adt(input_path: Path, out: Path, reports_dir: Path,
 
     print("[harmony_adt] running …")
     import mudata as mu
-    from pipeline.modules.cite.adt_harmony import run_harmony_adt as _harmony
+    from pipeline.modules.scripts.cite.adt_harmony import run_harmony_adt as _harmony
 
     adt = _load_adt(input_path)
     mdata = _wrap_mdata(adt)
@@ -425,7 +425,7 @@ def run_annotate_adt(input_path: Path, out: Path, reports_dir: Path,
 
     print("[annotate_adt] running …")
     import mudata as mu
-    from pipeline.modules.cite.adt_annotate import annotate_adt
+    from pipeline.modules.scripts.cite.adt_annotate import annotate_adt
 
     adt = _load_adt(input_path)
     mdata = _wrap_mdata(adt)
@@ -478,7 +478,7 @@ def run_integration(input_path: Path, out: Path, reports_dir: Path,
     print("[integration] running …")
     import anndata as ad
     import mudata as mu
-    from pipeline.modules.cite.cite_integration import run_mofa, run_totalvi, run_both
+    from pipeline.modules.scripts.cite.cite_integration import run_mofa, run_totalvi, run_both
 
     # Load ADT (annotated) and RNA (annotated with cell_type_vote)
     adt = _load_adt(input_path)
@@ -583,7 +583,7 @@ def run_deg_cite(input_path: Path, out: Path, reports_dir: Path,
 
     print("[deg_cite] running …")
     import mudata as mu
-    from pipeline.modules.cite.cite_deg import cite_deg
+    from pipeline.modules.scripts.cite.cite_deg import cite_deg
 
     # cite_07 reads the MuData from cite_06 (RNA + ADT + labels)
     mdata = mu.read(str(input_path))
@@ -639,7 +639,7 @@ def run_gsea_cite(input_path: Path, out: Path, reports_dir: Path,
 
     print("[gsea_cite] running …")
     import mudata as mu
-    from pipeline.modules.cite.cite_gsea import cite_gsea
+    from pipeline.modules.scripts.cite.cite_gsea import cite_gsea
 
     # cite_08 reads the MuData from cite_07 (DEG results in uns)
     mdata = mu.read(str(input_path))
@@ -756,7 +756,7 @@ def run_protein_rna_corr(input_path: Path, out: Path, reports_dir: Path,
 
     print("[protein_rna_corr] running …")
     import mudata as mu
-    from pipeline.modules.cite.cite_corr import cite_corr
+    from pipeline.modules.scripts.cite.cite_corr import cite_corr
 
     # cite_09 reads directly from cite_06 (integration MuData — both layers)
     mdata = mu.read(str(input_path))
@@ -806,7 +806,7 @@ def run_epitope_characterisation(input_path: Path, out: Path, reports_dir: Path,
     print("[epitope_characterisation] running …")
     import mudata as mu
     import pandas as pd
-    from pipeline.modules.cite.cite_epitope import cite_epitope
+    from pipeline.modules.scripts.cite.cite_epitope import cite_epitope
 
     # Primary input: cite_06 MuData (RNA + ADT + labels)
     mdata = mu.read(str(input_path))
