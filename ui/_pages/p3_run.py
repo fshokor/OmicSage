@@ -1,12 +1,13 @@
 """
 OmicSage UI — Page 3: Run
 ==========================
-Supports two run engines:
-  - Python  : calls run_<modality>_pipeline.py directly (no Docker needed)
-  - Nextflow: calls `nextflow run main.nf` (Docker + reproducibility)
+Runs pipeline via Python runner directly (no Docker needed).
+GPU toggle sets OMICSAGE_GPU=1 env var for GPU-accelerated steps
+(totalVI, MultiVI, Tangram).
 
 Live log streaming via background reader thread + queue.
 """
+import os
 import queue
 import subprocess
 import sys
@@ -18,13 +19,13 @@ import streamlit as st
 
 from ui.state import *
 from ui import history as _history
-from ui.defaults import MODALITY_STEPS, STEP_LABELS, MODALITY_RUNNER, MODALITY_NF_NAME, NF_IMPLEMENTED
+from ui.defaults import MODALITY_STEPS, STEP_LABELS, MODALITY_RUNNER
 
-# Queue key in session state — holds lines read by the background thread
 _QUEUE_KEY = "_log_queue"
+_GPU_KEY   = "_run_gpu"
 
-# Session state key for selected engine
-_ENGINE_KEY = "_run_engine"
+# Steps that benefit from GPU
+_GPU_STEPS = {"integration", "multiome_integration", "impute", "annotate"}
 
 
 def render():
@@ -52,128 +53,85 @@ def render():
         st.divider()
         st.markdown("### Run options")
 
-        # ── Engine selector ───────────────────────────────────────────────────
-        nf_available = modality in NF_IMPLEMENTED
-        engine_options = ["Python (direct)", "Nextflow (Docker)"]
+        col1, col2, col3 = st.columns([2, 1, 1])
 
-        if not nf_available:
-            engine_help = f"Nextflow not yet implemented for {modality} — using Python."
-            engine_index = 0
-            engine_disabled = True
-        else:
-            engine_help = (
-                "**Python**: runs locally, no Docker needed, faster for development.\n\n"
-                "**Nextflow**: runs in Docker, fully reproducible, supports -resume, "
-                "HPC/cloud ready."
-            )
-            engine_disabled = False
-            engine_index = engine_options.index(
-                st.session_state.get(_ENGINE_KEY, "Python (direct)")
-            )
-
-        selected_engine = st.radio(
-            "Run engine",
-            engine_options,
-            index=engine_index,
-            horizontal=True,
-            disabled=engine_disabled,
-            help=engine_help,
-            key="engine_radio",
-        )
-        st.session_state[_ENGINE_KEY] = selected_engine
-        use_nextflow = selected_engine == "Nextflow (Docker)" and nf_available
-
-        if use_nextflow:
-            st.info(
-                "⚙️ Nextflow mode — pipeline runs inside `omicsage:latest` Docker container. "
-                "Use **-resume** to skip completed steps automatically.",
-                icon="🐋",
-            )
-
-        st.divider()
-
-        col1, col2 = st.columns([2, 1])
         with col1:
-            if use_nextflow:
-                # Nextflow handles step selection differently — always runs full pipeline
-                # but -resume skips completed steps automatically
-                run_mode = st.radio(
-                    "What to run",
-                    ["Full pipeline (-resume)", "Full pipeline (force all steps)"],
-                    horizontal=True,
-                    key="run_mode_radio",
-                )
-                step_single = step_from = step_to = None
-            else:
-                run_mode = st.radio(
-                    "What to run",
-                    ["All configured steps", "Single step", "Step range (from → to)"],
-                    horizontal=True,
-                    key="run_mode_radio",
-                )
-                step_single = step_from = step_to = None
-
-                if run_mode == "Single step":
-                    step_single = st.selectbox(
-                        "Step to run", options=enabled_steps,
-                        format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
-                        key="single_step_sel",
-                    )
-                elif run_mode == "Step range (from → to)":
-                    ca, cb = st.columns(2)
-                    with ca:
-                        step_from = st.selectbox(
-                            "From step (inclusive)", options=all_steps, index=0,
-                            format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
-                            key="from_step_sel",
-                        )
-                    with cb:
-                        from_idx  = all_steps.index(step_from) if step_from else 0
-                        remaining = all_steps[from_idx:]
-                        step_to   = st.selectbox(
-                            "To step (inclusive)", options=remaining,
-                            index=len(remaining) - 1,
-                            format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
-                            key="to_step_sel",
-                        )
+            run_mode = st.radio(
+                "What to run",
+                ["All configured steps", "Single step", "Step range (from → to)"],
+                horizontal=True,
+                key="run_mode_radio",
+            )
 
         with col2:
-            if not use_nextflow:
-                force = st.toggle(
-                    "⚡ Force re-run",
-                    value=False,
-                    help="Re-runs steps even if checkpoint .h5ad already exists.",
-                    key="force_toggle",
+            force = st.toggle(
+                "⚡ Force re-run",
+                value=False,
+                help="Re-runs steps even if checkpoint .h5ad already exists.",
+                key="force_toggle",
+            )
+
+        with col3:
+            gpu_steps_in_run = _GPU_STEPS & set(enabled_steps)
+            gpu_help = (
+                "Enable GPU acceleration for: "
+                + ", ".join(sorted(gpu_steps_in_run))
+                + ".\n\nRequires NVIDIA GPU."
+            ) if gpu_steps_in_run else "No GPU-accelerated steps in current selection."
+            use_gpu = st.toggle(
+                "🚀 GPU",
+                value=st.session_state.get(_GPU_KEY, False),
+                help=gpu_help,
+                disabled=not bool(gpu_steps_in_run),
+                key="gpu_toggle",
+            )
+            st.session_state[_GPU_KEY] = use_gpu
+            if use_gpu:
+                st.caption("GPU on — OMICSAGE_GPU=1")
+
+        step_single = step_from = step_to = None
+
+        if run_mode == "Single step":
+            step_single = st.selectbox(
+                "Step to run", options=enabled_steps,
+                format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
+                key="single_step_sel",
+            )
+        elif run_mode == "Step range (from → to)":
+            ca, cb = st.columns(2)
+            with ca:
+                step_from = st.selectbox(
+                    "From step (inclusive)", options=all_steps, index=0,
+                    format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
+                    key="from_step_sel",
                 )
-            else:
-                force = False   # Nextflow resume handles this via run_mode
+            with cb:
+                from_idx  = all_steps.index(step_from) if step_from else 0
+                remaining = all_steps[from_idx:]
+                step_to   = st.selectbox(
+                    "To step (inclusive)", options=remaining,
+                    index=len(remaining) - 1,
+                    format_func=lambda s: f"{s}  —  {STEP_LABELS.get(s,'')}",
+                    key="to_step_sel",
+                )
 
         # Preview
-        if use_nextflow:
-            preview = enabled_steps   # show what will run; Nextflow skips cached
-            if run_mode == "Full pipeline (-resume)":
-                st.markdown("**Will run:**  " + "  →  ".join(f"`{s}`" for s in preview))
-                st.caption("Completed steps will be skipped automatically via Nextflow -resume.")
-            else:
-                st.markdown("**Will run (force all):**  " + "  →  ".join(f"`{s}`" for s in preview))
-                st.warning("⚡ Force mode — all steps will re-run even if checkpoints exist.")
+        if run_mode == "All configured steps":
+            preview = enabled_steps
+        elif run_mode == "Single step":
+            preview = [step_single] if step_single else []
         else:
-            if run_mode == "All configured steps":
-                preview = enabled_steps
-            elif run_mode == "Single step":
-                preview = [step_single] if step_single else []
+            if step_from and step_to:
+                fi = all_steps.index(step_from)
+                ti = all_steps.index(step_to)
+                preview = all_steps[fi:ti+1]
             else:
-                if step_from and step_to:
-                    fi = all_steps.index(step_from)
-                    ti = all_steps.index(step_to)
-                    preview = all_steps[fi:ti+1]
-                else:
-                    preview = []
+                preview = []
 
-            if preview:
-                st.markdown("**Will run:**  " + "  →  ".join(f"`{s}`" for s in preview))
-            if force:
-                st.warning("⚡ Force mode on — existing checkpoints will be overwritten.")
+        if preview:
+            st.markdown("**Will run:**  " + "  →  ".join(f"`{s}`" for s in preview))
+        if force:
+            st.warning("⚡ Force mode on — existing checkpoints will be overwritten.")
 
         st.divider()
         col_back, col_run = st.columns([1, 3])
@@ -185,11 +143,8 @@ def render():
             label = "▶ Run Pipeline" if status == "idle" else "▶ Run Again"
             if st.button(label, type="primary", use_container_width=True,
                          disabled=not preview):
-                _launch(
-                    modality, config_path, run_mode,
-                    step_single, step_from, step_to, force,
-                    use_nextflow=use_nextflow,
-                )
+                _launch(modality, config_path, run_mode,
+                        step_single, step_from, step_to, force, use_gpu)
                 st.rerun()
 
     # ── Running ───────────────────────────────────────────────────────────────
@@ -259,13 +214,24 @@ def render():
 # ── Launch ────────────────────────────────────────────────────────────────────
 
 def _launch(modality, config_path, run_mode, step_single, step_from, step_to,
-            force, use_nextflow=False):
+            force, use_gpu=False):
 
-    if use_nextflow:
-        cmd = _build_nextflow_cmd(modality, config_path, run_mode)
-    else:
-        cmd = _build_python_cmd(modality, config_path, run_mode,
-                                step_single, step_from, step_to, force)
+    runner = MODALITY_RUNNER[modality]
+    cmd    = [sys.executable, runner, "--config", config_path]
+
+    if run_mode == "Single step" and step_single:
+        cmd += ["--step", step_single]
+    elif run_mode == "Step range (from → to)":
+        if step_from:
+            cmd += ["--from-step", step_from]
+        if step_to:
+            cmd += ["--to-step", step_to]
+
+    if force:
+        cmd.append("--force")
+
+    # GPU flag via environment variable
+    env = {**os.environ, "OMICSAGE_GPU": "1" if use_gpu else "0"}
 
     proc = subprocess.Popen(
         cmd,
@@ -275,6 +241,7 @@ def _launch(modality, config_path, run_mode, step_single, step_from, step_to,
         universal_newlines=True,
         encoding="utf-8",
         errors="replace",
+        env=env,
     )
 
     log_queue: queue.Queue = queue.Queue()
@@ -310,44 +277,6 @@ def _launch(modality, config_path, run_mode, step_single, step_from, step_to,
     st.session_state["_history_entry_id"] = entry_id
 
 
-def _build_python_cmd(modality, config_path, run_mode,
-                      step_single, step_from, step_to, force):
-    """Build command for direct Python runner."""
-    runner = MODALITY_RUNNER[modality]
-    cmd    = [sys.executable, runner, "--config", config_path]
-
-    if run_mode == "Single step" and step_single:
-        cmd += ["--step", step_single]
-    elif run_mode == "Step range (from → to)":
-        if step_from:
-            cmd += ["--from-step", step_from]
-        if step_to:
-            cmd += ["--to-step", step_to]
-
-    if force:
-        cmd.append("--force")
-
-    return cmd
-
-
-def _build_nextflow_cmd(modality, config_path, run_mode):
-    """Build command for Nextflow engine."""
-    nf_modality = MODALITY_NF_NAME[modality]
-    cmd = [
-        "nextflow", "run", "main.nf",
-        "--config",   config_path,
-        "--modality", nf_modality,
-        "-profile",   "local",
-        "-ansi-log",  "false",   # plain text output (no ANSI colours in log box)
-    ]
-
-    # -resume skips steps whose checkpoints already exist
-    if run_mode == "Full pipeline (-resume)":
-        cmd.append("-resume")
-
-    return cmd
-
-
 # ── Log renderer ──────────────────────────────────────────────────────────────
 
 def _render_log(placeholder):
@@ -360,9 +289,6 @@ def _render_log(placeholder):
         "harmony","pseudobulk","atac","multiome","ingest","deconv",
         "downstream","impute","ai","data_report",
     ]
-    # Nextflow-specific line markers
-    nf_markers = ["executor >", "process >", "SCRNA_", "N E X T F L O W", "["]
-
     for line in lines[-400:]:
         if any(line.startswith(f"[{s}]") for s in step_prefixes):
             display.append(f"  {line}")
@@ -372,11 +298,8 @@ def _render_log(placeholder):
             display.append(f"✓ {line}")
         elif line.startswith("$"):
             display.append(line)
-        elif any(m in line for m in nf_markers):
-            display.append(f"  {line}")
         else:
             display.append(line)
-
     with placeholder:
         st.code("\n".join(display), language=None)
 

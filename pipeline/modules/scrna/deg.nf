@@ -1,21 +1,17 @@
 process SCRNA_DEG {
     label 'process_python'
-    tag  "${config.simpleName}"
-
+    tag  "deg"
     errorStrategy { task.exitStatus in [130, 137, 139] ? 'retry' : 'finish' }
     maxRetries 2
-
     input:
-    path config
-    path annotate_checkpoint    // 05_annotated.h5ad
-
+    val config_path
+    val predecessor
     output:
-    path "06_deg.h5ad", emit: checkpoint
-
+    val "06_deg.h5ad", emit: checkpoint
     script:
     """
-    python /app/run_scrna_pipeline.py \\
-        --config ${config} \\
+    /opt/conda/envs/omicsage/bin/python /app/run_scrna_pipeline.py \
+        --config /app/${config_path} \
         --step deg
     """
 }

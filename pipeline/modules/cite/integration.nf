@@ -1,21 +1,30 @@
 process CITE_INTEGRATION {
     label 'process_python'
-    tag  "${config.simpleName}"
-
+    tag  "integration"
     errorStrategy { task.exitStatus in [130, 137, 139] ? 'retry' : 'finish' }
     maxRetries 2
-
     input:
-    path config
-    path annotate_checkpoint    // cite_05_annotated_adt.h5ad
-
+    val config_path
+    val predecessor
     output:
-    path "cite_06_integration.h5mu", emit: checkpoint
-
+    val "cite_06_integration.h5mu", emit: checkpoint
     script:
     """
-    python /app/run_cite_pipeline.py \\
-        --config ${config} \\
+    /opt/conda/envs/omicsage/bin/python - << 'PYEOF2'
+import yaml, pathlib, sys
+cfg  = yaml.safe_load(open('/app/${config_path}'))
+keys = "steps.integration".split('.')
+node = cfg
+for k in keys:
+    node = node.get(k, {}) if isinstance(node, dict) else {}
+enabled = node.get('enabled', True) if isinstance(node, dict) else True
+if not enabled:
+    print('[integration] disabled in config -- skipping')
+    pathlib.Path('cite_06_integration.h5mu').touch()
+    sys.exit(0)
+PYEOF2
+    /opt/conda/envs/omicsage/bin/python /app/run_cite_pipeline.py \\
+        --config /app/${config_path} \\
         --step integration
     """
 }

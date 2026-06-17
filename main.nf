@@ -1,15 +1,6 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl = 2
 
-// ── OmicSage — main.nf ────────────────────────────────────────────────────────
-// Entry point. Routes to the correct modality workflow.
-// Usage:
-//   nextflow run main.nf --config config/runs/GSE166635.yaml --modality scrna
-//   nextflow run main.nf --config config/runs/GSE194122_cite.yaml --modality cite
-//   nextflow run main.nf --config config/runs/GSE194122_atac_multiome.yaml --modality multiome
-//   nextflow run main.nf --config config/runs/kuppe_heart.yaml --modality spatial
-//   Add -resume to skip completed steps
-
 include { SCRNA_WORKFLOW    } from './pipeline/workflows/scrna.nf'
 include { CITE_WORKFLOW     } from './pipeline/workflows/cite.nf'
 include { MULTIOME_WORKFLOW } from './pipeline/workflows/multiome.nf'
@@ -37,11 +28,6 @@ workflow {
         Resume (skip completed steps):
           nextflow run main.nf --config <yaml> --modality <mod> -resume
 
-        Profiles:
-          -profile local    Local Docker  (default)
-          -profile slurm    HPC Singularity
-          -profile test     Small test run
-
         Examples:
           nextflow run main.nf --config config/runs/GSE166635.yaml --modality scrna -resume
           nextflow run main.nf --config config/runs/GSE194122_cite.yaml --modality cite -resume
@@ -55,7 +41,9 @@ workflow {
         error "ERROR: --config is required. Example: --config config/runs/GSE166635.yaml"
     }
 
-    config_ch = Channel.fromPath(params.config, checkIfExists: true)
+    // Pass config as a string value — NOT as a staged path.
+    // Modules prepend /app/ to get the absolute path inside the Docker container.
+    config_ch = Channel.value(params.config)
 
     log.info """
     ╔══════════════════════════════════════════════════════╗

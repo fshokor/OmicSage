@@ -1,21 +1,30 @@
 process CITE_PROTEIN_RNA_CORR {
     label 'process_python'
-    tag  "${config.simpleName}"
-
+    tag  "protein_rna_corr"
     errorStrategy { task.exitStatus in [130, 137, 139] ? 'retry' : 'finish' }
     maxRetries 2
-
     input:
-    path config
-    path integration_checkpoint // cite_06_integration.h5mu (predecessor = integration)
-
+    val config_path
+    val predecessor
     output:
-    path "cite_09_corr.h5mu", emit: checkpoint
-
+    val "cite_09_corr.h5mu", emit: checkpoint
     script:
     """
-    python /app/run_cite_pipeline.py \\
-        --config ${config} \\
+    /opt/conda/envs/omicsage/bin/python - << 'PYEOF2'
+import yaml, pathlib, sys
+cfg  = yaml.safe_load(open('/app/${config_path}'))
+keys = "steps.protein_rna_corr".split('.')
+node = cfg
+for k in keys:
+    node = node.get(k, {}) if isinstance(node, dict) else {}
+enabled = node.get('enabled', True) if isinstance(node, dict) else True
+if not enabled:
+    print('[protein_rna_corr] disabled in config -- skipping')
+    pathlib.Path('cite_09_corr.h5mu').touch()
+    sys.exit(0)
+PYEOF2
+    /opt/conda/envs/omicsage/bin/python /app/run_cite_pipeline.py \\
+        --config /app/${config_path} \\
         --step protein_rna_corr
     """
 }
