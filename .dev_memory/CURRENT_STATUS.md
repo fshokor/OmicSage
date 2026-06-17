@@ -1,6 +1,6 @@
 # OmicSage — Current Status
-> Updated: 2026-06-16
-> Phase: Docker containerization complete → Streamlit UI next
+> Updated: 2026-06-17
+> Phase: Nextflow DSL2 complete → Tutorial / Demo / Colab next
 
 ---
 
@@ -8,78 +8,106 @@
 
 ### Phase 1 — scRNA Pipeline ✅
 Full pipeline: ingest → QC → normalize → reduce → cluster → annotate →
-DEG → GSEA → Harmony → pseudobulk DEG. Config-driven runner.
-Combined tabbed HTML report.
+DEG → GSEA → Harmony → cluster_harmony → pseudobulk DEG.
+Config-driven runner. Combined tabbed HTML report.
 
 ### Phase 2 — Report Engine ✅
 Combined tabbed HTML report (`00_combined_report.html`).
 Auto-generated after every pipeline run.
 
-### Phase 3 — AI Layer ✅
-BioChatter-based. 8 modules:
-Pipeline Advisor, Clustering Advisor, Cluster Annotator, DEG Validator,
-Coherence Reviewer, Downstream Suggester, Narrative Generator,
-Report Writer + PPTX. Manual Review Mode (`MASTER_PROMPT.md`).
+### Phase 3 — AI Layer ✅ (built, paused by decision)
+BioChatter-based. 8 modules: Pipeline Advisor, Clustering Advisor,
+Cluster Annotator, DEG Validator, Coherence Reviewer, Downstream Suggester,
+Narrative Generator, Report Writer + PPTX.
+ai_features: false is the default. Code intact, not deleted.
 
 ### Phase 4 — CITE-seq Pipeline ✅
 Full pipeline: ADT normalize → doublets → reduce → harmony → annotate →
 integration → DEG/DPE → GSEA → correlation → epitope characterization.
-Combined report + runner.
+Combined report + runner (run_cite_pipeline.py).
 
 ### Phase 5 — Multiome Pipeline ✅
 ATAC QC → LSI reduce → annotate → MultiVI integration →
-GRN with pyscenic + decoupler. Runner + combined report.
+multiome DEG → GRN with pyscenic + decoupler.
+Runner + combined report (run_multiome_pipeline.py).
 
 ### Phase 6 — GRN Inference ✅
-GRN inference module complete.
+GRN inference module complete and integrated into multiome pipeline.
 
 ### Phase 7 — Spatial Transcriptomics Pipeline ✅
-Full pipeline across Sessions 1–5 + A + B:
-- Ingest: Visium / H5AD / benchmark / Visium HD / Xenium (spatialdata-io)
-- QC, reduce, cluster, deconvolution (cell2location + NNLS)
-- Downstream analyses
-- Spatial imputation: Tangram (clusters mode) + gimVI (opt-in)
-- Combined report + runner
-- Configs: kuppe_heart.yaml, visium_hd_mouse_brain.yaml, xenium_breast.yaml
+Full pipeline: ingest → QC → reduce → cluster → deconvolve (NNLS/cell2location)
+→ downstream → impute (Tangram/gimVI).
+Configs: kuppe_heart.yaml, visium_hd_mouse_brain.yaml, xenium_breast.yaml.
+Runner + combined report (run_spatial_pipeline.py).
 
-### Phase 8 — Docker Containerization ✅ ← COMPLETED THIS SESSION
-Single image covers all four modalities.
+### Phase 8 — Docker Containerization ✅
+Single image (omicsage:latest, ~7.6GB) covers all four modalities.
+Entrypoint routes by OMICSAGE_MODALITY env var or first CLI argument.
+docker-compose.yml with 5 services. scripts/run_docker.sh convenience wrapper.
+
+### Phase 9 — Streamlit UI ✅
+4-page UI: Dataset → Configure → Run → Report.
+Python runner only (no Docker overhead in UI).
+GPU toggle via OMICSAGE_GPU=1 env var.
+Live log streaming via background thread + queue.
+Save/load config YAML. Project history sidebar.
+
+### Phase 10 — Nextflow DSL2 Orchestration ✅ ← COMPLETED THIS SESSION
+Full DSL2 layer for all 4 modalities.
 
 **Files delivered:**
 ```
-docker/Dockerfile.pipeline   ← conda-based, continuumio/miniconda3:23.10.0-1
-docker/Dockerfile.dev        ← extends pipeline + Jupyter Lab + pytest tools
-docker/entrypoint.sh         ← routes modality via OMICSAGE_MODALITY env var
-docker-compose.yml           ← 5 services: scrna, cite, multiome, spatial, dev
-.dockerignore                ← excludes data/, __pycache__, .git, reports/output
-scripts/run_docker.sh        ← convenience wrapper, handles volumes + GPU flag
-```
-
-**How to run any modality:**
-```bash
-# Via convenience script
-./scripts/run_docker.sh scrna --config config/runs/gse166635_hcc.yaml
-./scripts/run_docker.sh cite --config config/runs/gse194122_cite.yaml
-./scripts/run_docker.sh multiome --config config/runs/gse194122_multiome.yaml
-./scripts/run_docker.sh spatial --config config/runs/kuppe_heart.yaml
-
-# Via docker-compose
-docker-compose run scrna --config config/runs/gse166635_hcc.yaml
-docker-compose run spatial --config config/runs/kuppe_heart.yaml --step ingest
-
-# Dev environment
-./scripts/run_docker.sh dev jupyter    # Jupyter Lab on :8888
-./scripts/run_docker.sh dev bash       # interactive shell
-./scripts/run_docker.sh dev pytest tests/ -q
+main.nf                              ← entry point, routes by --modality
+nextflow.config                      ← Docker mount, GPU flag, memory, profiles
+pipeline/workflows/
+  scrna.nf                           ← 10-step scRNA workflow
+  cite.nf                            ← 10-step CITE-seq workflow
+  multiome.nf                        ← 6-step Multiome workflow
+  spatial.nf                         ← 7-step Spatial workflow
+pipeline/modules/
+  scrna/   (10 modules)              ← qc → pseudobulk
+  cite/    (10 modules)              ← normalize_adt → epitope_characterisation
+  multiome/(6 modules)               ← atac_qc → multiome_grn
+  spatial/ (7 modules)               ← ingest → impute
 ```
 
 **Key design decisions:**
-- One image, four modalities — no image sprawl
-- Entrypoint routes by `OMICSAGE_MODALITY` env var or first CLI argument
-- Data/reports always volume-mounted, never baked into image
-- API keys injected at runtime via env vars, never stored in image
-- `HDF5_USE_FILE_LOCKING=FALSE` set globally (WSL2 compatibility)
-- GPU opt-in via `OMICSAGE_GPU=1` env var
+- Each module calls Python runner with full Python path (entrypoint bypassed via --entrypoint '')
+- Config passed as val (not path) to avoid Nextflow staging stripping the path
+- Skip guard in every module: reads YAML, exits 0 + touches sentinel if enabled: false
+- Streamlit UI uses Python runner only (step control, --from-step/--to-step)
+- Nextflow is CLI-only for HPC/cloud full pipeline runs
+- GPU: --gpu true flag in nextflow.config passes --gpus all + OMICSAGE_GPU=1
+
+**How to run via Nextflow (CLI/HPC):**
+```bash
+# scRNA full pipeline
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile local \
+  -ansi-log false
+
+# Resume after crash
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile local \
+  -resume
+
+# With GPU
+nextflow run main.nf \
+  --config config/runs/GSE194122_cite.yaml \
+  --modality cite \
+  -profile local \
+  --gpu true
+
+# HPC (SLURM)
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile slurm
+```
 
 ---
 
@@ -89,8 +117,10 @@ docker-compose run spatial --config config/runs/kuppe_heart.yaml --step ingest
 ---
 
 ## What Is NOT Yet Built
-- Streamlit no-code UI ← NEXT
-- Nextflow DSL2 orchestration
+- Tutorial notebook (GSE166635 walkthrough) ← NEXT
+- Demo video (Streamlit screen recording)
+- Google Colab notebook (GPU-accessible, Drive-mounted)
+- README rewrite (what's built + how to use it)
 - CLI (Click-based project manager)
 - Paper / benchmarking
 - omicsage.io website

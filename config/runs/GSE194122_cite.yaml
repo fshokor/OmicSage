@@ -50,20 +50,20 @@ dataset:
 
 paths:
   # ADT input: produced by the QC step of the RNA pipeline
-  adt_input: data/processed/GSE194122/01_qc_adt.h5ad
+  adt_input: data/processed/BMMC_CITE-seq_NeurIPS_2021/01_qc_adt.h5ad
 
   # RNA input for integration: annotated RNA from the RNA pipeline
   # Must have:
   #   .X                  = log1p-normalised RNA
   #   layers["counts"]    = raw counts (required for totalVI)
   #   obs["cell_type_vote"] = consensus cell type labels
-  rna_input: data/processed/GSE194122/05_annotated.h5ad
+  rna_input: data/processed/BMMC_CITE-seq_NeurIPS_2021/05_annotated.h5ad
 
   # Where to write checkpointed outputs
-  processed_dir: data/processed/GSE194122
+  processed_dir: data/processed/BMMC_CITE-seq_NeurIPS_2021
 
   # Where to write HTML reports
-  reports_dir: reports/GSE194122
+  reports_dir: reports/BMMC_CITE-seq_NeurIPS_2021
 
 # ── Global CITE-seq settings ──────────────────────────────────────────────────
 # batch_key is used by both harmony_adt and integration.

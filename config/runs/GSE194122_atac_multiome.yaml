@@ -1,6 +1,6 @@
 # OmicSage — Multiome Pipeline Config
 # Dataset: GSE194122 NeurIPS 2021 BMMC Multiome (RNA + ATAC)
-# Run: python run_multiome_pipeline.py --config config/runs/GSE194122_multiome.yaml
+# Run: python run_multiome_pipeline.py --config config/runs/GSE194122_atac_multiome.yaml
 
 dataset:
   id:   GSE194122_multiome
@@ -50,7 +50,7 @@ steps:
   multiome_integration:
     enabled: true
     params:
-      method:       multivi       # mofa | multivi
+      method:       mofa       # mofa | multivi
       batch_key:    batch
       n_factors:    15         # MOFA+ only
       n_latent:     20         # MultiVI only
