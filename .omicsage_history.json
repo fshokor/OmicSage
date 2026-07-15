@@ -1,5 +1,45 @@
 [
   {
+    "id": "20260715_170929",
+    "timestamp": "2026-07-15T17:09:29",
+    "dataset_name": "HCC scRNA-seq",
+    "dataset_id": "GSE166635",
+    "modality": "scRNA-seq",
+    "config_path": "/tmp/omicsage_i9jx573m.yaml",
+    "reports_dir": "reports/HCC_scRNA-seq",
+    "status": "running"
+  },
+  {
+    "id": "20260715_170452",
+    "timestamp": "2026-07-15T17:04:52",
+    "dataset_name": "HCC scRNA-seq",
+    "dataset_id": "GSE166635",
+    "modality": "scRNA-seq",
+    "config_path": "/tmp/omicsage_i9jx573m.yaml",
+    "reports_dir": "reports/HCC_scRNA-seq",
+    "status": "running"
+  },
+  {
+    "id": "20260715_170433",
+    "timestamp": "2026-07-15T17:04:33",
+    "dataset_name": "HCC scRNA-seq",
+    "dataset_id": "GSE166635",
+    "modality": "scRNA-seq",
+    "config_path": "/tmp/omicsage_6vh66b33.yaml",
+    "reports_dir": "reports/HCC_scRNA-seq",
+    "status": "running"
+  },
+  {
+    "id": "20260715_170315",
+    "timestamp": "2026-07-15T17:03:15",
+    "dataset_name": "HCC scRNA-seq",
+    "dataset_id": "GSE166635",
+    "modality": "scRNA-seq",
+    "config_path": "/tmp/omicsage_6vh66b33.yaml",
+    "reports_dir": "reports/HCC_scRNA-seq",
+    "status": "running"
+  },
+  {
     "id": "20260616_235943",
     "timestamp": "2026-06-16T23:59:43",
     "dataset_name": "BMMC Multiome (NeurIPS 2021)",

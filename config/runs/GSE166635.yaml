@@ -30,7 +30,7 @@
 
 dataset:
   id: GSE166635
-  name: "HCC scRNA-seq (Wang et al. 2025)"
+  name: "HCC scRNA-seq"
   modality: scrna
   organism: human
 

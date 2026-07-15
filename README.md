@@ -16,35 +16,47 @@
 
 OmicSage is an open-source platform that covers the full single-cell multi-omics stack in one place:
 
-| Modality | Status |
-|----------|--------|
-| scRNA-seq | ✅ Phase 1 —  Finished |
-| Cite-seq | ✅ Phase 4 — Finished |
-| Multiome (RNA + ATAC) | ✅ Phase 5 — Finished |
-| Spatial transcriptomics | ✅ Phase 6 — Finished |
+![scRNA-seq](https://img.shields.io/badge/modality-scRNA--seq-6f42c1)
+![CITE-seq](https://img.shields.io/badge/modality-CITE--seq-6f42c1)
+![Multiome](https://img.shields.io/badge/modality-Multiome%20(RNA%2BATAC)-6f42c1)
+![Spatial](https://img.shields.io/badge/modality-Spatial%20Transcriptomics-6f42c1)
 
 **Two users. One tool.**
 - 🔬 **Biologists**: no-code Streamlit interface, guided workflow, biological interpretation in plain language
 - 💻 **Bioinformaticians**: project templates, multi-project management, automated reports, no repeated code
 
 ---
+ 
+## Supported Modalities
+ 
+| Modality | Steps | Runner |
+|----------|-------|--------|
+| **scRNA-seq** | QC → normalize → reduce → cluster → annotate → DEG → GSEA → Harmony → pseudobulk | `run_scrna_pipeline.py` |
+| **CITE-seq** | ADT normalize → doublets → reduce → harmony → annotate → integration → DEG → GSEA → correlation → epitope | `run_cite_pipeline.py` |
+| **Multiome (RNA+ATAC)** | ATAC QC → LSI reduce → annotate → MultiVI integration → DEG → GRN | `run_multiome_pipeline.py` |
+| **Spatial** | Ingest → QC → reduce → cluster → deconvolve → downstream → impute | `run_spatial_pipeline.py` |
+ 
+---
 
 ## Architecture
-
+ 
 ```
-┌─────────────────────────────────────────────────────┐
-│  LAYER 3: Review & Interpretation (MANUAL)          │
-│  Structured outputs + QC flags guide the analyst    │
-│  through threshold decisions and cluster review     │
-├─────────────────────────────────────────────────────┤
-│  LAYER 2: Report Engine (ALWAYS ON)                 │
-│  Per-step HTML reports + combined tabbed report     │
-│  → 00_combined_report.html after every pipeline run │
-├─────────────────────────────────────────────────────┤
-│  LAYER 1: Core Pipeline (ALWAYS ON)                 │
-│  Python (Scanpy/scverse) → QC → normalize →         │
-│  integrate → cluster → annotate → downstream        │
-└─────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│  INTERFACE LAYER                                            │
+│  Streamlit UI (biologists) · Python CLI · Nextflow (HPC)   │
+├─────────────────────────────────────────────────────────────┤
+│  REPORT ENGINE (always on)                                  │
+│  Per-step HTML reports → 00_combined_report.html            │
+│  Generated automatically after every pipeline run           │
+├─────────────────────────────────────────────────────────────┤
+│  CORE PIPELINE (always on)                                  │
+│  Scanpy · Muon · squidpy · scvi-tools · decoupler           │
+│  QC → normalize → integrate → cluster → annotate →         │
+│  DEG → GSEA → GRN → spatial downstream                     │
+├─────────────────────────────────────────────────────────────┤
+│  INFRASTRUCTURE                                             │
+│  Docker (omicsage:latest) · Nextflow DSL2 · GitHub Actions  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
 **Key principle**: every step produces structured outputs and a human-readable report so the analyst stays in control of all biological decisions.
@@ -52,94 +64,232 @@ OmicSage is an open-source platform that covers the full single-cell multi-omics
 ---
 
 ## Quick Start
-
+ 
 ### Requirements
 - Python 3.11
 - Conda (Miniconda or Anaconda)
-
-### 1. Clone the repo
+- Docker Desktop (optional — for containerized runs)
+- Java 21 + Nextflow (optional — for HPC/cloud)
+### Installation
+ 
 ```bash
 git clone https://github.com/fshokor/OmicSage.git
 cd OmicSage
-```
-
-### 2. Create and activate the conda environment
-```bash
 conda env create -f environment.yml
 conda activate omicsage
 ```
-
-### 3. Create your first project
-```bash
-python cli/omicsage.py create-project my_analysis --modality scrna
-```
-
-### 4. Edit the config
-```bash
-nano my_analysis/config.yaml   # set input.scrna_path to your data
-```
-
-### 5. Run the pipeline
-```bash
-python cli/omicsage.py run my_analysis/
-```
-
-### Web UI (biologists)
+ 
+---
+ 
+### Path A — Streamlit UI (biologists, no coding required)
+ 
 ```bash
 conda activate omicsage
 streamlit run ui/app.py
 # Open http://localhost:8501
 ```
 
+1. **Dataset** — enter your dataset name, select modality, set the path to your data
+<!-- SCREENSHOT: Streamlit Configure page -->
+<!-- Replace with: docs/images/ui_configure.png -->
+![Configure Page](docs/images/placeholder_ui.png)
+ 
+2. **Configure** — toggle steps on/off, adjust parameters via sliders and dropdowns
+<!-- SCREENSHOT: Streamlit Configure page -->
+<!-- Replace with: docs/images/ui_configure.png -->
+![Configure Page](docs/images/placeholder_configure.png)
+ 
+3. **Run** — click ▶ Run Pipeline, watch live log output
+<!-- SCREENSHOT: Streamlit Run page with live log -->
+<!-- Replace with: docs/images/ui_run.png -->
+![Run Page](docs/images/placeholder_run.png)
+
+4. **Report** — view and download the combined HTML report
+<!-- SCREENSHOT: Combined HTML report — QC tab -->
+<!-- Replace with: docs/images/report_qc.png -->
+![Combined Report QC Tab](docs/images/placeholder_report_qc.png)
 ---
-
-## Running Tests
-
+ 
+### Path B — Python CLI (bioinformaticians)
+ 
 ```bash
 conda activate omicsage
-python -m pytest tests/ -v
+ 
+# Run the full scRNA pipeline
+python run_scrna_pipeline.py --config config/runs/GSE166635.yaml
+ 
+# Run a single step
+python run_scrna_pipeline.py --config config/runs/GSE166635.yaml --step qc
+ 
+# Run a range of steps
+python run_scrna_pipeline.py --config config/runs/GSE166635.yaml \
+  --from-step normalize --to-step annotate
+ 
+# Re-run from a step (force overwrite checkpoints)
+python run_scrna_pipeline.py --config config/runs/GSE166635.yaml \
+  --from-step cluster --force
+ 
+# Same pattern for other modalities
+python run_cite_pipeline.py     --config config/runs/GSE194122_cite.yaml
+python run_multiome_pipeline.py --config config/runs/GSE194122_atac_multiome.yaml
+python run_spatial_pipeline.py  --config config/runs/kuppe_heart.yaml
 ```
-
-> Always use `python -m pytest`, not bare `pytest`, to ensure the correct Python environment is used.
-
+ 
+Each step writes a checkpoint `.h5ad` file to `processed_dir` and an HTML report to `reports_dir`.
+ 
 ---
-
-## Interpretation Layer
-
-OmicSage is designed around **manual review by the analyst**. Rather than delegating biological decisions to an LLM, every pipeline step produces structured outputs and a human-readable HTML report that guides you through the results:
-
-- **QC step** — per-sample MAD-based thresholds surfaced with flags; analyst confirms or adjusts
-- **Clustering step** — UMAP + marker gene tables per cluster for manual label assignment
-- **Annotation step** — cell type predictions from [CelltypistML](https://github.com/Teichlab/celltypist) (Python) alongside marker evidence; analyst reviews and overrides
-- **DEG step** — ranked gene tables with volcano plots; analyst interprets biological significance
-- **Combined report** — `00_combined_report.html` collects all steps in one tabbed view after every run
-
-This keeps the analyst in control of all biological decisions while eliminating boilerplate code and repetitive plotting.
-
+ 
+### Path C — Nextflow (HPC / cloud)
+ 
+```bash
+# Install Nextflow (requires Java 21)
+curl -s https://get.nextflow.io | bash
+ 
+# Run full pipeline locally with Docker
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile local
+ 
+# Resume after a crash (skips completed steps)
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile local \
+  -resume
+ 
+# Run on SLURM (HPC)
+nextflow run main.nf \
+  --config config/runs/GSE166635.yaml \
+  --modality scrna \
+  -profile slurm
+ 
+# Run with GPU (totalVI, Tangram, MultiVI)
+nextflow run main.nf \
+  --config config/runs/GSE194122_cite.yaml \
+  --modality cite \
+  -profile local \
+  --gpu true
+```
+ 
 ---
-
-## Roadmap
-
-| Phase | Scope | Target Week |
-|-------|-------|------------|
-| 0 ✅ | Foundation — repo, CI/CD | 1-2 |
-| 1 ✅ | Core scRNA-seq pipeline (annotation in progress) | 2-6 |
-| 2 ✅ | Report engine — combined tabbed HTML report | 6-9 |
-| 3 ✅ | Manual review layer — structured QC flags, cluster review, CelltypistML annotation | 9-13 |
-| 4 ✅ | Cite-seq module | 13-16 |
-| 5 ✅ | Multiome integration | 16-19 |
-| 6 ✅ | Spatial transcriptomics | 19-22 |
-| 7 🔧| Streamlit web UI | 22-25 |
-| 8 | Benchmark + paper | 25-30 |
-
+ 
+### Path D — Docker
+ 
+```bash
+# Build the image
+docker build -f docker/Dockerfile.pipeline -t omicsage:latest .
+ 
+# Run any modality
+docker run --rm \
+  -v $(pwd):/app \
+  --entrypoint '' \
+  omicsage:latest \
+  /opt/conda/envs/omicsage/bin/python /app/run_scrna_pipeline.py \
+  --config /app/config/runs/GSE166635.yaml
+ 
+# With GPU
+docker run --rm --gpus all \
+  -e OMICSAGE_GPU=1 \
+  -v $(pwd):/app \
+  --entrypoint '' \
+  omicsage:latest \
+  /opt/conda/envs/omicsage/bin/python /app/run_cite_pipeline.py \
+  --config /app/config/runs/GSE194122_cite.yaml
+```
+ 
 ---
-
-## Citation
-
-OmicSage is under active development. A preprint will be posted on bioRxiv in 2026. If you use OmicSage in your research, please check back for citation details.
-
+ 
+## Configuration
+ 
+Every analysis is driven by a YAML config file. Example configs are in `config/runs/`:
+ 
+```
+config/runs/
+  GSE166635.yaml              ← HCC scRNA-seq (Wang et al. 2025)
+  GSE194122_cite.yaml         ← BMMC CITE-seq (NeurIPS 2021)
+  GSE194122_atac_multiome.yaml← BMMC Multiome (NeurIPS 2021)
+  kuppe_heart.yaml            ← Human heart Visium (Kuppe et al. 2022)
+```
+ 
+Minimal scRNA config:
+ 
+```yaml
+dataset:
+  id: my_dataset
+  name: "My scRNA-seq dataset"
+ 
+paths:
+  raw_input: data/raw/my_dataset
+  processed_dir: data/processed/my_dataset
+  reports_dir: reports/my_dataset
+ 
+steps:
+  qc:
+    enabled: true
+    params:
+      min_genes: 200
+      max_genes: 6000
+      max_mt_pct: 20.0
+      remove_doublets: true
+  normalize:
+    enabled: true
+  # ... add steps as needed
+```
+ 
 ---
+ 
+## Outputs
+ 
+After a pipeline run, you get:
+ 
+```
+data/processed/my_dataset/
+  01_qc.h5ad
+  02_normalized.h5ad
+  03_reduced.h5ad
+  04_clustered.h5ad
+  05_annotated.h5ad
+  06_deg.h5ad
+  07_gsea.h5ad
+  ...
+ 
+reports/my_dataset/
+  01_qc_report.html
+  02_normalize_report.html
+  03_reduce_report.html
+  04_cluster_report.html
+  05_annotate_report.html
+  06_deg_report.html
+  07_gsea_report.html
+  00_combined_report.html     ← all tabs in one file
+```
+ 
 
+ 
+ 
+---
+ 
+## Running Tests
+ 
+```bash
+conda activate omicsage
+python -m pytest tests/ -q --tb=short
+# Expected: 1472 passing, 58 skipped
+```
+ 
+## Benchmark Datasets
+ 
+OmicSage is validated on three published datasets:
+ 
+| Dataset | Modality | Reference |
+|---------|----------|-----------|
+| GSE166635 | scRNA-seq | Wang et al. 2025, npj Precision Oncology (HCC) |
+| GSE194122 | CITE-seq + Multiome | NeurIPS 2021 Open Problems benchmark (BMMC) |
+| Kuppe heart | Spatial (Visium) | Kuppe et al. 2022, Nature (myocardial infarction) |
+ 
+---
+ 
 ## License
 
 MIT — see [LICENSE](LICENSE)
