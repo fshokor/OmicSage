@@ -1,5 +1,85 @@
 [
   {
+    "id": "20261005_141722",
+    "timestamp": "2026-10-05T14:17:22",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_y71fth9q.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_140703",
+    "timestamp": "2026-10-05T14:07:03",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_rni2hfzr.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_140636",
+    "timestamp": "2026-10-05T14:06:36",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_rni2hfzr.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_134753",
+    "timestamp": "2026-10-05T13:47:53",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_uf70t7wd.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_134709",
+    "timestamp": "2026-10-05T13:47:09",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_2zm8d7x6.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_134649",
+    "timestamp": "2026-10-05T13:46:49",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_2zm8d7x6.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_134619",
+    "timestamp": "2026-10-05T13:46:19",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_2zm8d7x6.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
+    "id": "20261005_134022",
+    "timestamp": "2026-10-05T13:40:22",
+    "dataset_name": "kuppe_heart_verified",
+    "dataset_id": "kuppe_heart_verified",
+    "modality": "Spatial",
+    "config_path": "/tmp/omicsage_qgaa95fu.yaml",
+    "reports_dir": "reports/kuppe_heart_verified",
+    "status": "running"
+  },
+  {
     "id": "20260715_170929",
     "timestamp": "2026-07-15T17:09:29",
     "dataset_name": "HCC scRNA-seq",

@@ -35,7 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
-from pipeline.modules.scripts.spatial.checkpoint_cache import valid as cache_valid, record as cache_record, require_predecessor
+from pipeline.modules.scripts.spatial.checkpoint_cache import valid as cache_valid, record as cache_record, require_predecessor, atomic_write_h5ad
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -163,7 +163,7 @@ def run_ingest(cfg, output_dir, force=False):
         load_images=spatial_cfg.get("load_images", True),
     )
     print(f"  [ingest] {adata.n_obs:,} spots x {adata.n_vars:,} genes")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [ingest] -> {out_path}")
     cache_record("ingest", None, cfg, out_path)
     return out_path
@@ -198,7 +198,7 @@ def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
           f"({out['n_spots_removed']:,} removed)")
     generate_spatial_qc_report(adata, str(report_path), dataset_id=dataset_id)
     print(f"  [qc] report -> {report_path}")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [qc] -> {out_path}")
     cache_record("qc", input_path, cfg, out_path)
     return out_path
@@ -235,7 +235,7 @@ def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
           f"{out['spatial_graph_n_edges']:,} spatial edges")
     generate_spatial_reduce_report(adata, str(report_path), dataset_id=dataset_id)
     print(f"  [reduce] report -> {report_path}")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [reduce] -> {out_path}")
     cache_record("reduce", input_path, cfg, out_path)
     return out_path
@@ -272,7 +272,7 @@ def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
               f"from {out['n_genes_tested']} tested")
     generate_spatial_cluster_report(adata, str(report_path), dataset_id=dataset_id)
     print(f"  [cluster] report -> {report_path}")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [cluster] -> {out_path}")
     cache_record("cluster", input_path, cfg, out_path)
     return out_path
@@ -344,7 +344,7 @@ def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
         img_key=cfg.get("spatial", {}).get("report", {}).get("img_key", "hires"),
     )
     print(f"  [deconvolve] report -> {report_path}")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [deconvolve] -> {out_path}")
     cache_record("deconvolve", input_path, cfg, out_path)
     return out_path
@@ -403,7 +403,7 @@ def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
         adata, str(report_path), dataset_id=dataset_id, dominant_celltype_key=dominant_key
     )
     print(f"  [downstream] report -> {report_path}")
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [downstream] -> {out_path}")
     cache_record("downstream", input_path, cfg, out_path)
     return out_path
@@ -444,7 +444,7 @@ def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
         generate_spatial_impute_report(
             adata, str(report_path), dataset_id=dataset_id, sc_ref_label=""
         )
-        adata.write_h5ad(out_path)
+        atomic_write_h5ad(adata, out_path)
         cache_record("impute", input_path, cfg, out_path)
         return out_path
 
@@ -494,7 +494,7 @@ def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
 
     # obsm["imputed_expression"] is already a float32 numpy array —
     # no extra serialization needed before h5ad checkpoint.
-    adata.write_h5ad(out_path)
+    atomic_write_h5ad(adata, out_path)
     print(f"  [impute] -> {out_path}")
     cache_record("impute", input_path, cfg, out_path)
     return out_path

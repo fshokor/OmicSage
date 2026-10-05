@@ -113,6 +113,11 @@ def parse_config_into_state(cfg: dict, config_path: str) -> dict:
                 if enabled is not False:
                     selected.append(s)
                 step_params[s] = {k: v for k, v in block.items() if k != "enabled"}
+        # Ingestion widgets edit these top-level spatial options.
+        step_params.setdefault("ingest", {}).update({
+            "spatial_type": spatial.get("spatial_type", "h5ad"),
+            "load_images": spatial.get("load_images", True),
+        })
         result["selected_steps"] = selected
         result["step_params"]    = step_params
     else:

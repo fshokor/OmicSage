@@ -191,18 +191,18 @@ def build_spatial(dataset_name, data_path, ref_rna_path, organism,
                 "n_comps":         reduce_p.get("n_comps",     50),
                 "n_neighbors":     reduce_p.get("n_neighbors", 6),
                 "target_sum":      reduce_p.get("target_sum",  10000),
-                "normalize_total": True,
-                "log1p":           True,
-                "flavor":          "seurat",
+                "normalize_total": reduce_p.get("normalize_total", True),
+                "log1p":           reduce_p.get("log1p", True),
+                "flavor":          reduce_p.get("flavor", "seurat"),
             }) if "reduce" in selected_steps else None,
             "cluster": _clean({
                 "resolution":    cluster_p.get("resolution",  0.5),
                 "n_neighbors":   cluster_p.get("n_neighbors", 15),
                 "n_pcs":         cluster_p.get("n_pcs",       30),
                 "random_state":  cluster_p.get("random_state", 0),
-                "run_svg":       True,
-                "svg_n_genes":   3000,
-                "annotation_map": None,
+                "run_svg":       cluster_p.get("run_svg", True),
+                "svg_n_genes":   cluster_p.get("svg_n_genes", 3000),
+                "annotation_map": cluster_p.get("annotation_map"),
             }) if "cluster" in selected_steps else None,
             "deconvolve": _clean({
                 "ref_path":      ref_rna_path,
@@ -236,6 +236,24 @@ def build_spatial(dataset_name, data_path, ref_rna_path, organism,
         },
     }
 
+    # Preserve imported parameters not represented by widgets, including explicit
+    # nulls. Dropping these changes cache fingerprints and silently loses options.
+    import copy
+    for step, block in cfg["spatial"].items():
+        if isinstance(block, dict):
+            inherited = copy.deepcopy(step_params.get(step, {}))
+            inherited.update(block)
+            cfg["spatial"][step] = inherited
+
+    # These widget fields belong at the spatial level, not in ingest.
+    for key in ("spatial_type", "load_images"):
+        cfg["spatial"]["ingest"].pop(key, None)
+    # The spatial runner uses explicit n_comps/n_pcs, not this scRNA widget.
+    if "reduce" in cfg["spatial"] and isinstance(cfg["spatial"]["reduce"], dict):
+        cfg["spatial"]["reduce"].pop("n_pcs_method", None)
+
+    # None is meaningful here: omitting it would restore the runner's 20% default.
+    cfg["spatial"]["qc"]["max_mt_pct"] = qc_p.get("max_mt_pct", 20.0)
     cfg["spatial"] = {k: v for k, v in cfg["spatial"].items() if v is not None}
     return cfg
 

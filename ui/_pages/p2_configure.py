@@ -163,9 +163,20 @@ def _render_step(step: str, cur: dict, modality: str, organism: str) -> dict:
             p["max_counts"] = st.number_input("Max UMI counts",
                                                value=int(p.get("max_counts", 100000)),
                                                step=1000, key=f"{k}_maxc")
-            p["max_mt_pct"] = _slider_num("Max MT%", 1.0, 60.0,
-                                           p.get("max_mt_pct", 20.0), 0.5,
-                                           f"{k}_mt", fmt="%.1f")
+            mt_enabled = st.toggle(
+                "Filter spots by mitochondrial %",
+                value=p.get("max_mt_pct", 20.0) is not None,
+                key=f"{k}_mt_enabled",
+                help="When off, mitochondrial percentages are measured but not used to remove spots.",
+            )
+            if mt_enabled:
+                previous = p.get("max_mt_pct")
+                p["max_mt_pct"] = _slider_num("Max MT%", 0.0, 100.0,
+                                             20.0 if previous is None else previous, 0.5,
+                                             f"{k}_mt", fmt="%.1f")
+            else:
+                p["max_mt_pct"] = None
+                st.caption("MT percentages will be measured; mitochondrial filtering is disabled.")
         p["mt_prefix"] = st.text_input("MT gene prefix", value=p.get("mt_prefix","MT-"),
                                         key=f"{k}_mtp")
 
@@ -190,7 +201,7 @@ def _render_step(step: str, cur: dict, modality: str, organism: str) -> dict:
                                             key=f"{k}_hf")
 
     # ── Reduce ────────────────────────────────────────────────────────────────
-    elif step == "reduce":
+    elif step == "reduce" and modality != "Spatial":
         col1, col2 = st.columns(2)
         with col1:
             p["n_comps"]     = int(_slider_num("PCA components to compute", 10, 100,
