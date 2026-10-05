@@ -1,6 +1,6 @@
 # requirements-ci.txt
 # Lightweight dependencies for CI test runner.
-# Does NOT include heavy packages (pytorch, streamlit, plotly, etc.)
+# Includes Streamlit so spatial UI regression tests run in CI.
 # Full environment: use environment.yml with conda
 
 numpy>=1.26
@@ -39,3 +39,6 @@ decoupler>=2.0.0
 cell2location==0.1.5
 tangram-sc==1.0.0
 squidpy>=1.0.0
+
+# Match the minimum UI version in environment.yml (includes AppTest).
+streamlit>=1.32
