@@ -243,16 +243,10 @@ def _run_tangram(
     # but we normalise to our obs_names to guarantee consistency)
     imputed.index = adata_st.obs_names
 
-    # Mapping scores — only meaningful in "cells" mode.
-    # In "clusters" mode ad_map.obs rows are cell types, not spots,
-    # so tg_score cannot be mapped back to individual spots.
-    if tangram_mode == "cells" and "tg_score" in ad_map.obs.columns:
-        adata_st.obs["tangram_mapping_score"] = ad_map.obs["tg_score"].values
-        mean_score = float(ad_map.obs["tg_score"].mean())
-        n_poor = int((ad_map.obs["tg_score"] < 0.1).sum())
-    else:
-        mean_score = float("nan")
-        n_poor = 0
+    # Tangram tg_score belongs to source cells/clusters, not spatial spots.
+    adata_st.obs.drop(columns=["tangram_mapping_score"], errors="ignore", inplace=True)
+    mean_score = float("nan")
+    n_poor = -1  # Sentinel: unavailable, never zero successful/failed spots.
 
     # Store imputed values as a float32 numpy array in obsm (h5py-safe).
     # Gene names are preserved in uns provenance under "genes_imputed" and
@@ -270,6 +264,7 @@ def _run_tangram(
             "n_spots":            adata_st.n_obs,
             "mean_mapping_score": round(mean_score, 4),
             "n_poor_spots":       n_poor,
+            "spot_scores_available": False,
             "genes_imputed":      list(shared_genes),
             "cell_type_key":      cell_type_key,
             "device":             device,

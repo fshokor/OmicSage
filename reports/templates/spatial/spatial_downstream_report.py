@@ -542,6 +542,9 @@ def _section_co_occurrence(adata: ad.AnnData, prov: dict, dominant_celltype_key:
         return _skip_section("Spatial Co-occurrence", info.get("reason", "not run"))
 
     co_key = f"{dominant_celltype_key}_co_occurrence"
+    if co_key+"_by_library" in adata.uns:
+        sections = ", ".join(adata.uns[co_key+"_by_library"])
+        return f'<section><h2>Spatial Co-occurrence</h2><p>Computed separately by tissue section: {sections}. Coordinate systems were not pooled. Section-specific arrays are stored in the checkpoint.</p></section>'
     if co_key not in adata.uns:
         return _skip_section("Spatial Co-occurrence", f"uns['{co_key}'] not found")
 
@@ -738,9 +741,9 @@ def _lr_bar_chart(means_df: "pd.DataFrame", pvals_df: "pd.DataFrame",
         ax.set_yticks(range(len(labels)))
         ax.set_yticklabels(labels, fontsize=8)
         ax.invert_yaxis()
-        ax.set_xlabel(r"$-\log_{10}(p)$", fontsize=9)
+        ax.set_xlabel(r"$-\log_{10}(q)$", fontsize=9)
         ax.set_title(
-            f"Top {len(labels)} LR pairs  (p < {alpha})", fontsize=10, fontweight="bold"
+            f"Top {len(labels)} LR pairs  (BH q < {alpha})", fontsize=10, fontweight="bold"
         )
         ax.axvline(-_np.log10(alpha), color="#c0392b", lw=1, ls="--", alpha=0.6)
         ax.spines[["top", "right"]].set_visible(False)
@@ -796,7 +799,7 @@ def _lr_focused_dotplot(adata: "ad.AnnData", ligrec_key: str,
         # ── Retrieve full means/pvals from uns ───────────────────────────────
         ligrec_data = adata.uns[ligrec_key]
         means_full = ligrec_data.get("means")
-        pvals_full = ligrec_data.get("pvalues")
+        pvals_full = ligrec_data.get("qvalues")
         if means_full is None or pvals_full is None:
             return None
 
@@ -875,7 +878,7 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
 
     ligrec_data = adata.uns[ligrec_key]
     means_df = ligrec_data.get("means")
-    pvals_df = ligrec_data.get("pvalues")
+    pvals_df = ligrec_data.get("qvalues")
 
     # ── Summary note ──────────────────────────────────────────────────────────
     summary_html = ""
@@ -885,8 +888,8 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
         n_pairs   = pvals_df.shape[1]
         summary_html = (
             f'<p class="note">'
-            f'{n_sig_001:,} interactions at p&nbsp;&lt;&nbsp;0.001 '
-            f'({n_sig_005:,} at p&nbsp;&lt;&nbsp;0.05) '
+            f'{n_sig_001:,} hypotheses at BH q&nbsp;&lt;&nbsp;0.001 '
+            f'({n_sig_005:,} at BH q&nbsp;&lt;&nbsp;0.05) '
             f'across {n_pairs} cell-type pairs.</p>'
         )
 
@@ -927,8 +930,8 @@ def _section_ligrec(adata: ad.AnnData, prov: dict, dominant_celltype_key: str) -
     <section>
       <h2>Ligand-Receptor Communication</h2>
       <p>Permutation test (CellPhoneDB-like) for ligand-receptor interactions between
-         spatially co-localised cell types, using the OmniPath database.
-         Bar chart shows the top 20 pairs ranked by &minus;log&#8321;&#8320;(p).
+         dominant spot-label groups, using the OmniPath database. BH-adjusted hypotheses are retained only for label groups adjacent in the section-specific graph; this does not prove cell contact or signalling.
+         Bar chart shows the top 20 pairs ranked by &minus;log&#8321;&#8320;(BH q).
          Dotplot is restricted to the 6 cell types with the most significant interactions.</p>
       {summary_html}
       {figs_html}
@@ -1037,7 +1040,7 @@ def _section_svg_gsea(adata: ad.AnnData, prov: dict) -> str:
       <h2>SVG Pathway Enrichment (GSEA)</h2>
       <p>Pre-ranked GSEA using Moran's I scores as the gene ranking.
          Genes with high spatial autocorrelation are ranked first.
-         Red bars indicate positively enriched pathways; blue = depleted.</p>
+         Red/blue indicate enrichment toward higher/lower spatial autocorrelation. This ranking does not measure pathway activation or up/down regulation.</p>
       {fig_html}
       {table_html}
     </section>

@@ -479,12 +479,19 @@ def _section_summary(adata, qc_info, dataset_id, timestamp):
     threshold_rows = "".join(
         f"<tr><td>{k}</td><td>{v}</td></tr>" for k, v in params.items()
     )
+    mt_available = outputs.get("mt_qc_available", outputs.get("n_mt_genes_detected", 0) > 0)
+    mt_note = "" if mt_available else '<p class="note">MT QC unavailable: no mitochondrial features matched. Zero reported percentages do not demonstrate good tissue quality.</p>'
+    if mt_available and params.get("max_mt_pct") is None:
+        mt_note = '<p class="note">MT percentages measured; mitochondrial filtering intentionally disabled pending tissue-specific threshold review.</p>'
     stat_rows = ""
     for col, label in [
         ("total_counts", "Total UMI counts"),
         ("n_genes_by_counts", "Genes detected"),
         ("pct_counts_mt", "MT gene %"),
     ]:
+        if col == "pct_counts_mt" and not mt_available:
+            stat_rows += '<tr><td>MT gene %</td><td colspan="5">Unavailable</td></tr>'
+            continue
         s = stats.get(col, {})
         if s:
             stat_rows += (
@@ -498,6 +505,7 @@ def _section_summary(adata, qc_info, dataset_id, timestamp):
       <h2>Run Summary</h2>
       <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
       <div class="stat-grid">{stat_cards}</div>
+      {mt_note}
       <h3>QC Metric Summary (retained spots)</h3>
       <table>
         <thead>

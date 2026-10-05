@@ -393,6 +393,8 @@ def _section_summary(
     library_key = outputs.get("library_key")
     n_spots     = outputs.get("n_spots", adata.n_obs)
     n_ct        = outputs.get("n_cell_types", 0)
+    zeros = outputs.get("zero_weight_cell_types", [])
+    diagnostic = f"NNLS fit diagnostics: {outputs.get('nnls_diagnostics', {})}; zero-weight types: {', '.join(zeros) or 'none'}. Proportions are fitted weights, not validated cell counts."
     n_shared    = outputs.get("n_shared_genes", 0)
 
     if skipped:
@@ -409,6 +411,7 @@ def _section_summary(
         return f"""
         <section>
           <h2>Run Summary</h2>
+      <p class="note">{diagnostic}</p>
           <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
           {skip_note}
           <div class="stat-grid">{stat_cards}</div>
@@ -443,6 +446,7 @@ def _section_summary(
     return f"""
     <section>
       <h2>Run Summary</h2>
+      <p class="note">{diagnostic}</p>
       <p class="timestamp">Dataset: <strong>{dataset_id}</strong> &middot; {timestamp}</p>
       <div class="stat-grid">{stat_cards}</div>
       {"<h3>Cell Types</h3><p>" + ct_badges + "</p>" if ct_badges else ""}

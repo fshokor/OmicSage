@@ -392,7 +392,8 @@ class TestReport:
         with patch.object(r, "_SQUIDPY_AVAILABLE", False):
             r.generate_spatial_impute_report(adata, str(out))
         content = out.read_text()
-        assert "Imputation Validation" in content or "Spearman" in content
+        assert "Projection Diagnostic" in content
+        assert "held-out validation" in content
 
     def test_report_mapping_hist_present(self, rng, tmp_path):
         r = _import_report()

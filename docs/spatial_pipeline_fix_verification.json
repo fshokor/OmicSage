@@ -1,0 +1,10 @@
+{
+  "n_spots": 11719,
+  "cross_section_entries": 0,
+  "stored_adjacency_entries": 68162,
+  "n_genes": 36601,
+  "median_mt_pct": 35.80264663696289,
+  "mt_filter_applied": false,
+  "n_expression_clusters": 6,
+  "n_svg_fdr05": 673
+}

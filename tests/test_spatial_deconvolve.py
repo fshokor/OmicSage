@@ -350,8 +350,8 @@ class TestIngestH5adContract:
         out, _ = spatial_ingest(h5ad_path, spatial_type="h5ad")
         assert all(v.startswith("ENSG") for v in out.var_names)
 
-    def test_h5ad_strips_mt_genes(self, tmp_path):
-        """_load_h5ad must strip MT- genes into obsm['MT']."""
+    def test_h5ad_preserves_mt_genes_for_qc(self, tmp_path):
+        """_load_h5ad retains mitochondrial features and raw counts for QC."""
         n_mt = 3
         n_other = 10
         X = sp.csr_matrix(np.ones((10, n_mt + n_other), dtype=np.float32))
@@ -367,9 +367,9 @@ class TestIngestH5adContract:
 
         from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
         out, _ = spatial_ingest(h5ad_path, spatial_type="h5ad")
-        assert "MT" in out.obsm
-        assert out.n_vars == n_other
-        assert out.obsm["MT"].shape == (10, n_mt)
+        assert out.n_vars == n_other + n_mt
+        assert sum(out.var_names.str.startswith("MT-")) == n_mt
+        np.testing.assert_array_equal(out.layers["counts"].toarray(), X.toarray())
 
 
 # ---------------------------------------------------------------------------

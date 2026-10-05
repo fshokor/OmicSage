@@ -12,7 +12,7 @@ Sections
                          (spots < 0.1 highlighted; not shown for gimVI)
 3. Top Imputed Genes   — spatial scatter of top 5 imputed genes by variance
                          (the visual payoff — genes not in original HVG set)
-4. Imputation Validation — scatter: measured vs imputed for genes present in
+4. Projection Diagnostic — scatter: measured vs imputed for genes present in
                            both datasets, Spearman r in title
 """
 
@@ -170,7 +170,7 @@ def _section_run_summary(
     n_poor          = out.get("n_poor_spots", 0)
 
     score_str = f"{mean_score:.3f}" if not np.isnan(mean_score) else "N/A"
-    poor_str  = str(n_poor) if method == "tangram" else "N/A"
+    poor_str = str(n_poor) if out.get("spot_scores_available", False) and n_poor >= 0 else "N/A"
 
     cards = (
         _stat_card(str(n_genes), "Genes imputed")
@@ -180,13 +180,7 @@ def _section_run_summary(
         + _stat_card(poor_str, "Poor-score spots (<0.1)")
     )
 
-    note = ""
-    if method == "tangram":
-        note = (
-            '<p class="note">Mapping score interpretation: values ≥ 0.1 indicate '
-            'reliable sc→spot assignment. Spots below 0.1 may be in tissue regions '
-            'not well-represented by the scRNA-seq reference.</p>'
-        )
+    note = '<p class="note">Projected expression is model-derived. Tangram source-cell or cluster scores are not per-spot quality scores. Validate with held-out genes and spatial patterns.</p>'
 
     return (
         f'<section>'
@@ -446,7 +440,7 @@ def _section_top_imputed_genes(adata: ad.AnnData, prov: dict, library_key: str =
         f'<section>'
         f'<h2>3. Top Imputed Genes on Tissue</h2>'
         f'<p>Top 5 genes by variance in imputed expression — these are the '
-        f'genes not in the original Visium panel whose spatial expression '
+        f'projected genes whose spatial expression '
         f'patterns are predicted from the scRNA-seq reference. Brighter spots '
         f'indicate higher predicted expression.</p>'
         f'<div class="fig-grid">{figs_html}</div>'
@@ -458,7 +452,7 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
     """Scatter of measured vs imputed expression for overlapping genes."""
     if "imputed_expression" not in adata.obsm:
         return _skip_section(
-            "4. Imputation Validation",
+            "4. Projection Diagnostic",
             "imputed_expression not found in adata.obsm.",
         )
 
@@ -472,7 +466,7 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
     if isinstance(raw, np.ndarray):
         if gene_names is None or len(gene_names) != raw.shape[1]:
             return _skip_section(
-                "4. Imputation Validation",
+                "4. Projection Diagnostic",
                 "Gene names missing from uns — cannot reconstruct imputed DataFrame.",
             )
         imputed = pd.DataFrame(raw, index=adata.obs_names, columns=gene_names)
@@ -480,7 +474,7 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
         imputed = raw
     else:
         return _skip_section(
-            "4. Imputation Validation",
+            "4. Projection Diagnostic",
             f"Unexpected type for imputed_expression: {type(raw).__name__}.",
         )
 
@@ -491,7 +485,7 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
 
     if len(overlap) < 5:
         return _skip_section(
-            "4. Imputation Validation",
+            "4. Projection Diagnostic",
             f"Only {len(overlap)} overlapping genes between measured and "
             "imputed data — insufficient for validation scatter.",
         )
@@ -502,20 +496,13 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
         np.random.choice(overlap, 50, replace=False)
     )
 
-    # Log-normalise measured counts before comparing to imputed values.
-    # Tangram imputed expression is already on a normalised scale, so
-    # comparing raw counts vs normalised imputed causes artificially low
-    # Spearman r. We use log1p(counts / sum * 10000) to match the typical
-    # normalisation applied before Tangram training.
+    # Use the existing normalized X. Renormalizing only 50 sampled genes
+    # changes library sizes and would log-transform an already logged matrix.
     x_arr = adata[:, sample_genes].X
     if sp.issparse(x_arr):
         x_arr = x_arr.toarray()
-    x_arr = np.asarray(x_arr, dtype=np.float64)
-    lib_sizes = x_arr.sum(axis=1, keepdims=True)
-    lib_sizes[lib_sizes == 0] = 1  # avoid divide-by-zero
-    x_norm = np.log1p(x_arr / lib_sizes * 10000)
-    measured_mean = x_norm.mean(axis=0)
-    imputed_mean  = imputed[sample_genes].values.mean(axis=0)
+    measured_mean = np.asarray(x_arr, dtype=np.float64).mean(axis=0)
+    imputed_mean = imputed[sample_genes].values.mean(axis=0)
 
     rho, pval = spearmanr(measured_mean, imputed_mean)
 
@@ -533,34 +520,16 @@ def _section_validation(adata: ad.AnnData, prov: dict) -> str:
     fig.tight_layout()
     b64 = _fig_to_b64(fig)
 
-    quality_note = ""
-    if rho >= 0.7:
-        quality_note = (
-            '<p class="note" style="border-left-color:#54a868; background:#f0fff4; color:#1a5c2a;">'
-            f'Good imputation quality: Spearman r = {rho:.3f}. '
-            'Imputed values track measured expression well.</p>'
-        )
-    elif rho >= 0.4:
-        quality_note = (
-            '<p class="note">'
-            f'Moderate imputation quality: Spearman r = {rho:.3f}. '
-            'Imputation may be less reliable for lowly-expressed genes.</p>'
-        )
-    else:
-        quality_note = (
-            '<p class="note" style="border-left-color:#e05c5c; background:#fff5f5; color:#7a1a1a;">'
-            f'Low imputation correlation: Spearman r = {rho:.3f}. '
-            'Check that the scRNA-seq reference is from a matched cell type '
-            'composition and that gene IDs are consistent.</p>'
-        )
+    quality_note = (f'<p class="note">Descriptive mean-expression correlation: rho={rho:.3f}. '
+                    'These overlapping genes were not held out; this does not validate spatial patterns.</p>')
 
     return (
         f'<section>'
-        f'<h2>4. Imputation Validation</h2>'
+        f'<h2>4. Projection Diagnostic</h2>'
         f'<p>Scatter of mean measured vs mean imputed expression across '
         f'{len(sample_genes)} genes shared between the spatial panel and the '
-        f'imputed gene set. High Spearman correlation indicates that the '
-        f'imputation model has learned biologically realistic gene relationships.</p>'
+        f'imputed gene set. This diagnostic compares '
+        f'expression means; held-out validation remains necessary.</p>'
         f'{quality_note}'
         f'<div class="fig-grid">'
         f'<div class="fig-wrap"><h3>Measured vs imputed mean expression</h3>'

@@ -69,7 +69,7 @@ _TECHNOLOGY_NOTES = {
     "xenium":    "10x Xenium — imaging-based, single-cell resolution, targeted gene panel; loaded via spatialdata-io",
     "merfish":   "Vizgen MERSCOPE/MERFISH — imaging-based, single-cell resolution, targeted panel",
     "codex":     "Akoya CODEX / IMC — imaging-based, single-cell resolution, protein markers",
-    "h5ad":      "Pre-built AnnData loaded from disk (raw counts preserved; ENSEMBL IDs swapped if var['gene_ids'] present; MT genes stripped)",
+    "h5ad":      "Pre-built AnnData loaded from disk (raw counts preserved; ENSEMBL IDs swapped if var['gene_ids'] present; MT genes retained for QC)",
     "benchmark": "squidpy built-in mouse brain H&E Visium dataset",
 }
 
@@ -215,6 +215,8 @@ def spatial_ingest(
     # Stored in provenance so report generators read it directly instead of
     # re-running detection on every report call.
     resolved_library_key = library_key or _detect_library_key(adata)
+    if resolved_library_key and resolved_library_key not in adata.obs:
+        raise ValueError(f"library_key {resolved_library_key!r} is missing from obs")
 
     params = {
         "source": source_repr,
@@ -386,25 +388,7 @@ def _load_h5ad(
         adata.var_names = adata.var["gene_ids"].astype(str)
         adata.var_names_make_unique()
 
-    # 3. Strip mitochondrial genes into obsm["MT"].
-    #    cell2location recommends removing MT genes before deconvolution
-    #    as they represent technical artefacts rather than cell abundance.
-    #    MT genes are identified by the "MT-" prefix on the feature_name
-    #    column (populated in step 2) or var_names as a fallback.
-    if "feature_name" in adata.var.columns:
-        # pandas Series.str.startswith → Series → .values → numpy array
-        mt_mask = adata.var["feature_name"].str.startswith("MT-").values
-    else:
-        # pandas Index.str.startswith returns numpy array directly — no .values needed
-        mt_mask = adata.var_names.str.startswith("MT-")
-
-    if mt_mask.sum() > 0:
-        import scipy.sparse as sp
-        mt_matrix = adata[:, mt_mask].X
-        if sp.issparse(mt_matrix):
-            mt_matrix = mt_matrix.toarray()
-        adata.obsm["MT"] = mt_matrix
-        adata = adata[:, ~mt_mask].copy()
+    # 3. Preserve mitochondrial genes for QC. Do not remove them at ingest.
 
     # 4. Strip alpha channel from H&E images (RGBA → RGB).
     #    Some published h5ad files store images as (H, W, 4); squidpy

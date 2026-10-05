@@ -170,7 +170,7 @@ def spatial_deconvolve(
     # ------------------------------------------------------------------ #
     common = {
         "method": method,
-        "per_sample": per_sample,
+        "per_sample": per_sample if method == "cell2location" else False,
         "library_key": library_key,
         "cell_type_key": cell_type_key,
         "layer_ref": layer_ref,
@@ -240,6 +240,9 @@ def spatial_deconvolve(
     for i, ct in enumerate(cell_type_names):
         adata.obs[ct] = proportions[:, i]
 
+    zero_types = [ct for i, ct in enumerate(cell_type_names) if not np.any(proportions[:, i] > 0)]
+    if zero_types:
+        logger.warning("Zero fitted abundance for %s; validate signatures before interpretation", zero_types)
     dom_idx = np.argmax(proportions, axis=1)
     adata.obs["dominant_cell_type"] = pd.Categorical(
         [cell_type_names[i] for i in dom_idx],
@@ -256,12 +259,15 @@ def spatial_deconvolve(
         "params": {**common, **method_params},
         "outputs": {
             "method": method,
-            "per_sample": per_sample,
+            "per_sample": per_sample if method == "cell2location" else False,
             "library_key": library_key,
             "n_cell_types": len(cell_type_names),
             "cell_type_names": list(cell_type_names),
             "n_shared_genes": int(n_shared),
             "n_spots": int(adata.n_obs),
+            "zero_weight_cell_types": zero_types,
+            "nnls_diagnostics": adata.uns.get("nnls_diagnostics", {}),
+            "fit_validated": False,
         },
     }
     adata.uns["omicsage_spatial_deconvolve"] = params
@@ -314,7 +320,9 @@ def _deconvolve_nnls(
 
     # ── Step 1: find shared genes while everything is still sparse ──────────
     spatial_genes = set(adata.var_names)
-    shared = [g for g in ref_adata.var_names if g in spatial_genes]
+    symbols = adata.var["feature_name"].astype(str) if "feature_name" in adata.var else adata.var_names
+    mt_genes = set(adata.var_names[np.asarray(symbols.str.startswith("MT-"))])
+    shared = [g for g in ref_adata.var_names if g in spatial_genes and g not in mt_genes]
     if not shared:
         raise ValueError(
             "No shared genes between spatial and reference data. "
@@ -381,16 +389,19 @@ def _deconvolve_nnls(
 
     # ── Step 4: NNLS per spot (threads share W and st_norm, no copies) ──────
     def _solve(x):
-        p, _ = nnls(W, x, maxiter=200)
+        p, residual = nnls(W, x, maxiter=200)
         s = p.sum()
-        return p / s if s > 0 else p
+        return (p / s if s > 0 else p), residual / max(float(np.linalg.norm(x)), 1e-12)
 
-    proportions = np.asarray(
-        Parallel(n_jobs=n_jobs, prefer="threads")(
-            delayed(_solve)(st_norm[i]) for i in range(st_norm.shape[0])
-        ),
-        dtype=np.float32,
-    )
+    fitted = Parallel(n_jobs=n_jobs, prefer="threads")(
+        delayed(_solve)(st_norm[i]) for i in range(st_norm.shape[0]))
+    proportions = np.asarray([result[0] for result in fitted], dtype=np.float32)
+    residuals = np.asarray([result[1] for result in fitted], dtype=np.float32)
+    adata.obs["nnls_relative_residual"] = residuals
+    adata.uns["nnls_diagnostics"] = {"median_relative_residual": float(np.median(residuals)),
+        "max_relative_residual": float(np.max(residuals)),
+        "signature_rank": int(np.linalg.matrix_rank(W)), "n_signatures": len(cell_types),
+        "excluded_mt_genes": len(mt_genes)}
     return proportions, cell_types, len(shared)
 
 

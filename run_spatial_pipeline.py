@@ -35,6 +35,7 @@ from datetime import datetime
 from pathlib import Path
 
 import yaml
+from pipeline.modules.scripts.spatial.checkpoint_cache import valid as cache_valid, record as cache_record, require_predecessor
 
 warnings.filterwarnings("ignore", category=UserWarning)
 warnings.filterwarnings("ignore", category=FutureWarning)
@@ -147,7 +148,7 @@ def run_ingest(cfg, output_dir, force=False):
     import scanpy as sc
     from pipeline.modules.scripts.spatial.spatial_ingest import spatial_ingest
     out_path = output_dir / STEP_OUTPUT["ingest"]
-    if out_path.exists() and not force:
+    if not force and cache_valid("ingest", None, cfg, out_path):
         print(f"  [ingest] cached -> {out_path}")
         return out_path
     spatial_cfg = cfg.get("spatial", {})
@@ -158,12 +159,13 @@ def run_ingest(cfg, output_dir, force=False):
         spatial_type=spatial_cfg.get("spatial_type", "auto"),
         counts_file=spatial_cfg.get("counts_file", "filtered_feature_bc_matrix.h5"),
         library_id=spatial_cfg.get("library_id", None),
-        library_key=spatial_cfg.get("library_key", None),
+        library_key=spatial_cfg.get("ingest", {}).get("library_key", spatial_cfg.get("library_key")),
         load_images=spatial_cfg.get("load_images", True),
     )
     print(f"  [ingest] {adata.n_obs:,} spots x {adata.n_vars:,} genes")
     adata.write_h5ad(out_path)
     print(f"  [ingest] -> {out_path}")
+    cache_record("ingest", None, cfg, out_path)
     return out_path
 
 
@@ -174,9 +176,10 @@ def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
     out_path    = output_dir / STEP_OUTPUT["qc"]
     report_path = reports_dir / STEP_REPORT["qc"]
     dataset_id  = cfg.get("dataset_id", "spatial")
-    if out_path.exists() and not force:
+    if not force and cache_valid("qc", input_path, cfg, out_path):
         print(f"  [qc] cached -> {out_path}")
         return out_path
+    require_predecessor("qc", cfg, out_path)
     adata  = sc.read_h5ad(input_path)
     qc_cfg = cfg.get("spatial", {}).get("qc", {})
     adata, params = spatial_qc(
@@ -197,6 +200,7 @@ def run_qc(input_path, output_dir, reports_dir, cfg, force=False):
     print(f"  [qc] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [qc] -> {out_path}")
+    cache_record("qc", input_path, cfg, out_path)
     return out_path
 
 
@@ -207,13 +211,15 @@ def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
     out_path    = output_dir / STEP_OUTPUT["reduce"]
     report_path = reports_dir / STEP_REPORT["reduce"]
     dataset_id  = cfg.get("dataset_id", "spatial")
-    if out_path.exists() and not force:
+    if not force and cache_valid("reduce", input_path, cfg, out_path):
         print(f"  [reduce] cached -> {out_path}")
         return out_path
+    require_predecessor("reduce", cfg, out_path)
     adata      = sc.read_h5ad(input_path)
     reduce_cfg = cfg.get("spatial", {}).get("reduce", {})
     adata, params = spatial_reduce(
         adata,
+        library_key=reduce_cfg.get("library_key"),
         n_top_genes=reduce_cfg.get("n_top_genes",  3000),
         n_comps=reduce_cfg.get("n_comps",           50),
         n_neighbors=reduce_cfg.get("n_neighbors",   6),
@@ -231,6 +237,7 @@ def run_reduce(input_path, output_dir, reports_dir, cfg, force=False):
     print(f"  [reduce] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [reduce] -> {out_path}")
+    cache_record("reduce", input_path, cfg, out_path)
     return out_path
 
 
@@ -241,9 +248,10 @@ def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
     out_path     = output_dir / STEP_OUTPUT["cluster"]
     report_path  = reports_dir / STEP_REPORT["cluster"]
     dataset_id   = cfg.get("dataset_id", "spatial")
-    if out_path.exists() and not force:
+    if not force and cache_valid("cluster", input_path, cfg, out_path):
         print(f"  [cluster] cached -> {out_path}")
         return out_path
+    require_predecessor("cluster", cfg, out_path)
     adata        = sc.read_h5ad(input_path)
     cluster_cfg  = cfg.get("spatial", {}).get("cluster", {})
     adata, params = spatial_cluster(
@@ -266,6 +274,7 @@ def run_cluster(input_path, output_dir, reports_dir, cfg, force=False):
     print(f"  [cluster] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [cluster] -> {out_path}")
+    cache_record("cluster", input_path, cfg, out_path)
     return out_path
 
 
@@ -276,9 +285,10 @@ def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
     out_path    = output_dir / STEP_OUTPUT["deconvolve"]
     report_path = reports_dir / STEP_REPORT["deconvolve"]
     dataset_id  = cfg.get("dataset_id", "spatial")
-    if out_path.exists() and not force:
+    if not force and cache_valid("deconvolve", input_path, cfg, out_path):
         print(f"  [deconvolve] cached -> {out_path}")
         return out_path
+    require_predecessor("deconvolve", cfg, out_path)
     adata      = sc.read_h5ad(input_path)
     deconv_cfg = cfg.get("spatial", {}).get("deconvolve", {})
     method     = deconv_cfg.get("method", "nnls")
@@ -336,6 +346,7 @@ def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
     print(f"  [deconvolve] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [deconvolve] -> {out_path}")
+    cache_record("deconvolve", input_path, cfg, out_path)
     return out_path
 
 
@@ -346,10 +357,11 @@ def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
     out_path    = output_dir / STEP_OUTPUT["downstream"]
     report_path = reports_dir / STEP_REPORT["downstream"]
     dataset_id  = cfg.get("dataset_id", "spatial")
-    if out_path.exists() and not force:
+    if not force and cache_valid("downstream", input_path, cfg, out_path):
         print(f"  [downstream] cached -> {out_path}")
         return out_path
     print(f"  [downstream] loading: {input_path.name}", flush=True)
+    require_predecessor("downstream", cfg, out_path)
     adata          = sc.read_h5ad(input_path)
     print(
         f"  [downstream] loaded: {adata.n_obs:,} spots x {adata.n_vars:,} genes  "
@@ -393,6 +405,7 @@ def run_downstream(input_path, output_dir, reports_dir, cfg, force=False):
     print(f"  [downstream] report -> {report_path}")
     adata.write_h5ad(out_path)
     print(f"  [downstream] -> {out_path}")
+    cache_record("downstream", input_path, cfg, out_path)
     return out_path
 
 
@@ -404,10 +417,11 @@ def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
     report_path = reports_dir / STEP_REPORT["impute"]
     dataset_id  = cfg.get("dataset_id", "spatial")
 
-    if out_path.exists() and not force:
+    if not force and cache_valid("impute", input_path, cfg, out_path):
         print(f"  [impute] cached -> {out_path}")
         return out_path
 
+    require_predecessor("impute", cfg, out_path)
     impute_cfg   = cfg.get("spatial", {}).get("impute", {})
     sc_ref_path  = impute_cfg.get("sc_reference_path", None)
     enabled      = impute_cfg.get("enabled", False)
@@ -431,6 +445,7 @@ def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
             adata, str(report_path), dataset_id=dataset_id, sc_ref_label=""
         )
         adata.write_h5ad(out_path)
+        cache_record("impute", input_path, cfg, out_path)
         return out_path
 
     print(f"  [impute] loading spatial: {input_path.name}")
@@ -481,6 +496,7 @@ def run_impute(input_path, output_dir, reports_dir, cfg, force=False):
     # no extra serialization needed before h5ad checkpoint.
     adata.write_h5ad(out_path)
     print(f"  [impute] -> {out_path}")
+    cache_record("impute", input_path, cfg, out_path)
     return out_path
 
 
@@ -577,11 +593,15 @@ def main():
 
     from reports.templates.spatial.spatial_combined_report import generate_spatial_combined_report
     combined_path = reports_dir / "00_spatial_combined_report.html"
-    generate_spatial_combined_report(
-        reports_dir=reports_dir,
-        dataset_name=dataset_name,
-        output_path=combined_path,
-    )
+    import tempfile, shutil
+    with tempfile.TemporaryDirectory() as current_reports:
+        for report_step, report_name in STEP_REPORT.items():
+            output = output_dir / STEP_OUTPUT[report_step]
+            source = reports_dir / report_name
+            if source.exists() and cache_valid(report_step, resolve_input(report_step, cfg, output_dir), cfg, output):
+                shutil.copy2(source, Path(current_reports) / report_name)
+        generate_spatial_combined_report(reports_dir=Path(current_reports),
+                                         dataset_name=dataset_name, output_path=combined_path)
 
     end_time = datetime.now()
     elapsed  = end_time - start_time

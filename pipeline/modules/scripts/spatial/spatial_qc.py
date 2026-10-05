@@ -35,7 +35,7 @@ def spatial_qc(
     max_counts: int = 100_000,
     min_genes: int = 200,
     max_genes: int = 10_000,
-    max_mt_pct: float = 20.0,
+    max_mt_pct: Optional[float] = 20.0,
     mt_prefix: str = "MT-",
     filter_spots: bool = True,
     inplace: bool = False,
@@ -56,7 +56,7 @@ def spatial_qc(
     max_genes
         Maximum number of detected genes per spot.
     max_mt_pct
-        Maximum mitochondrial gene expression percentage per spot.
+        Maximum mitochondrial percentage; None records MT QC without filtering.
     mt_prefix
         Gene name prefix used to identify mitochondrial genes.
         ``"MT-"`` for human, ``"mt-"`` for mouse.
@@ -86,7 +86,8 @@ def spatial_qc(
     # ------------------------------------------------------------------ #
     # 1. Annotate mitochondrial genes
     # ------------------------------------------------------------------ #
-    adata.var["mt"] = adata.var_names.str.startswith(mt_prefix)
+    symbols = adata.var["feature_name"].astype(str) if "feature_name" in adata.var else adata.var_names
+    adata.var["mt"] = np.asarray(symbols.str.startswith(mt_prefix))
     n_mt_genes = int(adata.var["mt"].sum())
 
     # Warn when the prefix doesn't match anything — common when var_names are
@@ -126,7 +127,7 @@ def spatial_qc(
     high_counts = int((adata.obs["total_counts"] > max_counts).sum())
     low_genes = int((adata.obs["n_genes_by_counts"] < min_genes).sum())
     high_genes = int((adata.obs["n_genes_by_counts"] > max_genes).sum())
-    high_mt = int((adata.obs["pct_counts_mt"] > max_mt_pct).sum())
+    high_mt = int((adata.obs["pct_counts_mt"] > max_mt_pct).sum()) if max_mt_pct is not None and n_mt_genes else 0
 
     # ------------------------------------------------------------------ #
     # 4. Build pass/fail mask
@@ -136,7 +137,7 @@ def spatial_qc(
         & (adata.obs["total_counts"] <= max_counts)
         & (adata.obs["n_genes_by_counts"] >= min_genes)
         & (adata.obs["n_genes_by_counts"] <= max_genes)
-        & (adata.obs["pct_counts_mt"] <= max_mt_pct)
+        & ((adata.obs["pct_counts_mt"] <= max_mt_pct) if max_mt_pct is not None and n_mt_genes else True)
     )
     adata.obs["qc_pass"] = pass_mask
 
@@ -180,6 +181,8 @@ def spatial_qc(
             "removed_high_genes": high_genes,
             "removed_high_mt": high_mt,
             "mt_prefix_zero_match": n_mt_genes == 0,
+            "mt_qc_available": n_mt_genes > 0,
+            "mt_filter_applied": n_mt_genes > 0 and max_mt_pct is not None,
         },
         "summary_stats": summary_stats,
     }

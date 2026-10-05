@@ -18,14 +18,14 @@ spatial:
   load_images: true
 
   ingest:
-    library_key: "sample_name"
+    library_key: "patient_region_id"
 
   qc:
     min_counts: 500
     max_counts: 100000
     min_genes: 200
     max_genes: 10000
-    max_mt_pct: 20.0
+    max_mt_pct: null  # Measure MT%; review tissue-specific cutoff before filtering.
     mt_prefix: "MT-"
     filter_spots: true
 

@@ -35,6 +35,7 @@ import anndata as ad
 import numpy as np
 import pandas as pd
 import scanpy as sc
+from .spatial_graph import assert_section_graph
 
 try:
     import squidpy as sq
@@ -254,6 +255,8 @@ def _validate_input(adata: ad.AnnData, run_svg: bool) -> None:
             "adata.obsm['X_pca'] is missing. "
             "Run spatial_reduce() first."
         )
+    if run_svg and "spatial_connectivities" in adata.obsp:
+        assert_section_graph(adata)
     if run_svg and "spatial_connectivities" not in adata.obsp:
         raise ValueError(
             "adata.obsp['spatial_connectivities'] is missing. "

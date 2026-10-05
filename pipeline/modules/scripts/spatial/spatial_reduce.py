@@ -31,6 +31,7 @@ from typing import Optional
 import anndata as ad
 import numpy as np
 import scanpy as sc
+from .spatial_graph import build_section_graph
 
 try:
     import squidpy as sq
@@ -55,6 +56,7 @@ def spatial_reduce(
     log1p: bool = True,
     flavor: str = "seurat",
     inplace: bool = False,
+    library_key: Optional[str] = None,
 ) -> tuple[ad.AnnData, dict]:
     """Normalize, select HVGs, compute PCA and spatial neighbours graph.
 
@@ -181,12 +183,7 @@ def spatial_reduce(
     # ------------------------------------------------------------------ #
     # 5.  Spatial neighbours graph
     # ------------------------------------------------------------------ #
-    sq.gr.spatial_neighbors(
-        adata,
-        n_neighs=n_neighbors,
-        coord_type=coord_type,
-        key_added="spatial",
-    )
+    library_key = build_section_graph(adata, n_neighbors, coord_type, library_key)
 
     # Connectivity stats
     conn = adata.obsp["spatial_connectivities"]
@@ -203,6 +200,7 @@ def spatial_reduce(
             "n_top_genes": n_top_genes,
             "n_comps": n_comps,
             "n_neighbors": n_neighbors,
+            "library_key": library_key or "",
             "coord_type": coord_type,
             "normalize_total": normalize_total,
             "target_sum": target_sum,

@@ -27,6 +27,7 @@ obsm["X_umap_celltype"]             — UMAP of region clusters
 """
 
 from __future__ import annotations
+from .spatial_graph import build_section_graph, assert_section_graph, resolve_library_key
 
 import logging
 from datetime import datetime
@@ -393,6 +394,8 @@ def _run_celltype_expression(
             if ct not in adata.obs.columns:
                 continue
             abundance = adata.obs[ct].values.astype(np.float32)
+            if not np.isfinite(abundance).all() or np.ptp(abundance) == 0:
+                continue
 
             # Compute Spearman r for every gene using dense columns
             # (safe for typical Visium: ~33k genes, ~10k spots)
@@ -417,7 +420,8 @@ def _run_celltype_expression(
             denom = np.where(denom == 0, 1e-10, denom)
             corr = numer / denom
 
-            top_idx = np.argsort(np.abs(corr))[::-1][:n_marker_genes]
+            candidates = np.flatnonzero(np.isfinite(corr) & (corr > 0) & (np.ptp(expr_dense, axis=0) > 0))
+            top_idx = candidates[np.argsort(corr[candidates])[::-1]][:n_marker_genes]
             top_genes = adata.var_names[top_idx].tolist()
 
             # Prefer gene symbols when available
@@ -475,9 +479,7 @@ def _run_celltype_svg(
             ad_sub = adata[mask].copy()
 
             # Recompute spatial neighbours on the subset (original graph is invalid)
-            sq.gr.spatial_neighbors(
-                ad_sub, n_neighs=6, coord_type=None, key_added="spatial"
-            )
+            build_section_graph(ad_sub, n_neighbors=6)
 
             # Select genes
             if "highly_variable" in ad_sub.var.columns:
@@ -550,9 +552,27 @@ def _run_co_occurrence(
         if interval is not None:
             kwargs["interval"] = interval
 
+        library_key = resolve_library_key(adata)
+        co_key = f"{dominant_celltype_key}_co_occurrence"
+        if library_key and adata.obs[library_key].nunique() > 1:
+            results = {}
+            failures = {}
+            adata.uns.pop(co_key, None)  # Never leave a pooled-coordinate result.
+            for section, indices in adata.obs.groupby(library_key, observed=True, sort=False).indices.items():
+                sub = adata[indices].copy()
+                sub.obs[dominant_celltype_key] = sub.obs[dominant_celltype_key].cat.remove_unused_categories()
+                try:
+                    sq.gr.co_occurrence(sub, **kwargs)
+                    results[str(section)] = {**sub.uns[co_key],
+                                            "categories": sub.obs[dominant_celltype_key].cat.categories.to_numpy(dtype=str)}
+                except Exception as exc:
+                    failures[str(section)] = str(exc)
+            adata.uns[co_key+"_by_library"] = results
+            return {"skipped": not bool(results), "per_library": True, "library_key": library_key,
+                    "n_libraries": len(results), "failures": failures}
         sq.gr.co_occurrence(adata, **kwargs)
-
-        return {"skipped": False}
+        adata.uns.pop(co_key+"_by_library", None)
+        return {"skipped": False, "per_library": False}
 
     except Exception as e:
         return {"skipped": True, "reason": f"co-occurrence failed: {e}"}
@@ -584,9 +604,7 @@ def _run_nhood_enrichment(
                 "[downstream] spatial_connectivities missing; recomputing graph"
             )
             try:
-                sq.gr.spatial_neighbors(
-                    adata, n_neighs=6, coord_type=None, key_added="spatial"
-                )
+                build_section_graph(adata, n_neighbors=6)
             except Exception as e:
                 return {
                     "skipped": True,
@@ -604,8 +622,12 @@ def _run_nhood_enrichment(
         if not hasattr(col, "cat"):
             adata.obs[dominant_celltype_key] = col.astype(str).astype("category")
 
+        library_key = assert_section_graph(adata)
+        if library_key:
+            adata.obs[library_key] = adata.obs[library_key].astype("category")
         sq.gr.nhood_enrichment(
             adata,
+            library_key=library_key,
             cluster_key=dominant_celltype_key,
             n_perms=n_perms,
             n_jobs=n_jobs,
@@ -724,6 +746,25 @@ def _run_ligrec(
         ligrec_key = f"{dominant_celltype_key}_ligrec"
         has_result = ligrec_key in adata.uns
         if has_result:
+            from statsmodels.stats.multitest import multipletests
+            result = adata.uns[ligrec_key]
+            pvalues = result["pvalues"]
+            values = pvalues.to_numpy(dtype=float)
+            finite = np.isfinite(values)
+            adjusted = np.full(values.shape, np.nan)
+            adjusted[finite] = multipletests(values[finite], method="fdr_bh")[1]
+            if "spatial_connectivities" not in adata.obsp:
+                build_section_graph(adata)
+            assert_section_graph(adata)
+            graph = adata.obsp["spatial_connectivities"].tocoo()
+            labels = adata.obs[dominant_celltype_key].astype(str).to_numpy()
+            contacts = set(zip(labels[graph.row], labels[graph.col]))
+            contacts |= {(b, a) for a, b in contacts}
+            supported = np.array([tuple(pair) in contacts for pair in pvalues.columns], dtype=bool)
+            adjusted[:, ~supported] = np.nan
+            result["qvalues"] = pd.DataFrame(adjusted, index=pvalues.index, columns=pvalues.columns)
+            result["spatially_filtered"] = True
+            result["spatial_filter"] = "label-group adjacency, not proven cell communication"
             _serialize_ligrec_uns(adata, ligrec_key)
         return {"skipped": not has_result, "reason": "no result stored" if not has_result else None}
 
