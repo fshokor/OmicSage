@@ -331,7 +331,7 @@ def _run_region_clustering(
     try:
         abundance = np.asarray(adata.obsm["q05_cell_abundance_w_sf"])
         n_dims = abundance.shape[1]
-        k = min(n_neighbors, n_dims - 1, adata.n_obs - 1)
+        k = min(n_neighbors, adata.n_obs - 1)
 
         sc.pp.neighbors(
             adata,

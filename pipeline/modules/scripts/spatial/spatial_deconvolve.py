@@ -470,6 +470,27 @@ def _make_epoch_callback(label: str, max_epochs: int, log_every_n: int):
     return _EpochLog()
 
 
+def _prepare_c2l_reference(adata, ref_adata, layer_ref):
+    """Match non-MT genes before filtering; copy only reference counts and metadata."""
+    symbols = adata.var["feature_name"].astype(str) if "feature_name" in adata.var else adata.var_names
+    non_mt = set(adata.var_names[~np.asarray(symbols.str.startswith("MT-"))])
+    positions = [i for i, gene in enumerate(ref_adata.var_names) if gene in non_mt]
+    if not positions:
+        raise ValueError("No shared non-mitochondrial genes between spatial and reference data")
+    ref = ad.AnnData(
+        X=ref_adata.layers[layer_ref][:, positions].copy(),
+        obs=ref_adata.obs.copy(), var=ref_adata.var.iloc[positions].copy(),
+    )
+    ref.layers[layer_ref] = ref.X
+    return ref
+
+
+def _training_history(model):
+    """Small, checkpoint-safe loss histories for reviewing convergence."""
+    return {str(key): np.asarray(value, dtype=np.float64).ravel()
+            for key, value in model.history.items()}
+
+
 def _fit_c2l_reference(
     ref_adata: ad.AnnData,
     cell_type_key: str,
@@ -529,6 +550,7 @@ def _fit_c2l_reference(
             "batch_size": batch_size_ref,
         },
     )
+    ref.uns["cell2location_reference_history"] = _training_history(reg_model)
 
     factor_names = ref.uns["mod"]["factor_names"]
     if "means_per_cluster_mu_fg" in ref.varm.keys():
@@ -575,6 +597,7 @@ def _fit_c2l_spatial(
     if _cb is not None:
         _kw["callbacks"] = [_cb]
     model.train(**_kw)
+    history = _training_history(model)
 
     adata_st = model.export_posterior(
         adata_st,
@@ -583,6 +606,7 @@ def _fit_c2l_spatial(
             "batch_size": batch_size_st or model.adata.n_obs,
         },
     )
+    adata_st.uns["cell2location_spatial_history"] = history
 
     cell_type_names = list(adata_st.uns["mod"]["factor_names"])
     proportions = np.asarray(
@@ -609,6 +633,7 @@ def _deconvolve_c2l(
     cell_count_cutoff: int,
     cell_percentage_cutoff2: float,
     nonz_mean_cutoff: float,
+    log_every_n_epochs: int = 10,
 ) -> tuple[np.ndarray, list, int]:
     """Standard cell2location pipeline — all spots in one spatial fit."""
     import time as _time
@@ -618,7 +643,7 @@ def _deconvolve_c2l(
         flush=True,
     )
     inf_aver, ref = _fit_c2l_reference(
-        ref_adata, cell_type_key, layer_ref,
+        _prepare_c2l_reference(adata, ref_adata, layer_ref), cell_type_key, layer_ref,
         batch_key_ref, covariate_keys,
         max_epochs_ref, batch_size_ref,
         cell_count_cutoff, cell_percentage_cutoff2, nonz_mean_cutoff,
@@ -646,7 +671,11 @@ def _deconvolve_c2l(
         max_epochs_st=max_epochs_st,
         batch_size_st=batch_size_st,
         num_samples_posterior=num_samples_posterior,
+        log_every_n_epochs=log_every_n_epochs,
     )
+    adata.uns["cell2location_reference_history"] = ref.uns["cell2location_reference_history"]
+    adata.uns["cell2location_spatial_history"] = adata_st.uns["cell2location_spatial_history"]
+    adata.uns["cell2location_reference_signatures"] = inf_aver_shared
     return proportions, cell_type_names, len(shared)
 
 
@@ -682,7 +711,7 @@ def _deconvolve_c2l_per_sample(
         flush=True,
     )
     inf_aver, ref = _fit_c2l_reference(
-        ref_adata, cell_type_key, layer_ref,
+        _prepare_c2l_reference(adata, ref_adata, layer_ref), cell_type_key, layer_ref,
         batch_key_ref, covariate_keys,
         max_epochs_ref, batch_size_ref,
         cell_count_cutoff, cell_percentage_cutoff2, nonz_mean_cutoff,
@@ -700,6 +729,9 @@ def _deconvolve_c2l_per_sample(
     inf_aver_shared = inf_aver.loc[shared]
 
     libraries = list(adata.obs[library_key].unique())
+    adata.uns["cell2location_reference_history"] = ref.uns["cell2location_reference_history"]
+    adata.uns["cell2location_reference_signatures"] = inf_aver_shared
+    adata.uns["cell2location_spatial_history"] = {}
     print(
         f"  [deconvolve] step 2/2 -- spatial fits: "
         f"{len(libraries)} libraries x {max_epochs_st} epochs each",
@@ -740,6 +772,7 @@ def _deconvolve_c2l_per_sample(
         if cell_type_names is None:
             cell_type_names = ct_names
         proportions_all[mask] = proportions
+        adata.uns["cell2location_spatial_history"][str(lib_id)] = adata_sub.uns["cell2location_spatial_history"]
 
     return proportions_all, cell_type_names, len(shared)
 

@@ -1,0 +1,38 @@
+{
+  "sample": "control_P1",
+  "n_spots": 4279,
+  "image_libraries": [
+    "control_P1"
+  ],
+  "n_cell_types": 11,
+  "n_shared_genes": 14364,
+  "finite_nonnegative_abundance": true,
+  "mean_q05_abundance": {
+    "Adipocyte": 0.6439988017082214,
+    "Cardiomyocyte": 0.6929822564125061,
+    "Cycling cells": 0.6256087422370911,
+    "Endothelial": 0.7800471782684326,
+    "Fibroblast": 0.6821171641349792,
+    "Lymphoid": 0.7679835557937622,
+    "Mast": 0.6394075751304626,
+    "Myeloid": 0.6838029026985168,
+    "Neuronal": 0.7515909671783447,
+    "Pericyte": 0.7847069501876831,
+    "vSMCs": 0.7668269276618958
+  },
+  "zero_weight_types": [],
+  "training_history": {
+    "reference/elbo_train": {
+      "n_epochs": 10,
+      "first": 310254976.0,
+      "last": 297318528.0
+    },
+    "spatial/elbo_train": {
+      "n_epochs": 50,
+      "first": 43547436.0,
+      "last": 28266972.0
+    }
+  },
+  "fit_validated": false,
+  "resource_measurement": "\tCommand being timed: \"env OMP_NUM_THREADS=4 MKL_NUM_THREADS=4 OPENBLAS_NUM_THREADS=4 /home/shoko/miniconda3/envs/omicsage/bin/python run_spatial_pipeline.py --config config/runs/kuppe_heart_P1_pilot.yaml --to-step deconvolve\"\n\tUser time (seconds): 3375.97\n\tSystem time (seconds): 915.06\n\tPercent of CPU this job got: 363%\n\tElapsed (wall clock) time (h:mm:ss or m:ss): 19:39.11\n\tAverage shared text size (kbytes): 0\n\tAverage unshared data size (kbytes): 0\n\tAverage stack size (kbytes): 0\n\tAverage total size (kbytes): 0\n\tMaximum resident set size (kbytes): 9042188\n\tAverage resident set size (kbytes): 0\n\tMajor (requiring I/O) page faults: 544\n\tMinor (reclaiming a frame) page faults: 207881029\n\tVoluntary context switches: 25838\n\tInvoluntary context switches: 12330\n\tSwaps: 0\n\tFile system inputs: 12755680\n\tFile system outputs: 1552928\n\tSocket messages sent: 0\n\tSocket messages received: 0\n\tSignals delivered: 0\n\tPage size (bytes): 4096\n\tExit status: 0\n"
+}

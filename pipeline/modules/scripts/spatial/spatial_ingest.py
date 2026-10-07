@@ -120,6 +120,7 @@ def spatial_ingest(
     load_images: bool = True,
     bin_size: int = 8,
     inplace: bool = False,
+    sample_id: Optional[str] = None,
 ) -> tuple[ad.AnnData, dict]:
     """Load spatial transcriptomics data into a standard AnnData.
 
@@ -218,6 +219,22 @@ def spatial_ingest(
     if resolved_library_key and resolved_library_key not in adata.obs:
         raise ValueError(f"library_key {resolved_library_key!r} is missing from obs")
 
+    n_obs_source = int(adata.n_obs)
+    if sample_id is not None:
+        if not resolved_library_key:
+            raise ValueError("sample_id requires a library_key identifying tissue sections")
+        mask = adata.obs[resolved_library_key].astype(str) == str(sample_id)
+        if not mask.any():
+            available = adata.obs[resolved_library_key].astype(str).unique().tolist()
+            raise ValueError(f"Unknown sample_id {sample_id!r}; available: {available}")
+        images = adata.uns.get("spatial", {})
+        if images and str(sample_id) not in images:
+            raise ValueError(f"sample_id {sample_id!r} does not match a spatial image library")
+        adata = adata[mask].copy()
+        if images:
+            adata.uns["spatial"] = {str(sample_id): adata.uns["spatial"][str(sample_id)]}
+        effective_library_id = str(sample_id)
+
     params = {
         "source": source_repr,
         "spatial_type": resolved_type,
@@ -225,6 +242,8 @@ def spatial_ingest(
         "counts_file": counts_file,
         "library_id": effective_library_id,
         "library_key": resolved_library_key,
+        "sample_id": str(sample_id) if sample_id is not None else "",
+        "n_obs_source": n_obs_source,
         "load_images": load_images,
         "bin_size": bin_size,
         "n_obs": int(adata.n_obs),

@@ -1,0 +1,46 @@
+# CPU execution/memory pilot, not a converged biological analysis.
+dataset_id: kuppe_heart_P1_pilot
+dataset_name: Kuppe control_P1 — cell2location CPU pilot
+paths:
+  output_dir: data/processed/kuppe_heart_P1_pilot
+  reports_dir: reports/kuppe_heart_P1_pilot
+spatial:
+  source: data/benchmark/kuppe_visium_human_heart_2022_control.h5ad
+  spatial_type: h5ad
+  load_images: true
+  ingest:
+    library_key: patient_region_id
+    sample_id: control_P1
+  qc:
+    max_mt_pct: null
+    filter_spots: false
+  reduce:
+    n_top_genes: 3000
+    n_comps: 50
+    n_neighbors: 6
+  cluster:
+    resolution: 0.5
+    n_neighbors: 15
+    n_pcs: 30
+    run_svg: true
+  deconvolve:
+    method: cell2location
+    ref_path: data/benchmark/kuppe_snRNA_human_heart_2022_control.h5ad
+    per_sample: false
+    cell_type_key: cell_type_original
+    layer_ref: counts
+    batch_key_ref: donor_id
+    batch_key_st: patient
+    covariate_keys: [assay]
+    N_cells_per_location: 8
+    detection_alpha: 20
+    max_epochs_ref: 10
+    max_epochs_st: 50
+    batch_size_ref: 512
+    batch_size_st: 512
+    num_samples_posterior: 50
+    log_every_n_epochs: 5
+  downstream:
+    enabled: false
+  impute:
+    enabled: false

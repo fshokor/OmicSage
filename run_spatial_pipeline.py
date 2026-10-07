@@ -161,6 +161,7 @@ def run_ingest(cfg, output_dir, force=False):
         library_id=spatial_cfg.get("library_id", None),
         library_key=spatial_cfg.get("ingest", {}).get("library_key", spatial_cfg.get("library_key")),
         load_images=spatial_cfg.get("load_images", True),
+        sample_id=spatial_cfg.get("ingest", {}).get("sample_id"),
     )
     print(f"  [ingest] {adata.n_obs:,} spots x {adata.n_vars:,} genes")
     atomic_write_h5ad(adata, out_path)
@@ -330,6 +331,7 @@ def run_deconvolve(input_path, output_dir, reports_dir, cfg, force=False):
         cell_count_cutoff=deconv_cfg.get("cell_count_cutoff",         5),
         cell_percentage_cutoff2=deconv_cfg.get("cell_percentage_cutoff2", 0.03),
         nonz_mean_cutoff=deconv_cfg.get("nonz_mean_cutoff", 1.12),
+        log_every_n_epochs=deconv_cfg.get("log_every_n_epochs", 10),
         inplace=True,
     )
     if params["skipped"]:
